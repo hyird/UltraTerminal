@@ -18,6 +18,10 @@ vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
+## Agent 许可与源码分发
+
+Windows Agent 及其本项目对应源代码按 GPL-3.0-or-later 发布，范围和第三方说明见 [agent/LICENSE.md](agent/LICENSE.md)，完整条款见 [agent/COPYING](agent/COPYING)。x264 使用其 GPL 授权；与 OpenSSL 等依赖组合发行采用 GPL 第 3 版或后续版本。MSI 包含许可、第三方版权和源码位置。**发布 MSI 时必须同步发布匹配的源码归档**，不能只提供二进制或仅依赖短期 Actions 产物保留期。
+
 ## 构建
 
 设置 `VCPKG_ROOT`，使用支持 C++23 的工具链及 CMake 3.25+。Windows Agent 需要 MSVC 和 Windows SDK，依赖及 CRT 静态链接；Agent-only 构建仅使用 Ruvia core，不构建 Web 网关或数据库客户端。
@@ -30,16 +34,26 @@ ctest --preset windows-agent-release
 
 Agent 输出到 `build/windows-agent/agent/Release/agent.exe`。
 
-Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合和注册脚本。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
+Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_sources.ps1` 要求源码已提交且工作区无已跟踪修改，打包对应项目/Ruvia/vcpkg 快照及按 SPDX 校验的第三方源码。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
 
 ```powershell
+./agent/platform/windows/package_sources.ps1 `
+  -AgentExe build/windows-agent/agent/Release/agent.exe `
+  -DependencyRoot build/vcpkg_installed/x64-windows-static `
+  -RuviaRoot build/windows-agent/_deps/ruvia-src -VcpkgRoot $env:VCPKG_ROOT `
+  -Output build/deployment/ultraterimal-agent-source-1.0.11.tar.gz
 ./agent/platform/windows/package_agent.ps1 `
   -AgentExe build/windows-agent/agent/Release/agent.exe `
   -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll `
   -CaBundle path/to/ca.pem `
-  -Output build/deployment/ultraterimal-agent-1.0.6.msi `
+  -DependencyRoot build/vcpkg_installed/x64-windows-static `
+  -RuviaRoot build/windows-agent/_deps/ruvia-src `
+  -SourceArchive build/deployment/ultraterimal-agent-source-1.0.11.tar.gz `
+  -Output build/deployment/ultraterimal-agent-1.0.11.msi `
   -GatewayHost <证书域名> -GatewayAddress <源站地址>
 ```
+
+MSI 与同版本 `ultraterimal-agent-source-*.tar.gz` 一起发布到 Web `assets/`，长期保留已分发版本的源码；`windows-agent.json` 同时记录源码位置及 SHA-256。更换下载域名时必须重新打包，确保安装目录 `source_info.txt` 的链接有效。源码归档只收集 Git 跟踪代码与依赖来源，不包含设备配置、凭据或运行日志。
 
 网关可使用 `windows-server-release`，或在本机 WSL 的 Linux 文件系统内构建：
 
@@ -100,7 +114,7 @@ Agent 直接连接独立的原生 UDP/TCP 加密入口，仍需 `native_certific
 
 ## Windows 安装与配置
 
-Agent 1.0.9 修复 OpenH264 自适应码率更新引起的断连：软件编码器的目标码率和上限在初始化及动态更新时统一向下对齐到 8 bps（最多减少 7 bps），避免超过 2²⁴ bps 后的浮点取整将层目标推到上限之外。保持现有动态调速、码率上限和视频参考帧，不通过忽略更新失败或丢弃增量帧维持连接。回归测试覆盖非整码率、边界值、随机升降及连续解码，并纳入 CI 单元测试。
+Agent 1.0.11 将软件编码器替换为 x264 `superfast + zerolatency + psnr`（H.264 Baseline），保留硬编优先路径。无 B 帧、帧级排队或前瞻；强制 IDR 携带 SPS/PPS，逐帧校验输出时间戳与 Annex B 契约。使用内部 CFR 序列避免 x264 VFR 隐含的一帧等待，线上保留原始采集时间戳；自适应 FPS 通过目标每帧比特预算折算到固定编码时基，码率与 VBV 用公开重配置接口更新，不因调速反复生成 IDR。清晰模式沿用 QP 10..18，复杂画面可能超过目标码率，最终链路预算仍由有界帧/显示 ACK 调度控制；码率目标不等于严格瞬时上限。OpenH264 只保留硬编首帧校验及测试所需的独立解码用途，不再作为软件编码回退。回归测试覆盖非整码率、随机升降、帧率预算变化、连续解码及模式切换。
 
 Agent 1.0.8 起，桌面工作进程及 Agent 服务进程的桌面桥接异常在 Windows `Application` 事件日志中记录来源 `UltraterimalDesktop`、事件 ID `1001`。记录包含进程 ID、Windows 会话、远控会话 ID、失败阶段和最多 1024 字节的内部错误描述，不包含按键内容、画面或凭据。并发任务取消时保留首个异常，避免被清理阶段的 `operation_aborted` 覆盖；此日志用于定位，不能将 `desktop_failed` 一概判断为网络问题。管理员可用以下命令查看最近记录（事件未发生时查询可能返回无匹配项）：
 
@@ -172,7 +186,11 @@ node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-
 
 `agent-hardware-video-probe` 动态加载系统 Media Foundation，枚举 NV12 输入的 H.264/H.265 硬件编码器并尝试创建实例，输出启动、枚举和创建的 HRESULT。缺少媒体组件时报告不可用；该探测不加入 Agent 启动依赖。H.264 还会协商 NV12 输入、通过异步事件仅送入一张 1280×720 测试帧，不追加下一帧也不排空编码器，再由 OpenH264 独立解码并检查尺寸和亮度/色度采样点。使用 H.264 Baseline 避免 B 帧重排，记录首次送帧到独立解码耗时；此项不是稳态编码吞吐测试。异步事件通过带超时的事件等待接收，不轮询；单候选等待输出最长 5 秒，并单独验证空闲超时与关闭后的拒绝路径。`h264_frame_checks` 记录此项结果；`agent_hardware_path_implemented: false` 表示该诊断尚未接入 Agent，不能作为平台能力声明或完整硬编验收依据。
 
+`agent-software-video-benchmark --detail-live-rate` 对 1080p 窗口移动和滚动使用初始清晰模式的 24 Mbps 目标；`--detail` 对比 8 Mbps 下的均衡/清晰模式。报告包含目标码率和模式。所有结果均是合成基准，不等于线上帧率。
+
 `agent-software-video-benchmark` 输出 720p、1080p、2560×1600 合成窗口移动与滚动场景的 JSON 行报告，记录预热后 180 帧的编码平均/P95/P99 耗时、CPU 时间、字节量、吞吐与亮度 PSNR，每帧立即独立解码校验。运行 `build/windows-agent/tests/agent/Release/agent-software-video-benchmark.exe`，输出重定向至 `build/`。结果只衡量软件颜色转换与编码，不包含采集、网络和浏览器显示延迟，也不代表远端实测帧率；合成场景的亮度 PSNR 不替代文字、色彩和真实应用画质验收。
+
+Agent 1.0.11 起，BGRA → I420/NV12 在 CPU 支持 AVX2 且操作系统启用 XMM/YMM 状态时自动使用独立的 AVX2 内核，否则保留 SSE2 路径；不提高整个程序的最低指令集要求。AVX2 同时计算两行的亮度和色度，复用输入加载，矩阵、范围、2×2 平均与舍入规则不变。单元测试分别强制两条路径，覆盖全部 24 位 RGB、混合颜色、非对齐/带填充行、向量尾部和保护页边界，并对最高支持像素规模的随机画面逐字节比较。`agent-software-video-benchmark --conversion-sse2` / `--conversion-avx2` 可在同一构建中复测，报告包含实际后端；不支持 AVX2 的机器明确拒绝强制 AVX2 测试。`--conversion` 使用自动选择。这只优化颜色转换，不改变编码线程数、码率或画质参数，转换加速比例不等于整帧编码或端到端加速比例。
 
 Agent 1.0.10 起，每个成功的视频帧携带颜色转换与编码的实际墙钟耗时，不含采集、调度等待、网络和浏览器解码；硬编失败后的软件重编码耗时也计入。网关每 30 秒的 `desktop_session_health` 与结束摘要记录 `video_width`、`video_height`、`encoder`、`encode_samples`、`mean_encode_us`、`p95_encode_us`、`p99_encode_us`、`max_encode_us`、`last_keyframe_encode_us`。分位数采用当前视频配置下最近最多 1024 个已转发且具有计时的视频帧，配置/分辨率/编码基准变化时清空；静态桌面没有新帧时保留最近样本，不代表过去 30 秒的平均值。老 Agent 没有计时的帧不计入样本，`encode_samples=0`、`encoder=unknown` 表示不可用而非零延迟。统计固定内存、不逐帧写日志，不记录画面或输入内容。
 

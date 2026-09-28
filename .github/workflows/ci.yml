@@ -122,7 +122,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $ca)) { throw 'Git for Windows CA bundle is missing' }
           [xml]$wix = Get-Content agent/platform/windows/agent.wxs
           $version = $wix.Wix.Product.Version
-          & agent/platform/windows/package_agent.ps1 -AgentExe build/windows-agent/agent/Release/agent.exe -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll -CaBundle $ca -Output "build/windows-installer/ultraterimal-agent-$version.msi" -GatewayHost $env:GATEWAY_HOST -GatewayAddress $env:GATEWAY_ADDRESS
+          $deps = 'build/vcpkg_installed/x64-windows-static'
+          $ruvia = 'build/windows-agent/_deps/ruvia-src'
+          $source = "build/windows-installer/ultraterimal-agent-source-$version.tar.gz"
+          & agent/platform/windows/package_sources.ps1 -AgentExe build/windows-agent/agent/Release/agent.exe -DependencyRoot $deps -RuviaRoot $ruvia -VcpkgRoot $env:VCPKG_ROOT -Output $source
+          & agent/platform/windows/package_agent.ps1 -AgentExe build/windows-agent/agent/Release/agent.exe -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll -CaBundle $ca -DependencyRoot $deps -RuviaRoot $ruvia -SourceArchive $source -Output "build/windows-installer/ultraterimal-agent-$version.msi" -GatewayHost $env:GATEWAY_HOST -GatewayAddress $env:GATEWAY_ADDRESS
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -130,6 +134,7 @@ jobs:
           path: |
             build/windows-installer/*.msi
             build/windows-installer/*.json
+            build/windows-installer/*.tar.gz
           if-no-files-found: error
           retention-days: 14
 

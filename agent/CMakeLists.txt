@@ -16,8 +16,8 @@ target_compile_features(ultraterimal-login-provider PRIVATE cxx_std_23)
 target_compile_options(ultraterimal-login-provider PRIVATE /W4 /WX /permissive- /utf-8 /EHsc)
 target_link_libraries(ultraterimal-login-provider PRIVATE ultraterimal-login-serialization)
 set_target_properties(ultraterimal-login-provider PROPERTIES OUTPUT_NAME ultraterimal_login)
-# The vcpkg OpenH264 port exports pkg-config metadata but no CMake target.
-# Select both CRT configurations from the manifest installation, never a system library.
+# OpenH264 remains a decoder for hardware-baseline validation and tests, not
+# a software encoder. Resolve only the manifest's static CRT configurations.
 set(openh264_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 find_path(OPENH264_INCLUDE_DIR wels/codec_api.h PATHS "${openh264_root}/include" NO_DEFAULT_PATH REQUIRED)
 find_library(OPENH264_RELEASE openh264 PATHS "${openh264_root}/lib" NO_DEFAULT_PATH REQUIRED)
@@ -30,6 +30,20 @@ set_target_properties(OpenH264::OpenH264 PROPERTIES
     MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
     MAP_IMPORTED_CONFIG_MINSIZEREL Release
     INTERFACE_INCLUDE_DIRECTORIES "${OPENH264_INCLUDE_DIR}")
+# x264 exports pkg-config metadata, not a CMake target. Use only the manifest
+# installation and select the matching static CRT configuration.
+set(x264_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+find_path(X264_INCLUDE_DIR x264.h PATHS "${x264_root}/include" NO_DEFAULT_PATH REQUIRED)
+find_library(X264_RELEASE NAMES libx264 x264 PATHS "${x264_root}/lib" NO_DEFAULT_PATH REQUIRED)
+find_library(X264_DEBUG NAMES libx264 x264 PATHS "${x264_root}/debug/lib" NO_DEFAULT_PATH REQUIRED)
+add_library(x264::x264 STATIC IMPORTED)
+set_target_properties(x264::x264 PROPERTIES
+    IMPORTED_CONFIGURATIONS "DEBUG;RELEASE"
+    IMPORTED_LOCATION_RELEASE "${X264_RELEASE}"
+    IMPORTED_LOCATION_DEBUG "${X264_DEBUG}"
+    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
+    MAP_IMPORTED_CONFIG_MINSIZEREL Release
+    INTERFACE_INCLUDE_DIRECTORIES "${X264_INCLUDE_DIR}")
 add_library(ultraterimal-agent-core STATIC
     config/command_line.config.cpp
     features/connection/connection.config.cpp
@@ -42,6 +56,7 @@ add_library(ultraterimal-agent-core STATIC
     features/desktop/video.transport.cpp
     features/desktop/avc.protocol.cpp
     features/desktop/video_color.protocol.cpp
+    features/desktop/video_color_avx2.protocol.cpp
     features/desktop/desktop.transport.cpp
     features/desktop/video.runtime.cpp
     features/desktop/worker.runtime.cpp
@@ -69,12 +84,15 @@ add_library(ultraterimal-agent-core STATIC
     platform/windows/service.runtime.cpp
     platform/windows/terminal.transport.cpp
 )
+# Only this out-of-line kernel may contain AVX2 instructions. Keep startup,
+# feature detection and the SSE2 fallback at the baseline x64 instruction set.
+set_source_files_properties(features/desktop/video_color_avx2.protocol.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 target_compile_features(ultraterimal-agent-core PUBLIC cxx_std_23)
 set_target_properties(ultraterimal-agent-core PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(ultraterimal-agent-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(ultraterimal-agent-core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 target_compile_options(ultraterimal-agent-core PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc)
-target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi OpenH264::OpenH264
+target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi x264::x264 OpenH264::OpenH264
     PUBLIC ultraterimal::protocol ruvia::core Boost::json OpenSSL::SSL OpenSSL::Crypto)
 add_executable(ultraterimal-agent main.cpp)
 target_link_libraries(ultraterimal-agent PRIVATE ultraterimal-agent-core)

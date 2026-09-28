@@ -2,6 +2,9 @@
 
 #include <cstring>
 #include <emmintrin.h>
+#include <intrin.h>
+
+#include "video_color_avx2.protocol.h"
 
 namespace ultraterimal::agent {
 namespace {
@@ -22,15 +25,42 @@ __m128i chromaBytes(__m128i pixels, __m128i coefficients) {
     return _mm_packus_epi16(_mm_packs_epi32(values, _mm_setzero_si128()), _mm_setzero_si128());
 }
 } // namespace
+bool videoPixelAvx2Available() {
+    static const bool available = [] {
+        int registers[4]{};
+        __cpuid(registers, 0);
+        if (registers[0] < 7) {
+            return false;
+        }
+        __cpuidex(registers, 1, 0);
+        constexpr int required = (1 << 26) | (1 << 27) | (1 << 28); // XSAVE, OSXSAVE, AVX.
+        if ((registers[2] & required) != required || (_xgetbv(0) & 6) != 6) {
+            return false;
+        }
+        __cpuidex(registers, 7, 0);
+        return (registers[1] & (1 << 5)) != 0;
+    }();
+    return available;
+}
 // BT.601 limited-range matrix; codec adapters own color signaling.
 bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
-                        std::uint32_t width, std::uint32_t height, VideoPixelFormat format, std::span<std::uint8_t> output) {
+                        std::uint32_t width, std::uint32_t height, VideoPixelFormat format, std::span<std::uint8_t> output, VideoPixelBackend backend) {
     if (!width || !height || width % 2 || height % 2 || width > 4096 || height > 4096 ||
         static_cast<std::uint64_t>(width) * height > 4096 * 2160 ||
         stride < static_cast<std::size_t>(width) * 4 || stride > 64 * 1024 * 1024 / height ||
         bgra.size() < stride * height || output.size() < static_cast<std::size_t>(width) * height * 3 / 2 ||
-        (format != VideoPixelFormat::kI420 && format != VideoPixelFormat::kNv12)) {
+        (format != VideoPixelFormat::kI420 && format != VideoPixelFormat::kNv12) ||
+        (backend != VideoPixelBackend::kAutomatic && backend != VideoPixelBackend::kSse2 && backend != VideoPixelBackend::kAvx2)) {
         return false;
+    }
+    if (backend != VideoPixelBackend::kSse2) {
+        if (videoPixelAvx2Available()) {
+            detail::convertVideoPixelsAvx2(bgra.data(), stride, width, height, format, output.data());
+            return true;
+        }
+        if (backend == VideoPixelBackend::kAvx2) {
+            return false;
+        }
     }
     const auto pixels = static_cast<std::size_t>(width) * height;
     auto* yPlane = output.data();

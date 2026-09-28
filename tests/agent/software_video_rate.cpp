@@ -19,7 +19,7 @@ void require(bool condition, const char* message) {
 }
 class Decoder {
   public:
-    Decoder() {
+    explicit Decoder(int width = 64, int height = 64) : width_(width), height_(height) {
         require(WelsCreateDecoder(&value_) == 0 && value_, "Cannot create regression decoder");
         SDecodingParam config{};
         config.eEcActiveIdc = ERROR_CON_DISABLE;
@@ -40,13 +40,15 @@ class Decoder {
         SBufferInfo output{};
         output.uiInBsTimeStamp = frame.timestampMicroseconds;
         const auto status = value_->DecodeFrameNoDelay(frame.annexB.data(), static_cast<int>(frame.annexB.size()), planes, &output);
-        require(status == dsErrorFree && output.iBufferStatus == 1 && output.UsrData.sSystemBuffer.iWidth == 64 &&
-                    output.UsrData.sSystemBuffer.iHeight == 64 && output.uiOutYuvTimeStamp == frame.timestampMicroseconds,
+        require(status == dsErrorFree && output.iBufferStatus == 1 && output.UsrData.sSystemBuffer.iWidth == width_ &&
+                    output.UsrData.sSystemBuffer.iHeight == height_ && output.uiOutYuvTimeStamp == frame.timestampMicroseconds,
                 "Adaptive rate change broke the dependent video stream");
     }
 
   private:
     ISVCDecoder* value_ = nullptr;
+    int width_;
+    int height_;
 };
 void exercise(std::uint32_t initialRate) {
     SoftwareVideoEncoder encoder({64, 64, initialRate, 60});
@@ -66,11 +68,10 @@ void exercise(std::uint32_t initialRate) {
             throw;
         }
     };
-    // All-layer updates use float arithmetic in OpenH264 2.6.0. Above 2^24,
-    // 18,000,003 rounds UP to 18,000,004 and exceeds an exact integer ceiling.
-    // Former tests only toggled round 4/8 Mbps values and missed this failure.
+    // Preserve historical non-round rate and overflow boundaries when changing
+    // codecs. x264 uses integer kbit/s, not the caller's bits/s.
     for (const auto rate : {8000000u, 18000003u, 64000u, 24000000u, 16777215u, 16777217u, 16777219u,
-                           33554431u, 33554435u, 67108863u, 67108871u, 99999999u, 100000000u, 64001u}) {
+                            33554431u, 33554435u, 67108863u, 67108871u, 99999999u, 100000000u, 64001u}) {
         update(rate, 60);
     }
     std::uint32_t seed = 0x451afe73;
@@ -86,11 +87,47 @@ void exercise(std::uint32_t initialRate) {
         update(rate + rate / 10, 60);
     }
 }
+void exerciseFrameBudget() {
+    SoftwareVideoEncoder encoder({320, 180, 8000000, 60});
+    Decoder decoder(320, 180);
+    std::vector<std::uint8_t> pixels(320 * 180 * 4);
+    std::uint32_t random = 0x784bd367;
+    std::uint64_t timestamp = 0;
+    const auto measure = [&](std::uint32_t fps, std::uint32_t bitrate) {
+        encoder.setRate(fps, bitrate);
+        std::uint64_t bytes = 0;
+        for (unsigned i = 0; i < 120; ++i) {
+            for (auto& value : pixels) {
+                random = random * 1664525u + 1013904223u;
+                value = static_cast<std::uint8_t>(random >> 24);
+            }
+            auto frame = encoder.encode(pixels, 320 * 4, timestamp);
+            require(frame.has_value(), "Adaptive frame budget skipped/failed a frame");
+            if (i == 0 && timestamp) {
+                require(!frame->keyFrame, "Rate changes must not rebuild the encoder");
+            }
+            decoder.verify(*frame);
+            if (i >= 30) {
+                bytes += frame->annexB.size();
+            }
+            timestamp += 1000000 / fps;
+        }
+        return bytes;
+    };
+    const auto highRate = measure(60, 8000000);
+    const auto lowRate = measure(60, 256000);
+    const auto slowCapture = measure(10, 1000000);
+    const auto fastCapture = measure(60, 1000000);
+    require(lowRate * 2 < highRate, "Bitrate reconfiguration did not lower encoded size");
+    require(fastCapture * 5 < slowCapture * 4, "Capture FPS change did not adjust the per-frame rate budget");
+    std::cout << "Frame budgets high=" << highRate << " low=" << lowRate << " slow=" << slowCapture << " fast=" << fastCapture << '\n';
+}
 } // namespace
 int main() {
     try {
         exercise(8000000);
         exercise(18000003);
+        exerciseFrameBudget();
         std::cout << "Adaptive non-round bitrate changes preserve a decodable stream\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

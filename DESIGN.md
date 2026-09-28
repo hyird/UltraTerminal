@@ -41,7 +41,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 | 前端 | React、TypeScript、Tailwind CSS、Ant Design、Vite |
 | 原生桌面显示 | WebCodecs、Canvas |
 | 桌面采集与输入 | DXGI Desktop Duplication、Win32 |
-| 视频编码 | Media Foundation 硬编、OpenH264 软编 |
+| 视频编码 | Media Foundation 硬编、x264 软编 |
 | 无损矩形 | libpng、zlib，Raw/RLE 补充 |
 | VNC | Agent 内嵌 LibVNCServer，浏览器 noVNC |
 | SSH | Agent 内嵌 libssh，网关 libssh2，浏览器 xterm.js |
@@ -91,7 +91,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 ### 桌面传输
 
-- 原生桌面优先 H.265 硬编，其次 H.264 硬编，最后 OpenH264 软编；按实际能力和延迟选择。无视频解码能力时使用无损矩形模式。
+- 原生桌面优先 H.265 硬编，其次 H.264 硬编，最后 x264 软编（`superfast + zerolatency + psnr`，无 B 帧和前瞻，内部 CFR 序列与采集时间戳分离；动态 FPS 折算为每帧码率预算）；按实际能力和延迟选择。无视频解码能力时使用无损矩形模式。
 - CPU 颜色转换统一校验 BGRA 尺寸、行跨度和缓冲区边界，使用同一 BT.601 limited-range 矩阵输出软编 I420 或硬编 NV12；编码器负责匹配的颜色元数据，不维护两套转换规则。
 - 视频模式无变化不编码；无损模式使用 `FULL_FRAME`、`COPY_RECT`、`PATCH_RECT`、`FRAME_COMMIT` 更新持久画布。
 - 视频与无损模式互斥；模式选择依据变化面积、频率、字节量与耗时，并设置切换滞回。

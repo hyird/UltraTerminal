@@ -7,9 +7,12 @@
     "boost-json",
     "openssl",
     {
-      "name": "openh264",
-      "platform": "windows"
+      "name": "x264",
+      "platform": "windows",
+      "default-features": false,
+      "features": ["asm", "gpl"]
     },
+    { "name": "openh264", "platform": "windows" },
     "protobuf"
   ],
   "features": {

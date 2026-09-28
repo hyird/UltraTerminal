@@ -106,11 +106,11 @@ void measureCapturePipeline() {
     report("conversion_and_encode", std::move(encoding));
 }
 template <typename Encoder = ultraterimal::agent::SoftwareVideoEncoder>
-void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sharp = false) {
+void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sharp = false, std::uint32_t bitrate = 8000000) {
     constexpr unsigned warmup = 10, samples = 180;
     const auto stride = static_cast<std::size_t>(width) * 4;
     std::vector<std::uint8_t> pixels(stride * height);
-    Encoder encoder({width, height, 8000000, 60, sharp});
+    Encoder encoder({width, height, bitrate, 60, sharp});
     ISVCDecoder* decoder = nullptr;
     if (WelsCreateDecoder(&decoder) != 0 || !decoder) {
         throw std::runtime_error("Cannot create benchmark decoder");
@@ -190,7 +190,7 @@ void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sha
         !GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) {
         throw std::runtime_error("Cannot read benchmark resource usage");
     }
-    std::cout << "{\"width\":" << width << ",\"height\":" << height << ",\"workload\":\"" << (scrolling ? "scroll" : "window")
+    std::cout << "{\"width\":" << width << ",\"height\":" << height << ",\"bitrate\":" << bitrate << ",\"sharp\":" << (sharp ? "true" : "false") << ",\"workload\":\"" << (scrolling ? "scroll" : "window")
               << "\",\"samples\":" << samples << ",\"mean_ms\":" << total / samples
               << ",\"p95_ms\":" << elapsed[samples * 95 / 100 - 1] << ",\"p99_ms\":" << elapsed[samples * 99 / 100 - 1]
               << ",\"encoder_fps\":" << samples * 1000 / total << ",\"cpu_ms_per_frame\":" << cpu / 10000.0 / samples
@@ -203,7 +203,7 @@ void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sha
     std::cout << "}\n"
               << std::flush;
 }
-void measureConversion(std::uint32_t width, std::uint32_t height, ultraterimal::agent::VideoPixelFormat format) {
+void measureConversion(std::uint32_t width, std::uint32_t height, ultraterimal::agent::VideoPixelFormat format, ultraterimal::agent::VideoPixelBackend backend) {
     constexpr unsigned warmup = 10, samples = 180;
     const auto stride = static_cast<std::size_t>(width) * 4;
     std::vector<std::uint8_t> pixels(stride * height), output(static_cast<std::size_t>(width) * height * 3 / 2);
@@ -216,7 +216,7 @@ void measureConversion(std::uint32_t width, std::uint32_t height, ultraterimal::
     for (unsigned frame = 0; frame < samples + warmup; ++frame) {
         const auto cpuStart = cpuTicks();
         const auto start = Clock::now();
-        if (!ultraterimal::agent::convertVideoPixels(pixels, stride, width, height, format, output)) {
+        if (!ultraterimal::agent::convertVideoPixels(pixels, stride, width, height, format, output, backend)) {
             throw std::runtime_error("Conversion benchmark rejected valid pixels");
         }
         const auto duration = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
@@ -228,7 +228,8 @@ void measureConversion(std::uint32_t width, std::uint32_t height, ultraterimal::
     }
     const auto total = std::accumulate(elapsed.begin(), elapsed.end(), 0.0);
     std::sort(elapsed.begin(), elapsed.end());
-    std::cout << "{\"stage\":\"conversion\",\"width\":" << width << ",\"height\":" << height
+    const auto avx2 = backend != ultraterimal::agent::VideoPixelBackend::kSse2 && ultraterimal::agent::videoPixelAvx2Available();
+    std::cout << "{\"stage\":\"conversion\",\"backend\":\"" << (avx2 ? "avx2" : "sse2") << "\",\"width\":" << width << ",\"height\":" << height
               << ",\"format\":\"" << (format == ultraterimal::agent::VideoPixelFormat::kI420 ? "i420" : "nv12")
               << "\",\"samples\":" << samples << ",\"mean_ms\":" << total / samples
               << ",\"p95_ms\":" << elapsed[samples * 95 / 100 - 1] << ",\"p99_ms\":" << elapsed[samples * 99 / 100 - 1]
@@ -243,11 +244,23 @@ int main(int argc, char** argv) {
             measureCapturePipeline();
             return 0;
         }
-        if (argc == 2 && std::string_view(argv[1]) == "--conversion") {
+        if (argc == 2 && (std::string_view(argv[1]) == "--conversion" || std::string_view(argv[1]) == "--conversion-sse2" || std::string_view(argv[1]) == "--conversion-avx2")) {
+            using ultraterimal::agent::VideoPixelBackend;
+            const auto backend = std::string_view(argv[1]) == "--conversion-sse2" ? VideoPixelBackend::kSse2 : std::string_view(argv[1]) == "--conversion-avx2" ? VideoPixelBackend::kAvx2
+                                                                                                                                                                : VideoPixelBackend::kAutomatic;
+            if (backend == VideoPixelBackend::kAvx2 && !ultraterimal::agent::videoPixelAvx2Available()) {
+                throw std::runtime_error("AVX2 conversion requires CPU and OS AVX2 support");
+            }
             for (const auto format : {ultraterimal::agent::VideoPixelFormat::kI420, ultraterimal::agent::VideoPixelFormat::kNv12}) {
-                measureConversion(1280, 720, format);
-                measureConversion(1920, 1080, format);
-                measureConversion(2560, 1600, format);
+                measureConversion(1280, 720, format, backend);
+                measureConversion(1920, 1080, format, backend);
+                measureConversion(2560, 1600, format, backend);
+            }
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--detail-live-rate") {
+            for (bool scrolling : {false, true}) {
+                measure(1920, 1080, scrolling, true, 24000000);
             }
             return 0;
         }
@@ -267,7 +280,7 @@ int main(int argc, char** argv) {
                 }
                 return 0;
             }
-            throw std::invalid_argument("Usage: agent-software-video-benchmark [--conversion|--capture-pipeline|--detail]");
+            throw std::invalid_argument("Usage: agent-software-video-benchmark [--conversion|--conversion-sse2|--conversion-avx2|--capture-pipeline|--detail|--detail-live-rate|--automatic]");
         }
         for (const bool scrolling : {false, true}) {
             measure(1280, 720, scrolling);

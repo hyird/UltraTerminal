@@ -5,6 +5,9 @@ param(
     [Parameter(Mandatory)][string]$LoginDll,
     [Parameter(Mandatory)][string]$CaBundle,
     [Parameter(Mandatory)][string]$Output,
+    [Parameter(Mandatory)][string]$DependencyRoot,
+    [Parameter(Mandatory)][string]$RuviaRoot,
+    [Parameter(Mandatory)][string]$SourceArchive,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayHost,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayAddress,
     [ValidateRange(1,65535)][int]$GatewayPort = 7443
@@ -13,6 +16,14 @@ $ErrorActionPreference = 'Stop'
 $product = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent.wxs') -Raw)).Wix.Product
 if ((& $AgentExe --version).Trim() -ne [string]$product.Version) { throw 'Agent binary and MSI version differ' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+$sourceName = 'ultraterimal-agent-source-' + [string]$product.Version + '.tar.gz'
+if ([IO.Path]::GetFileName($SourceArchive) -ne $sourceName) { throw 'Unexpected corresponding-source filename' }
+$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path $tar)) { throw 'Windows tar.exe is required for source verification' }
+$sourceText = (& $tar -xOf $SourceArchive ./SOURCE_MANIFEST.json) -join "`n"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read corresponding-source metadata' }
+$source = $sourceText | ConvertFrom-Json
+if ($source.version -ne [string]$product.Version -or $source.agent_sha256 -ne (Get-FileHash $AgentExe -Algorithm SHA256).Hash) { throw 'Corresponding source does not match the Agent binary' }
 $toolRoot = Join-Path $repository 'build\tools'
 $archive = Join-Path $toolRoot 'wix3141-binaries.zip'
 $wix = Join-Path $toolRoot 'wix3141'
@@ -31,6 +42,21 @@ New-Item -ItemType Directory -Path $payload -Force | Out-Null
 Copy-Item -LiteralPath $AgentExe -Destination (Join-Path $payload 'agent.exe') -Force
 Copy-Item -LiteralPath $LoginDll -Destination (Join-Path $payload 'ultraterimal_login.dll') -Force
 Copy-Item -LiteralPath $CaBundle -Destination (Join-Path $payload 'ca.pem') -Force
+Copy-Item -LiteralPath (Join-Path $repository 'agent\COPYING') -Destination $payload -Force
+Copy-Item -LiteralPath (Join-Path $repository 'agent\LICENSE.md') -Destination (Join-Path $payload 'agent_license.md') -Force
+$notices = New-Object System.Text.StringBuilder
+[void]$notices.AppendLine('Ruvia (MIT)')
+[void]$notices.AppendLine((Get-Content (Join-Path $RuviaRoot 'LICENSE') -Raw))
+foreach ($directory in Get-ChildItem (Join-Path $DependencyRoot 'share') -Directory | Sort-Object Name) {
+    $copyright = Join-Path $directory.FullName 'copyright'
+    if (Test-Path $copyright) {
+        [void]$notices.AppendLine(("`n===== " + $directory.Name + " =====`n"))
+        [void]$notices.AppendLine((Get-Content $copyright -Raw))
+    }
+}
+[IO.File]::WriteAllText((Join-Path $payload 'third_party_notices.txt'), $notices.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+$sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject commit: $($source.project_commit)`nCorresponding source: https://$GatewayHost/assets/$sourceName`nSource SHA256: $((Get-FileHash $SourceArchive -Algorithm SHA256).Hash.ToLowerInvariant())`nProject history: https://github.com/hyird/UltraTerminal/tree/$($source.project_commit)`nSource archives must remain available alongside distributed MSI files.`n"
+[IO.File]::WriteAllText((Join-Path $payload 'source_info.txt'), $sourceNotice, (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install_agent.ps1') -Destination (Join-Path $payload 'install_agent.ps1') -Force
 $object = Join-Path $stage 'agent.wixobj'
 $resolvedOutput = [IO.Path]::GetFullPath($Output)
@@ -40,7 +66,8 @@ if ($LASTEXITCODE -ne 0) { throw 'WiX candle failed' }
 & (Join-Path $wix 'light.exe') -nologo -out $resolvedOutput $object
 if ($LASTEXITCODE -ne 0) { throw 'WiX light failed' }
 $outputDirectory = Split-Path -Parent $resolvedOutput
-$manifest = @{ version = [string]$product.Version; file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash.ToLowerInvariant(); native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
+if ([IO.Path]::GetFullPath((Split-Path -Parent $SourceArchive)) -ne $outputDirectory) { Copy-Item $SourceArchive (Join-Path $outputDirectory $sourceName) -Force }
+$manifest = @{ source = '/assets/' + $sourceName; source_sha256 = (Get-FileHash $SourceArchive -Algorithm SHA256).Hash.ToLowerInvariant(); version = [string]$product.Version; file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash.ToLowerInvariant(); native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
 [IO.File]::WriteAllText((Join-Path $outputDirectory 'windows-agent.json'), ($manifest | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
 Write-Output "MSI: $resolvedOutput"
 Write-Output "SHA256: $((Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash)"

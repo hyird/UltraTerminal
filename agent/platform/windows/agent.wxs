@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="8409FC3D-1FC9-4C27-8570-C467F8E9E6AB" Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.10" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7">
+  <Product Id="AAE89DBC-201F-44AC-92C1-B7B577B8D6B7" Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.11" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer Ultraterimal Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -27,6 +27,10 @@
           <Component Id="AgentData" Guid="513913F5-EC5A-4501-894A-C119352631E5" Win64="yes">
             <File Id="CaBundle" Source="$(var.Payload)\ca.pem" KeyPath="yes" />
             <File Id="InstallScript" Source="$(var.Payload)\install_agent.ps1" />
+            <File Id="GplLicense" Source="$(var.Payload)\COPYING" />
+            <File Id="AgentLicense" Source="$(var.Payload)\agent_license.md" />
+            <File Id="ThirdPartyNotices" Source="$(var.Payload)\third_party_notices.txt" />
+            <File Id="CorrespondingSource" Source="$(var.Payload)\source_info.txt" />
           </Component>
         </Directory>
       </Directory>
