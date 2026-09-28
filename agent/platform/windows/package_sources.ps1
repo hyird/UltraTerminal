@@ -10,6 +10,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
 if (-not (Test-Path $tar)) { throw 'Windows tar.exe is required for source packaging' }
+$curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+if (-not (Test-Path $curl)) { throw 'Windows curl.exe is required for source downloads' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $version = (& $AgentExe --version).Trim()
 $product = ([xml](Get-Content (Join-Path $PSScriptRoot 'agent.wxs') -Raw)).Wix.Product
@@ -77,7 +79,11 @@ try {
                         $url = $url.Replace('https://ftpmirror.gnu.org/gnu/', 'https://ftp.gnu.org/gnu/')
                     }
                     Write-Output ('Downloading checked source: ' + $package.Name + '/' + $filename)
-                    Invoke-WebRequest -Uri $url -OutFile $destination
+                    # GitLab can send PowerShell's HTTP client an HTML challenge
+                    # with status 200. Use curl for archive downloads, as vcpkg
+                    # does, and still verify the pinned SHA512 below.
+                    & $curl --disable --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 300 --retry 3 --output $destination --url $url
+                    if ($LASTEXITCODE -ne 0) { throw ('Source download failed: ' + $filename) }
                 }
             }
             if ((Get-FileHash $destination -Algorithm SHA512).Hash -ne $checksum[0].checksumValue) { throw ('Source checksum mismatch: ' + $filename) }
