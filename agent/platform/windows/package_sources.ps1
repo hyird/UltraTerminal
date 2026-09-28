@@ -71,6 +71,12 @@ try {
                 if ((Test-Path $cached) -and (Get-FileHash $cached -Algorithm SHA512).Hash -eq $checksum[0].checksumValue) {
                     Copy-Item $cached $destination
                 } else {
+                    # The GNU mirror selector may redirect HTTPS to an HTTP-only
+                    # mirror. Use the canonical HTTPS origin, never weaken TLS.
+                    if ($url.StartsWith('https://ftpmirror.gnu.org/gnu/')) {
+                        $url = $url.Replace('https://ftpmirror.gnu.org/gnu/', 'https://ftp.gnu.org/gnu/')
+                    }
+                    Write-Output ('Downloading checked source: ' + $package.Name + '/' + $filename)
                     Invoke-WebRequest -Uri $url -OutFile $destination
                 }
             }
