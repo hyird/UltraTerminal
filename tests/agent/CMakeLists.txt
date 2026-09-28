@@ -131,6 +131,11 @@ target_link_libraries(agent-desktop-launch-tests PRIVATE ultraterimal-agent-core
 add_dependencies(agent-desktop-launch-tests ultraterimal-agent)
 add_test(NAME agent.desktop_launch COMMAND agent-desktop-launch-tests "$<TARGET_FILE:ultraterimal-agent>")
 set_tests_properties(agent.desktop_launch PROPERTIES TIMEOUT 20 LABELS "interactive-desktop")
+add_executable(agent-desktop-failure-tests desktop_failure.cpp)
+target_link_libraries(agent-desktop-failure-tests PRIVATE ultraterimal-agent-core)
+add_test(NAME agent.desktop_failure COMMAND agent-desktop-failure-tests)
+set_tests_properties(agent.desktop_failure PROPERTIES LABELS unit)
+
 add_executable(agent-recovery-tests recovery.cpp)
 target_link_libraries(agent-recovery-tests PRIVATE ultraterimal-agent-core)
 add_test(NAME agent.recovery COMMAND agent-recovery-tests)

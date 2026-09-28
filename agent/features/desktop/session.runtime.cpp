@@ -13,6 +13,7 @@
 
 #include "bridge.runtime.h"
 #include "desktop.transport.h"
+#include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/login_broker.transport.h"
@@ -132,6 +133,15 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         } catch (const std::exception& error) {
             if (!self->stopping) {
                 reportDesktopFailure(stage, error.what(), self->session);
+                auto point = desktopFailureStage(stage);
+                if (const auto* fault = dynamic_cast<const DesktopFailure*>(&error); fault && fault->stage() != wire::DesktopFault::STAGE_UNKNOWN) {
+                    point = fault->stage();
+                }
+                self->result.fault.emplace();
+                self->result.fault->set_stage(point);
+                self->result.fault->set_code(desktopFailureCode(std::current_exception(), point));
+                self->result.fault->set_windows_session_id(self->windowsSession);
+                self->result.fault->set_process_id(self->result.processId);
             }
             self->terminalError("desktop_failed", "Desktop session could not continue");
         }
@@ -149,7 +159,8 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                     }
                 }
             });
-            self->result.exitCode = co_await self->resources.child->wait();
+            const auto exitCode = co_await self->resources.child->wait();
+            self->result.recordWorkerExit(exitCode, self->windowsSession);
             self->joined = true;
             self->grace.cancel();
             if (self->result.forcedExit) {
@@ -160,6 +171,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         if (self->stopping && !self->result.forcedExit) {
             self->result.terminal.Clear();
             self->result.terminal.mutable_session_close()->set_reason("cancelled");
+            self->result.fault.reset();
         }
         self->result.terminal.set_protocol_version(protocol::kVersion);
         self->result.terminal.set_session_id(self->session);

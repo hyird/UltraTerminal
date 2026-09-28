@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include "platform/windows/handle.types.h"
+#include "ultraterimal/protocol/desktop_failure.protocol.h"
 namespace ultraterimal::test {
 inline void require(bool condition, const char* reason) {
     if (!condition) {
@@ -15,7 +16,8 @@ class Child {
   public:
     agent::UniqueHandle job, process;
     DWORD id = 0;
-    Child(const std::wstring& executable, const std::wstring& pipe, DWORD session) {
+    DWORD sessionId = 0;
+    Child(const std::wstring& executable, const std::wstring& pipe, DWORD session) : sessionId(session) {
         job.reset(CreateJobObjectW(nullptr, nullptr));
         require(bool(job), "Cannot create desktop worker job");
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -38,7 +40,8 @@ class Child {
     void finish(bool success) {
         require(WaitForSingleObject(process.get(), 5000) == WAIT_OBJECT_0, "Desktop worker did not exit");
         DWORD code = STILL_ACTIVE;
-        require(GetExitCodeProcess(process.get(), &code) != FALSE && code == (success ? 0U : 1U), "Unexpected desktop worker exit status");
+        require(GetExitCodeProcess(process.get(), &code) != FALSE, "Cannot read desktop worker exit status");
+        require(success ? code == 0 : code == 1 || protocol::desktopFailureFromExitCode(code, sessionId, id).has_value(), "Unexpected desktop worker exit status");
     }
 };
 

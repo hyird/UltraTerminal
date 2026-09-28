@@ -14,9 +14,11 @@
 #include <stdexcept>
 #include <utility>
 
+#include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/input.transport.h"
 #include "platform/windows/pipe.transport.h"
+#include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
 #include "video.runtime.h"
 
@@ -299,7 +301,7 @@ class DesktopWorker {
             }
         }
     }
-    asio::awaitable<void> run() {
+    asio::awaitable<std::uint32_t> run() {
         using namespace asio::experimental::awaitable_operators;
         try {
             co_await (write() && read() && watch());
@@ -309,10 +311,8 @@ class DesktopWorker {
                 // with operation_aborted or multiple_exceptions. Preserve and
                 // report the first fault, never a teardown side effect.
                 reportFailure();
-                if (failure_) {
-                    std::rethrow_exception(failure_);
-                }
-                throw;
+                const auto stage = desktopFailureStage(failureStage_);
+                co_return protocol::desktopFailureExitCode(stage, desktopFailureCode(failure_ ? failure_ : std::current_exception(), stage));
             }
         }
         if (releaseFailure_) {
@@ -320,9 +320,10 @@ class DesktopWorker {
                 std::rethrow_exception(releaseFailure_);
             } catch (const std::exception& error) {
                 reportDesktopFailure("input_release", error.what(), session_);
-                throw;
+                co_return protocol::desktopFailureExitCode(wire::DesktopFault::INPUT_RELEASE, desktopFailureCode(releaseFailure_, wire::DesktopFault::INPUT_RELEASE));
             }
         }
+        co_return 0;
     }
 
   private:
@@ -372,7 +373,7 @@ class DesktopWorker {
     bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false;
 };
 } // namespace
-asio::awaitable<void> runDesktopWorker(ruvia::EventLoop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
+asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::EventLoop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
     asio::steady_timer deadline(loop.executor());
     deadline.expires_after(std::chrono::seconds(10));
     deadline.async_wait([&pipe](std::error_code error) { if (!error) { pipe.cancel(); } });
@@ -386,13 +387,13 @@ asio::awaitable<void> runDesktopWorker(ruvia::EventLoop loop, NamedPipeTransport
         }
         DesktopWorker worker(std::move(loop), pipe, windowsSession, *start);
         running = true;
-        co_await worker.run();
+        co_return co_await worker.run();
     } catch (const std::exception& error) {
         deadline.cancel();
         if (!running) {
             reportDesktopFailure("startup", error.what());
         }
-        throw;
+        co_return protocol::desktopFailureExitCode(wire::DesktopFault::WORKER_STARTUP, desktopFailureCode(std::current_exception(), wire::DesktopFault::WORKER_STARTUP));
     }
 }
 } // namespace ultraterimal::agent

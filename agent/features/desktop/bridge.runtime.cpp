@@ -15,6 +15,7 @@
 #include <ruvia/core/BlockingPool.h>
 
 #include "desktop.transport.h"
+#include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/pipe.transport.h"
@@ -69,15 +70,26 @@ class Bridge {
     }
     asio::awaitable<wire::Envelope> run(std::uint32_t windowsSession, std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract) {
         deadline_.expires_after(std::chrono::seconds(10));
-        deadline_.async_wait([this, alive = alive_](std::error_code error) { if (!error && *alive) { stop(); } });
+        deadline_.async_wait([this, alive = alive_](std::error_code error) { if (!error && *alive && waitingForReady_) { startupTimedOut_ = true; stop(); } });
         wire::Envelope start;
         start.mutable_desktop_start()->set_windows_session_id(windowsSession);
         start.mutable_desktop_start()->set_display_index(displayIndex);
         start.mutable_desktop_start()->set_write_control(writeControl);
         start.mutable_desktop_start()->set_desktop_input_contract(desktopInputContract);
-        co_await sendLocal(std::move(start));
-        auto first = co_await receiveLocal();
-        deadline_.cancel();
+        wire::Envelope first;
+        try {
+            co_await sendLocal(std::move(start));
+            first = co_await receiveLocal();
+            waitingForReady_ = false;
+            deadline_.cancel();
+        } catch (...) {
+            waitingForReady_ = false;
+            deadline_.cancel();
+            if (startupTimedOut_) {
+                throw DesktopFailure(wire::DesktopFault::STARTUP_TIMEOUT, "Desktop worker did not produce its first encoded frame before the startup deadline", wire::DesktopFault::WORKER_READY_WAIT);
+            }
+            throw;
+        }
         if (!first.has_desktop_ready()) {
             co_return first;
         }
@@ -86,6 +98,9 @@ class Bridge {
             co_await (upload() && write(control_, false) && write(video_, true) && download() && watch());
         } catch (...) {
             if (!terminal_) {
+                if (failure_) {
+                    throw DesktopFailure(failure_->second, "Desktop bridge operation failed", failure_->first);
+                }
                 throw;
             }
         }
@@ -181,10 +196,12 @@ class Bridge {
             throw;
         }
     }
-    void recordFailure(const char* stage) const noexcept {
-        if (stopped_) {
+    void recordFailure(const char* stage) noexcept {
+        if (stopped_ || failure_) {
             return;
         }
+        const auto point = desktopFailureStage(stage);
+        failure_ = std::pair{point, desktopFailureCode(std::current_exception(), point)};
         try {
             std::rethrow_exception(std::current_exception());
         } catch (const std::exception& error) {
@@ -193,7 +210,8 @@ class Bridge {
             reportDesktopFailure(stage, "Unknown desktop bridge exception", session_);
         }
     }
-    bool stopped_ = false;
+    bool stopped_ = false, startupTimedOut_ = false, waitingForReady_ = true;
+    std::optional<std::pair<wire::DesktopFault::Stage, wire::DesktopFault::Code>> failure_;
     ruvia::EventLoop loop_;
     std::uint32_t windowsSession_;
     ruvia::BlockingPool& systemPool_;

@@ -1,10 +1,11 @@
 #pragma once
 #include <cstdint>
-#include <stdexcept>
+
+#include "desktop_failure.error.h"
 namespace ultraterimal::agent {
-class DesktopChanged : public std::runtime_error {
+class DesktopChanged : public DesktopFailure {
   public:
-    explicit DesktopChanged(const char* message) : std::runtime_error(message) {}
+    explicit DesktopChanged(const char* message, wire::DesktopFault::Code code = wire::DesktopFault::DESKTOP_UNAVAILABLE) : DesktopFailure(code, message) {}
 };
 // Returns this thread's desktop generation. SYSTEM workers follow Default and
 // Winlogon input desktops; ordinary processes remain confined to Default.

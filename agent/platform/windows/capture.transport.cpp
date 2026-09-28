@@ -22,7 +22,7 @@ namespace {
 using Microsoft::WRL::ComPtr;
 void require(HRESULT status, const char* operation) {
     if (status == DXGI_ERROR_ACCESS_LOST || status == DXGI_ERROR_DEVICE_REMOVED || status == DXGI_ERROR_DEVICE_RESET || status == DXGI_ERROR_SESSION_DISCONNECTED) {
-        throw CaptureReset();
+        throw CaptureReset(wire::DesktopFault::CAPTURE_DEVICE_LOST);
     }
     if (FAILED(status)) {
         throw std::system_error(static_cast<int>(status), std::system_category(), operation);
@@ -146,7 +146,7 @@ DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_un
         }
     }
     if (!selected) {
-        throw std::runtime_error("Requested desktop display is unavailable");
+        throw DesktopFailure(wire::DesktopFault::DISPLAY_UNAVAILABLE, "Requested desktop display is unavailable");
     }
     DXGI_OUTPUT_DESC outputDescription{};
     require(selected->GetDesc(&outputDescription), "Get selected desktop bounds");
@@ -159,8 +159,14 @@ DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_un
     // Mode/desktop transitions can temporarily deny duplication or leave the
     // output unsupported/unavailable. Use the owner's bounded recovery budget,
     // not a fatal session error or an unbounded retry inside this worker.
-    if (duplicationStatus == E_ACCESSDENIED || duplicationStatus == DXGI_ERROR_UNSUPPORTED || duplicationStatus == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) {
-        throw CaptureReset();
+    if (duplicationStatus == E_ACCESSDENIED) {
+        throw CaptureReset(wire::DesktopFault::CAPTURE_ACCESS_DENIED);
+    }
+    if (duplicationStatus == DXGI_ERROR_UNSUPPORTED) {
+        throw CaptureReset(wire::DesktopFault::CAPTURE_UNSUPPORTED);
+    }
+    if (duplicationStatus == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) {
+        throw CaptureReset(wire::DesktopFault::CAPTURE_BUSY);
     }
     require(duplicationStatus, "DuplicateOutput (requires an accessible interactive desktop)");
     state_->duplication->GetDesc(&state_->description);

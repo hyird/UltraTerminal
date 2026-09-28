@@ -132,8 +132,11 @@ ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const De
                     connection.updatePending = false;
                 }
                 // Identity comes from authenticated transport, never from uploaded log data.
-                spdlog::info("agent_log device_id={} runtime_id={} event_sequence={} agent_unix_ms={} event={} session_id={} exit_code={} forced_exit={}",
-                             device.id, batch.runtime_id(), entry.sequence(), entry.unix_milliseconds(), wire::AgentLog_Event_Name(entry.event()), entry.session_id(), entry.exit_code(), entry.forced_exit());
+                spdlog::info("agent_log device_id={} runtime_id={} event_sequence={} agent_unix_ms={} event={} session_id={} exit_code={} forced_exit={} fault_stage={} fault_code={} windows_session={} worker_pid={}",
+                             device.id, batch.runtime_id(), entry.sequence(), entry.unix_milliseconds(), wire::AgentLog_Event_Name(entry.event()), entry.session_id(), entry.exit_code(), entry.forced_exit(),
+                             entry.has_desktop_fault() ? wire::DesktopFault_Stage_Name(entry.desktop_fault().stage()) : "none",
+                             entry.has_desktop_fault() ? wire::DesktopFault_Code_Name(entry.desktop_fault().code()) : "none",
+                             entry.desktop_fault().windows_session_id(), entry.desktop_fault().process_id());
             }
             if (batch.dropped()) {
                 spdlog::warn("agent_log_dropped device_id={} runtime_id={} count={}", device.id, batch.runtime_id(), batch.dropped());

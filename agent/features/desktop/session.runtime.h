@@ -3,11 +3,14 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include <ruvia/core/EventLoop.h>
 
 #include "features/connection/connection.config.h"
+#include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::agent {
@@ -16,6 +19,23 @@ struct DesktopSessionResult {
     std::uint32_t processId = 0;
     std::uint32_t exitCode = 0;
     bool forcedExit = false;
+    std::optional<wire::DesktopFault> fault;
+    void recordWorkerExit(std::uint32_t code, std::uint32_t windowsSession) {
+        exitCode = code;
+        auto worker = protocol::desktopFailureFromExitCode(code, windowsSession, processId);
+        // A worker's first fault is authoritative over the resulting pipe loss,
+        // but cannot replace an earlier service timeout or network failure.
+        if (worker && (!fault || fault->stage() == wire::DesktopFault::SESSION_BRIDGE || fault->stage() == wire::DesktopFault::BRIDGE_WORKER_READ || fault->stage() == wire::DesktopFault::WORKER_PIPE_PAIRING)) {
+            fault = std::move(worker);
+        }
+        if (!fault && (code || forcedExit)) {
+            fault.emplace();
+            fault->set_stage(wire::DesktopFault::WORKER_EXIT);
+            fault->set_code(forcedExit ? wire::DesktopFault::EXIT_TIMEOUT : wire::DesktopFault::PROCESS_EXIT);
+            fault->set_windows_session_id(windowsSession);
+            fault->set_process_id(processId);
+        }
+    }
 };
 // One authorized desktop session on one event loop. The control owner supplies
 // the selected Windows session and trusted installed executable. run() pairs

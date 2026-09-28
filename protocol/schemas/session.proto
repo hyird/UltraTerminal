@@ -43,6 +43,61 @@ message Welcome {
   uint32 heartbeat_seconds = 1;
   bool agent_logs = 2;
 }
+// Allowlisted metadata only. No exception text, paths, credentials or screen data.
+message DesktopFault {
+  enum Stage {
+    STAGE_UNKNOWN = 0;
+    WORKER_STARTUP = 1;
+    VIDEO_START = 2;
+    CAPTURE_ENCODE = 3;
+    DISPLAY_RESIZE = 4;
+    INPUT_BINDING = 5;
+    INPUT_RELEASE = 6;
+    INPUT_APPLY = 7;
+    INPUT_VALIDATION = 8;
+    INPUT_IPC_READ = 9;
+    CONTROL_IPC_WRITE = 10;
+    VIDEO_IPC_WRITE = 11;
+    LIVENESS = 12;
+    NATIVE_PAIRING = 13;
+    WORKER_LAUNCH = 14;
+    WORKER_PIPE_PAIRING = 15;
+    LOGIN_BROKER = 16;
+    SESSION_BRIDGE = 17;
+    WORKER_READY_WAIT = 18;
+    WORKER_EXIT = 19;
+    BRIDGE_WORKER_READ = 20;
+    BRIDGE_CONTROL_SEND = 21;
+    BRIDGE_VIDEO_SEND = 22;
+    BRIDGE_INPUT_RECEIVE = 23;
+    BRIDGE_VIDEO_RECEIVE = 24;
+  }
+  enum Code {
+    CODE_UNKNOWN = 0;
+    DISPLAY_UNAVAILABLE = 1;
+    DESKTOP_UNAVAILABLE = 2;
+    CAPTURE_RESET = 3;
+    CAPTURE_ACCESS_DENIED = 4;
+    CAPTURE_UNSUPPORTED = 5;
+    CAPTURE_DEVICE_LOST = 6;
+    CAPTURE_BUSY = 7;
+    INVALID_GEOMETRY = 8;
+    ENCODE_FAILED = 9;
+    INPUT_FAILED = 10;
+    IPC_FAILED = 11;
+    STARTUP_TIMEOUT = 12;
+    LIVENESS_TIMEOUT = 13;
+    EXIT_TIMEOUT = 14;
+    PROTOCOL_REJECTED = 15;
+    SYSTEM_FAILURE = 16;
+    INTERNAL_FAILURE = 17;
+    PROCESS_EXIT = 18;
+  }
+  Stage stage = 1;
+  Code code = 2;
+  uint32 windows_session_id = 3;
+  uint32 process_id = 4;
+}
 // Fixed events only: never transport credentials, exception strings or screen data.
 message AgentLog {
   enum Event {
@@ -67,6 +122,7 @@ message AgentLog {
   string session_id = 4;
   uint32 exit_code = 5;
   bool forced_exit = 6;
+  DesktopFault desktop_fault = 7;
 }
 message AgentLogBatch {
   string runtime_id = 1;

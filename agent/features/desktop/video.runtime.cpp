@@ -62,11 +62,11 @@ struct VideoWorker {
             const bool readyToEncode = retained && allowEncode &&
                                        (refresh || (pixelsPending && std::chrono::steady_clock::now() >= encodeAt));
             pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode ? 0 : 8), retained ? &retained->bgra : nullptr);
-        } catch (const DesktopChanged&) {
+        } catch (const DesktopChanged& error) {
             // Never refresh from a snapshot belonging to the lost desktop.
             discard();
             if (!recovery.restart(std::chrono::steady_clock::now())) {
-                throw std::runtime_error("Desktop capture recovery budget exhausted");
+                throw DesktopFailure(error.code(), "Desktop capture recovery budget exhausted");
             }
             return std::nullopt;
         }
@@ -89,7 +89,7 @@ struct VideoWorker {
         // Fail closed instead of transmitting a rotated or incorrectly cropped
         // desktop. The caller must recreate a supported capture source.
         if (source.rotation != 1 || source.width % 2 || source.height % 2) {
-            throw std::runtime_error("Desktop orientation or dimensions require capture reconfiguration");
+            throw DesktopFailure(wire::DesktopFault::INVALID_GEOMETRY, "Desktop orientation or dimensions require capture reconfiguration");
         }
         DesktopVideoUpdate update;
         update.desktopLeft = source.desktopLeft;
@@ -127,10 +127,10 @@ struct VideoWorker {
                 }
                 return std::nullopt;
             }
-            throw std::runtime_error("Desktop video encoding failed");
+            throw DesktopFailure(wire::DesktopFault::ENCODE_FAILED, "Desktop video encoding failed");
         }
         if ((refresh || configurationPending) && !encoded->keyFrame) {
-            throw std::runtime_error("Desktop refresh did not produce a key frame");
+            throw DesktopFailure(wire::DesktopFault::ENCODE_FAILED, "Desktop refresh did not produce a key frame");
         }
         if (encoded->baselineReset) {
             if (!encoded->keyFrame || generation == std::numeric_limits<std::uint64_t>::max()) {

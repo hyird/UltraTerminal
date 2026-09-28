@@ -5,6 +5,7 @@
 
 #include <google/protobuf/io/coded_stream.h>
 
+#include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 
 namespace ultraterimal::protocol {
@@ -140,6 +141,9 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         for (const auto& entry : batch.entries()) {
             if (entry.sequence() <= previous || !entry.unix_milliseconds() || !wire::AgentLog_Event_IsValid(entry.event()) || entry.event() == wire::AgentLog::UNSPECIFIED ||
                 (!entry.session_id().empty() && !identifier(entry.session_id()))) {
+                return invalid();
+            }
+            if (entry.has_desktop_fault() && (entry.event() != wire::AgentLog::DESKTOP_FAILED || entry.session_id().empty() || !validDesktopFault(entry.desktop_fault()))) {
                 return invalid();
             }
             previous = entry.sequence();

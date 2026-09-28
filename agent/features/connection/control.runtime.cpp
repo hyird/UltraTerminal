@@ -134,9 +134,9 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         }
     }
 
-    void log(wire::AgentLog::Event event, std::string sessionId = {}, std::uint32_t exitCode = 0, bool forcedExit = false) {
+    void log(wire::AgentLog::Event event, std::string sessionId = {}, std::uint32_t exitCode = 0, bool forcedExit = false, const wire::DesktopFault* fault = nullptr) {
         const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        logs.append(event, static_cast<std::uint64_t>(now), std::move(sessionId), exitCode, forcedExit);
+        logs.append(event, static_cast<std::uint64_t>(now), std::move(sessionId), exitCode, forcedExit, fault);
     }
     void connectionFailure(wire::AgentLog::Event event) {
         if (!stopping && !connectionFailureLogged) {
@@ -364,7 +364,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 self->sessions.erase(id);
                 ++self->statistics.completedSessions;
                 self->sessionsDone.cancel();
-                self->log(failure || result.terminal.has_session_error() ? wire::AgentLog::DESKTOP_FAILED : wire::AgentLog::DESKTOP_ENDED, id, result.exitCode, result.forcedExit);
+                self->log(failure || result.terminal.has_session_error() ? wire::AgentLog::DESKTOP_FAILED : wire::AgentLog::DESKTOP_ENDED, id, result.exitCode, result.forcedExit, result.fault ? &*result.fault : nullptr);
                 if (!self->ended) {
                     try {
                         if (failure) {

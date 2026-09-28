@@ -18,6 +18,7 @@
 
 #include "desktop_process.fixture.h"
 #include "platform/windows/pipe.transport.h"
+#include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
 
 namespace {
@@ -40,6 +41,7 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     co_await pipe.accept(child.id, session);
     auto start = message(1);
     start.mutable_desktop_start()->set_windows_session_id(mode == "binding" ? session + 1 : session);
+    start.mutable_desktop_start()->set_display_index(mode == "display_unavailable" ? 63 : 0);
     start.mutable_desktop_start()->set_write_control(mode == "writable" || mode == "probe_delayed_recover");
     start.mutable_desktop_start()->set_desktop_input_contract(start.desktop_start().write_control() ? 2 : 0);
     co_await send(pipe, start);
@@ -164,6 +166,9 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     if (mode == "binding") {
         require(!ready, "Worker accepted wrong Windows session");
     }
+    if (mode == "display_unavailable") {
+        require(!ready && !firstFrame && closed, "Unavailable display unexpectedly produced a frame");
+    }
     if (mode == "readonly_input") {
         require(firstFrame && closed, "Readonly input was not rejected");
     }
@@ -203,7 +208,7 @@ void requireFailureEvent(DWORD process, const wchar_t* expected) {
     for (unsigned batch = 0; batch < 32; ++batch) {
         DWORD bytes = 0, needed = 0;
         if (!ReadEventLogW(log.handle, EVENTLOG_BACKWARDS_READ | EVENTLOG_SEQUENTIAL_READ, 0,
-                          buffer.data(), static_cast<DWORD>(buffer.size()), &bytes, &needed)) {
+                           buffer.data(), static_cast<DWORD>(buffer.size()), &bytes, &needed)) {
             break;
         }
         for (DWORD offset = 0; offset < bytes;) {
@@ -256,6 +261,14 @@ void run(const std::wstring& executable, const std::string& mode) {
     }
     require(!timedOut, "Desktop worker timed out");
     child.finish(mode == "normal" || mode == "writable" || mode == "probe_echo" || mode == "probe_recover" || mode == "probe_delayed_recover");
+    if (mode == "display_unavailable" || mode == "readonly_input" || mode == "probe_replay") {
+        DWORD exitCode = 0;
+        require(GetExitCodeProcess(child.process.get(), &exitCode) != FALSE, "Cannot read worker diagnostic exit status");
+        const auto fault = protocol::desktopFailureFromExitCode(exitCode, session, child.id);
+        require(fault && fault->windows_session_id() == session && fault->process_id() == child.id, "Worker fault was lost after IPC closed");
+        require(fault->stage() == (mode == "display_unavailable" ? wire::DesktopFault::CAPTURE_ENCODE : wire::DesktopFault::INPUT_VALIDATION), "Worker fault stage was replaced during cancellation");
+        require(fault->code() == (mode == "display_unavailable" ? wire::DesktopFault::DISPLAY_UNAVAILABLE : wire::DesktopFault::PROTOCOL_REJECTED), "Worker fault code was replaced during cancellation");
+    }
     if (mode == "readonly_input") {
         requireFailureEvent(child.id, L"Desktop command violates IPC contract");
     } else if (mode == "probe_replay") {
@@ -271,7 +284,7 @@ int wmain(int argc, wchar_t** argv) {
     std::string currentMode;
     try {
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
-        for (const std::string mode : {"normal", "binding", "readonly_input", "disconnect", "writable", "process_session", "probe_echo", "probe_recover", "probe_delayed_recover", "probe_timeout", "probe_replay"}) {
+        for (const std::string mode : {"normal", "binding", "display_unavailable", "readonly_input", "disconnect", "writable", "process_session", "probe_echo", "probe_recover", "probe_delayed_recover", "probe_timeout", "probe_replay"}) {
             if (argc == 3 && std::wstring(mode.begin(), mode.end()) != argv[2]) {
                 continue;
             }

@@ -71,8 +71,10 @@ int wmain(int argc, wchar_t** argv) {
             auto attachment = ruvia::attachEventLoop(io);
             auto pipe = NamedPipeTransport::connect(io.get_executor(), options->pipeName, options->parentProcess);
             std::exception_ptr failure;
-            asio::co_spawn(io, runDesktopWorker(attachment.loop(), *pipe, options->windowsSession), [&](std::exception_ptr error) {
+            std::uint32_t exitCode = 1;
+            asio::co_spawn(io, runDesktopWorker(attachment.loop(), *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
                 failure = error;
+                exitCode = result;
                 pipe->cancel();
                 attachment.stop();
             });
@@ -80,7 +82,7 @@ int wmain(int argc, wchar_t** argv) {
             if (failure) {
                 std::rethrow_exception(failure);
             }
-            break;
+            return static_cast<int>(exitCode);
         }
         case Command::kEnroll: {
             const auto config = loadEnrollmentConfig(options->configPath);

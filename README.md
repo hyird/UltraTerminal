@@ -186,6 +186,8 @@ ctest --preset linux-server-release -L unit --no-tests=error
 node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-software-video-tests.exe build/video-fixtures "<browser.exe>"
 ```
 
+Agent 1.0.14 起，网关 `agent_log event=DESKTOP_FAILED` 同时记录 `fault_stage`、`fault_code`、`windows_session`、`worker_pid`。例如 `CAPTURE_ENCODE / DISPLAY_UNAVAILABLE` 表示目标桌面没有可采集输出，`WORKER_READY_WAIT / STARTUP_TIMEOUT` 表示工作进程未在启动期限内产生首帧。结合 `device_id`、`session_id` 和 `runtime_id/event_sequence` 关联，不再把后续管道关闭作为采集根因；旧 Agent 无详情时显示 `none`。详情只含固定枚举与数字，不上传本机异常原文。先升级网关再升级 Agent；无需数据库迁移或前端升级。
+
 诊断、测试输出与截图仅写入 `build/`。编译、协议测试及浏览器模拟测试均不能替代真实 Windows 服务、登录界面、锁屏和 UAC 桌面验证。
 
 `agent-hardware-video-probe` 动态加载系统 Media Foundation，枚举 NV12 输入的 H.264/H.265 硬件编码器并尝试创建实例，输出启动、枚举和创建的 HRESULT。缺少媒体组件时报告不可用；该探测不加入 Agent 启动依赖。H.264 还会协商 NV12 输入、通过异步事件仅送入一张 1280×720 测试帧，不追加下一帧也不排空编码器，再由 OpenH264 独立解码并检查尺寸和亮度/色度采样点。使用 H.264 Baseline 避免 B 帧重排，记录首次送帧到独立解码耗时；此项不是稳态编码吞吐测试。异步事件通过带超时的事件等待接收，不轮询；单候选等待输出最长 5 秒，并单独验证空闲超时与关闭后的拒绝路径。`h264_frame_checks` 记录此项结果；`agent_hardware_path_implemented: false` 表示该诊断尚未接入 Agent，不能作为平台能力声明或完整硬编验收依据。

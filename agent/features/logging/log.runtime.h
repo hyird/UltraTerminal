@@ -13,7 +13,7 @@ namespace ultraterimal::agent {
 class AgentLogBuffer {
   public:
     explicit AgentLogBuffer(std::string runtimeId) { batch_.set_runtime_id(std::move(runtimeId)); }
-    void append(wire::AgentLog::Event event, std::uint64_t timestamp, std::string sessionId = {}, std::uint32_t exitCode = 0, bool forcedExit = false) {
+    void append(wire::AgentLog::Event event, std::uint64_t timestamp, std::string sessionId = {}, std::uint32_t exitCode = 0, bool forcedExit = false, const wire::DesktopFault* fault = nullptr) {
         if (pending_.size() >= kCapacity) {
             pending_.pop_front();
             ++dropped_;
@@ -25,6 +25,9 @@ class AgentLogBuffer {
         entry.set_session_id(std::move(sessionId));
         entry.set_exit_code(exitCode);
         entry.set_forced_exit(forcedExit);
+        if (fault && event == wire::AgentLog::DESKTOP_FAILED) {
+            *entry.mutable_desktop_fault() = *fault;
+        }
         pending_.push_back(std::move(entry));
     }
     const wire::AgentLogBatch* next() {

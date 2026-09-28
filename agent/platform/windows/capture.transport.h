@@ -12,7 +12,7 @@ namespace ultraterimal::agent {
 // references and cursor state before creating a new capture instance.
 class CaptureReset : public DesktopChanged {
   public:
-    CaptureReset() : DesktopChanged("Desktop capture requires recreation") {}
+    explicit CaptureReset(wire::DesktopFault::Code code = wire::DesktopFault::CAPTURE_RESET) : DesktopChanged("Desktop capture requires recreation", code) {}
 };
 struct CapturedFrame {
     std::uint32_t width = 0, height = 0;
