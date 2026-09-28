@@ -20,6 +20,26 @@ struct DesktopSessionResult {
     std::uint32_t exitCode = 0;
     bool forcedExit = false;
     std::optional<wire::DesktopFault> fault;
+    bool hasIndependentFailure() const {
+        if (!fault) {
+            return false;
+        }
+        using Fault = wire::DesktopFault;
+        // These failures are not consequences of closing network/IPC channels.
+        // A later server stop must not erase the fault that caused that stop.
+        return fault->code() == Fault::STARTUP_TIMEOUT || fault->code() == Fault::PROTOCOL_REJECTED ||
+               fault->stage() == Fault::CAPTURE_ENCODE || fault->stage() == Fault::DISPLAY_RESIZE ||
+               fault->stage() == Fault::INPUT_BINDING || fault->stage() == Fault::INPUT_RELEASE ||
+               fault->stage() == Fault::INPUT_APPLY || fault->stage() == Fault::INPUT_VALIDATION ||
+               fault->stage() == Fault::LIVENESS;
+    }
+    void applyCancellation() {
+        if (!forcedExit && !hasIndependentFailure()) {
+            terminal.Clear();
+            terminal.mutable_session_close()->set_reason("cancelled");
+            fault.reset();
+        }
+    }
     void recordWorkerExit(std::uint32_t code, std::uint32_t windowsSession) {
         exitCode = code;
         auto worker = protocol::desktopFailureFromExitCode(code, windowsSession, processId);

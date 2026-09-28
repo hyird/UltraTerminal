@@ -34,7 +34,7 @@ class DesktopWorker {
           outgoing_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kDesktop}),
           session_(start.session_id()), writeControl_(start.desktop_start().write_control()) {
         if (!incoming_.accept(start)) {
-            throw std::runtime_error("Desktop startup binding rejected");
+            throw DesktopFailure(wire::DesktopFault::PROTOCOL_REJECTED, "Desktop startup binding rejected");
         }
     }
     ~DesktopWorker() { stop(); }
@@ -306,7 +306,7 @@ class DesktopWorker {
         try {
             co_await (write() && read() && watch());
         } catch (...) {
-            if (!requestedClose_) {
+            if (failure_ || !requestedClose_) {
                 // Parallel coroutine cancellation can mask the original error
                 // with operation_aborted or multiple_exceptions. Preserve and
                 // report the first fault, never a teardown side effect.
@@ -383,7 +383,7 @@ asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::EventLoop loop, NamedPipe
         deadline.cancel();
         auto start = protocol::decodeMessage(first);
         if (!start || !start->has_desktop_start()) {
-            throw std::runtime_error("Desktop IPC requires a startup message");
+            throw DesktopFailure(wire::DesktopFault::PROTOCOL_REJECTED, "Desktop IPC requires a startup message");
         }
         DesktopWorker worker(std::move(loop), pipe, windowsSession, *start);
         running = true;

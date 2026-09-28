@@ -45,15 +45,30 @@ int main() {
         result.fault->set_code(Fault::IPC_FAILED);
         result.recordWorkerExit(captureExit, 7);
         require(result.fault && result.fault->stage() == Fault::CAPTURE_ENCODE && result.fault->code() == Fault::DISPLAY_UNAVAILABLE, "Secondary pipe failure hid the first worker fault");
+        result.terminal.mutable_session_error()->set_code("desktop_failed");
+        result.applyCancellation();
+        require(result.fault && result.terminal.has_session_error(), "Server stop erased the capture failure that caused channel closure");
+        result.recordWorkerExit(protocol::desktopFailureExitCode(Fault::INPUT_VALIDATION, Fault::PROTOCOL_REJECTED), 7);
+        // Simulate the actual end-to-end race: the gateway sees a closed native
+        // channel and sends stop before the service has joined its failed child.
+        result.fault.reset();
+        result.recordWorkerExit(protocol::desktopFailureExitCode(Fault::INPUT_VALIDATION, Fault::PROTOCOL_REJECTED), 7);
+        result.applyCancellation();
+        require(result.fault && result.fault->code() == Fault::PROTOCOL_REJECTED && result.terminal.has_session_error(), "Late stop masked a real worker protocol failure");
         result.fault->set_stage(Fault::WORKER_READY_WAIT);
         result.fault->set_code(Fault::STARTUP_TIMEOUT);
         result.recordWorkerExit(protocol::desktopFailureExitCode(Fault::INPUT_IPC_READ, Fault::IPC_FAILED), 7);
         require(result.fault->code() == Fault::STARTUP_TIMEOUT, "Worker cancellation hid the service deadline");
+        result.applyCancellation();
+        require(result.fault && result.terminal.has_session_error(), "Late stop erased first-frame timeout");
         result.fault->set_stage(Fault::BRIDGE_INPUT_RECEIVE);
         result.fault->set_code(Fault::SYSTEM_FAILURE);
         result.recordWorkerExit(captureExit, 7);
         require(result.fault->stage() == Fault::BRIDGE_INPUT_RECEIVE, "Earlier network fault was overwritten");
         result.fault.reset();
+        result.recordWorkerExit(protocol::desktopFailureExitCode(Fault::INPUT_IPC_READ, Fault::IPC_FAILED), 7);
+        result.applyCancellation();
+        require(!result.fault && result.terminal.has_session_close(), "Expected IPC cancellation became a false desktop failure");
         result.forcedExit = true;
         result.recordWorkerExit(1, 7);
         require(result.fault->code() == Fault::EXIT_TIMEOUT, "Forced exit lost its bounded termination cause");

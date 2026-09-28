@@ -76,10 +76,32 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         result.terminal.mutable_session_error()->set_code(code);
         result.terminal.mutable_session_error()->set_message(message);
     }
+    void rememberFailure(const char* stage, std::exception_ptr failure) {
+        if (stopping || result.fault) {
+            return;
+        }
+        auto point = desktopFailureStage(stage);
+        try {
+            std::rethrow_exception(failure);
+        } catch (const DesktopFailure& error) {
+            if (error.stage() != wire::DesktopFault::STAGE_UNKNOWN) {
+                point = error.stage();
+            }
+        } catch (...) {
+        }
+        result.fault.emplace();
+        result.fault->set_stage(point);
+        result.fault->set_code(desktopFailureCode(failure, point));
+        result.fault->set_windows_session_id(windowsSession);
+        result.fault->set_process_id(result.processId);
+    }
     asio::awaitable<void> bridge() {
         try {
             result.terminal = co_await bridgeDesktop(loop, systemPool, remote, *resources.pipe, session, windowsSession, 0, writeControl, desktopInputContract);
         } catch (...) {
+            // Preserve the typed bridge cause before parallel login cancellation
+            // can wrap it in asio::multiple_exceptions.
+            rememberFailure("session_bridge", std::current_exception());
             if (login) {
                 login->stop();
             }
@@ -133,15 +155,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         } catch (const std::exception& error) {
             if (!self->stopping) {
                 reportDesktopFailure(stage, error.what(), self->session);
-                auto point = desktopFailureStage(stage);
-                if (const auto* fault = dynamic_cast<const DesktopFailure*>(&error); fault && fault->stage() != wire::DesktopFault::STAGE_UNKNOWN) {
-                    point = fault->stage();
-                }
-                self->result.fault.emplace();
-                self->result.fault->set_stage(point);
-                self->result.fault->set_code(desktopFailureCode(std::current_exception(), point));
-                self->result.fault->set_windows_session_id(self->windowsSession);
-                self->result.fault->set_process_id(self->result.processId);
+                self->rememberFailure(stage, std::current_exception());
             }
             self->terminalError("desktop_failed", "Desktop session could not continue");
         }
@@ -168,10 +182,8 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
             }
         }
         self->resources = {};
-        if (self->stopping && !self->result.forcedExit) {
-            self->result.terminal.Clear();
-            self->result.terminal.mutable_session_close()->set_reason("cancelled");
-            self->result.fault.reset();
+        if (self->stopping) {
+            self->result.applyCancellation();
         }
         self->result.terminal.set_protocol_version(protocol::kVersion);
         self->result.terminal.set_session_id(self->session);
