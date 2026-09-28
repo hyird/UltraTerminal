@@ -28,7 +28,7 @@
 Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 ```
 
-网关负责用户认证、设备权限、连接配对和会话转发。首版单网关运行，管理 API、浏览器 Web 入口和 Agent 原生入口位于同一进程；Web 入口使用 Ruvia 的 HTTP、WebSocket、路由与中间件能力，以 HTTP/WS 监听并由边缘代理终止 TLS。浏览器到 Cloudflare 等边缘优先使用 HTTP/3，客户端按 TLS/ALPN 协商不支持时回退 HTTP/2、HTTP/1.1；这不是 Ruvia listener 的 HTTP/3 支持或自动回退。WebSocket 回源固定使用 HTTP/1.1 Upgrade；本架构不在网关增加 TLS/HTTP/3 listener，也不宣称 HTTP/3 支持 WebSocket。
+网关负责用户认证、设备权限、连接配对和会话转发。首版单网关运行，管理 API、浏览器 Web 入口和 Agent 原生入口位于同一进程；Web 入口使用 Ruvia 的 HTTP、WebSocket、路由与中间件能力，以 HTTP/WS 监听并由边缘代理终止 TLS。浏览器到 Cloudflare 等边缘优先使用 HTTP/3，HTTP/3 协商失败或不可用时，浏览器与边缘通过 TCP/TLS ALPN 协商 HTTP/2 或 HTTP/1.1；这不是 Ruvia listener 的 HTTP/3 支持或自动回退。WebSocket 回源固定使用 HTTP/1.1 Upgrade；本架构不在网关增加 TLS/HTTP/3 listener，也不宣称 HTTP/3 支持 WebSocket。
 
 ### 技术栈
 

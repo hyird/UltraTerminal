@@ -89,7 +89,7 @@ npm run format:check --prefix web
 
 `gateway --migrate <config.json>` 执行版本化迁移。`gateway --bootstrap <config.json>` 从标准输入读取 `username`、`password` JSON，仅用于创建首个用户；密码至少 12 字节，不放入命令行。`gateway --serve <config.json>` 启动 Web 与原生入口。同一数据库只运行一个网关，数据库锁失效时停止服务。
 
-网关 Web 入口仅提供 HTTP/WS，由 Cloudflare 或 Nginx 等外部边缘代理终止 HTTPS/WSS；不在 Ruvia 网关内启用 TLS 或 HTTP/3 listener。浏览器访问边缘的 HTTPS 优先协商 HTTP/3（QUIC），客户端或网络不支持时由边缘按 TLS/ALPN 协商回退 HTTP/2，再回退 HTTP/1.1。该协商发生在浏览器与边缘之间，不表示 Ruvia 提供 HTTP/3 或自动进行协议回退。WebSocket 回源保持 HTTP/1.1 Upgrade；HTTP/3 不承载此处使用的 WebSocket。`origin` 配置外部 HTTPS 地址，登录 Cookie 保持 `Secure`、`HttpOnly` 和 `SameSite`，Origin 校验保持启用。反向代理需支持 WebSocket Upgrade、二进制消息及长连接，API 和会话响应禁止缓存。HTTP 上游只绑定回环地址或受控内网，跨主机部署时由网络规则限制为反向代理可达。
+网关 Web 入口仅提供 HTTP/WS，由 Cloudflare 或 Nginx 等外部边缘代理终止 HTTPS/WSS；不在 Ruvia 网关内启用 TLS 或 HTTP/3 listener。浏览器访问边缘的 HTTPS 优先协商 HTTP/3（QUIC），客户端协商 HTTP/3 失败或不可用时，浏览器与边缘通过 TCP/TLS ALPN 协商 HTTP/2 或 HTTP/1.1。该协商发生在浏览器与边缘之间，不表示 Ruvia 提供 HTTP/3 或自动进行协议回退。WebSocket 回源保持 HTTP/1.1 Upgrade；HTTP/3 不承载此处使用的 WebSocket。`origin` 配置外部 HTTPS 地址，登录 Cookie 保持 `Secure`、`HttpOnly` 和 `SameSite`，Origin 校验保持启用。反向代理需支持 WebSocket Upgrade、二进制消息及长连接，API 和会话响应禁止缓存。HTTP 上游只绑定回环地址或受控内网，跨主机部署时由网络规则限制为反向代理可达。
 
 旧配置迁移：删除 `certificate_file`、`key_file`，设置 `address` 和 HTTP `port`，同时将反向代理上游改为 `http://`。旧 Web 证书字段不再接受。升级或回滚必须同时切换网关二进制、配置和代理上游协议。
 

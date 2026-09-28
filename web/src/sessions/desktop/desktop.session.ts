@@ -1,5 +1,6 @@
 import { ultraterimal } from "../../generated/session";
-import type { DesktopTicket } from "./desktop.types";
+import type { DesktopTicket, DesktopPerformance } from "./desktop.types";
+import { DesktopQualityPolicy, type DesktopQuality } from "./quality.session";
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
@@ -55,6 +56,12 @@ export class DesktopSession {
   private lastProbeNonce = 0;
   private lastAcceptedResponseNonce = 0;
   private resizeDeadline: ReturnType<typeof setTimeout> | undefined;
+  private quality = new DesktopQualityPolicy();
+  private startedAt = performance.now();
+  private firstFrameMilliseconds: number | null = null;
+  private displayedCount = 0;
+  private decodeTotal = 0;
+  private codec = "";
   private videoBytes = 0;
   private bitrateSince = 0;
   private bitrateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -64,11 +71,12 @@ export class DesktopSession {
     private canvas: HTMLCanvasElement,
     private overlay: HTMLCanvasElement,
     private status: (message: string) => void,
-    private ended: () => void,
+    private ended: (hadFrame: boolean) => void,
     private displayModes: (
       modes: { width: number; height: number }[],
     ) => void = () => {},
     private bitrate: (bitsPerSecond: number) => void = () => {},
+    private performanceSample: (sample: DesktopPerformance) => void = () => {},
   ) {
     const context = canvas.getContext("2d", { alpha: false });
     const cursorContext = overlay.getContext("2d");
@@ -87,7 +95,7 @@ export class DesktopSession {
       this.observePixelRatio();
       const viewport = canvas.closest(".desktop-viewport");
       if (viewport) this.viewportResize.observe(viewport);
-      this.deadline = setTimeout(() => this.fail("桌面连接超时"), 60000);
+      this.deadline = setTimeout(() => this.fail("桌面首帧超时"), 60000);
       document.addEventListener(
         "visibilitychange",
         () => this.reportDisplay(),
@@ -189,6 +197,11 @@ export class DesktopSession {
           : "",
     );
   }
+  setQuality(mode: DesktopQuality): void {
+    if (this.stopped) return;
+    this.quality.setMode(mode);
+    this.reportDisplay();
+  }
   resize(width: number, height: number): void {
     const channel = this.channels.find(
       (entry) => entry.purpose === 2 && entry.ready,
@@ -249,7 +262,12 @@ export class DesktopSession {
           decodeMicroseconds: this.decodeMicroseconds,
           queueDepth: this.pending.size,
           background: document.hidden || !this.visible,
-          preference: wire.QualityFeedback.Preference.SHARP,
+          preference:
+            this.quality.preference === "sharp"
+              ? wire.QualityFeedback.Preference.SHARP
+              : this.quality.preference === "smooth"
+                ? wire.QualityFeedback.Preference.SMOOTH
+                : wire.QualityFeedback.Preference.BALANCED,
         },
       });
   }
@@ -274,6 +292,8 @@ export class DesktopSession {
       )
         throw new Error("Desktop not ready");
       channel.ready = true;
+      if (!this.displayedFrame)
+        this.status("通道已配对，等待远端采集与视频首帧…");
       if (channel.purpose === 2) {
         // The video socket may display a frame before this input socket pairs.
         // Never advertise writable input while its ordered channel is absent.
@@ -503,6 +523,10 @@ export class DesktopSession {
               1000000,
               Math.round((performance.now() - pending.started) * 1000),
             );
+            this.firstFrameMilliseconds ??= performance.now() - this.startedAt;
+            this.displayedCount++;
+            this.decodeTotal += this.decodeMicroseconds / 1000;
+            this.recordVideoBytes(0);
             this.reportDisplay();
           } catch {
             this.fail("桌面显示异常");
@@ -511,6 +535,8 @@ export class DesktopSession {
           }
         },
       });
+      this.codec = video.codec;
+      this.status("已收到视频配置，等待解码首帧…");
       this.decoder.configure(configuration);
       return;
     }
@@ -568,10 +594,35 @@ export class DesktopSession {
     const now = performance.now();
     const bytes = this.videoBytes;
     this.videoBytes = 0;
-    this.bitrate((bytes * 8000) / Math.max(1, now - this.bitrateSince));
+    const elapsed = Math.max(1, now - this.bitrateSince);
+    const frames = this.displayedCount;
+    const decodeMilliseconds = frames ? this.decodeTotal / frames : null;
+    const previousQuality = this.quality.preference;
+    this.quality.sample(frames, decodeMilliseconds ?? 0, this.pending.size);
+    if (previousQuality !== this.quality.preference) this.reportDisplay();
+    this.bitrate((bytes * 8000) / elapsed);
+    this.performanceSample({
+      framesPerSecond: (frames * 1000) / elapsed,
+      decodeMilliseconds,
+      pendingFrames: this.pending.size,
+      bufferedBytes: this.channels.reduce(
+        (sum, channel) => sum + channel.socket.bufferedAmount,
+        0,
+      ),
+      receivedQueueBytes: this.channels.reduce(
+        (sum, channel) => sum + channel.bytes,
+        0,
+      ),
+      firstFrameMilliseconds: this.firstFrameMilliseconds,
+      width: this.canvas.width,
+      height: this.canvas.height,
+      codec: this.codec,
+      quality: this.quality.preference,
+    });
+    this.displayedCount = this.decodeTotal = 0;
     this.bitrateSince = now;
-    // Publish one zero sample after traffic stops, then remain idle.
-    if (bytes)
+    // Publish one zero sample after traffic/display stops, then remain idle.
+    if (bytes || frames)
       this.bitrateTimer = setTimeout(() => this.publishBitrate(), 1000);
   }
   private sizeDesktop(): void {
@@ -702,9 +753,17 @@ export class DesktopSession {
         queuedBytes: channel.bytes,
       })),
     });
+    const hadFrame = this.firstFrameMilliseconds !== null;
+    const phase = hadFrame
+      ? ""
+      : !this.channels.every((channel) => channel.ready)
+        ? "（通道配对阶段）"
+        : !this.decoder
+          ? "（远端首帧生成阶段）"
+          : "（首帧接收/解码阶段）";
     this.stop();
-    this.status(message);
-    this.ended();
+    this.status(message + phase);
+    this.ended(hadFrame);
   }
   stop(): void {
     if (this.stopped || this.stopping) return;
