@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
         const auto native = std::make_shared<NativeServer>(config);
         auto& app = ruvia::app();
         if (!config.webRoot.empty()) {
-            app.documentRoot({.root = config.webRoot, .staticOptions = {.cacheControl = "no-cache", .indexFile = "index.html", .fileTypes = {.kind = ruvia::StaticFileTypePolicy::Kind::kOnly, .extensions = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi"}}}, .precompressGzip = true});
+            app.documentRoot({.root = config.webRoot, .staticOptions = {.cacheControl = "no-cache", .indexFile = "index.html", .fileTypes = {.kind = ruvia::StaticFileTypePolicy::Kind::kOnly, .extensions = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi", "gz"}}}, .precompressGzip = true});
         }
         app.listen({.address = config.address, .http = config.port})
             .server({.workerCount = 1, .processSignalHandlers = ruvia::ProcessSignalHandlerPolicy::kInstall, .idleTimeout = std::chrono::seconds(45), .requestHeaderTimeout = std::chrono::seconds(10), .requestBodyTimeout = std::chrono::seconds(10), .writeTimeout = std::chrono::seconds(10), .maxConnectionsPerWorker = 512, .maxBufferedBodyBytes = 65536, .maxWebSocketMessageBytes = ultraterimal::protocol::kMaximumMessageBytes})
