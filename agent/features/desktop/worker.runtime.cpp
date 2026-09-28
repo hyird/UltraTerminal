@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/input.transport.h"
 #include "platform/windows/pipe.transport.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
@@ -66,8 +67,10 @@ class DesktopWorker {
         co_await pipe_.send(std::move(*bytes));
     }
     asio::awaitable<void> write() {
+        const char* stage = "video_start";
         try {
             while (!stopped_) {
+                stage = "control_ipc_write";
                 if (secureAttention_) {
                     auto request = std::exchange(secureAttention_, std::nullopt);
                     if (request->generation() == inputGeneration_ && !resizing_) {
@@ -93,9 +96,11 @@ class DesktopWorker {
                 if (resize_) {
                     const auto request = std::exchange(resize_, std::nullopt);
                     resizing_ = true;
+                    stage = "input_release";
                     if (input_) {
                         input_->releaseAll();
                     }
+                    stage = "display_resize";
                     const bool applied = co_await video_.resize(request->width(), request->height());
                     if (stopped_) {
                         break;
@@ -105,6 +110,7 @@ class DesktopWorker {
                         refresh_ = true;
                     }
                     resizing_ = false;
+                    stage = "control_ipc_write";
                     wire::Envelope result;
                     result.set_channel_id("input");
                     result.mutable_desktop_resize_result()->set_request_id(request->request_id());
@@ -112,6 +118,7 @@ class DesktopWorker {
                     co_await send(std::move(result));
                 }
                 const bool refresh = std::exchange(refresh_, false);
+                stage = "capture_encode";
                 auto update = co_await video_.next(refresh);
                 if (stopped_) {
                     break;
@@ -121,15 +128,18 @@ class DesktopWorker {
                     continue;
                 }
                 if (writeControl_ && update->configuration) {
+                    stage = "input_release";
                     if (input_) {
                         input_->releaseAll();
                         input_.reset();
                     }
+                    stage = "input_binding";
                     input_ = std::make_unique<DesktopInput>(update->desktopLeft, update->desktopTop,
                                                             update->configuration->width(), update->configuration->height());
                     inputGeneration_ = update->generation;
                     rebindRequested_ = false;
                 }
+                stage = "video_ipc_write";
                 if (!ready_) {
                     if (update->frame.data().empty()) {
                         continue;
@@ -165,20 +175,23 @@ class DesktopWorker {
                 co_await send(std::move(frame));
             }
         } catch (...) {
+            rememberFailure(stage);
             stop();
             throw;
         }
     }
     void checkLiveness(std::chrono::steady_clock::time_point now) {
         if (ready_ && now - lastAck_ >= std::chrono::seconds(60)) {
-            stop();
             throw std::runtime_error("Desktop browser liveness expired");
         }
     }
     asio::awaitable<void> read() {
+        const char* stage = "input_ipc_read";
         try {
             while (!stopped_) {
+                stage = "input_ipc_read";
                 auto bytes = co_await pipe_.receive();
+                stage = "input_validation";
                 auto message = protocol::decodeMessage(bytes);
                 if (!message || !incoming_.accept(*message)) {
                     throw std::runtime_error("Desktop command violates IPC contract");
@@ -235,10 +248,12 @@ class DesktopWorker {
                         throw std::runtime_error("Desktop input belongs to an unknown generation");
                     }
                     if (message->input_event().kind() == wire::InputEvent::SECURE_ATTENTION) {
+                        stage = "input_release";
                         input_->releaseAll();
                         secureAttention_ = std::move(*message);
                         continue;
                     }
+                    stage = "input_apply";
                     input_->apply(message->input_event());
                     if (input_->needsRebind() && !rebindRequested_) {
                         rebindRequested_ = true;
@@ -258,6 +273,7 @@ class DesktopWorker {
                 }
             }
         } catch (...) {
+            rememberFailure(stage);
             stop();
             throw;
         }
@@ -271,11 +287,16 @@ class DesktopWorker {
                 co_return;
             }
             const auto now = std::chrono::steady_clock::now();
-            if (error) {
+            try {
+                if (error) {
+                    throw std::runtime_error("Desktop liveness timer failed");
+                }
+                checkLiveness(now);
+            } catch (...) {
+                rememberFailure("liveness");
                 stop();
-                throw std::runtime_error("Desktop liveness timer failed");
+                throw;
             }
-            checkLiveness(now);
         }
     }
     asio::awaitable<void> run() {
@@ -284,15 +305,45 @@ class DesktopWorker {
             co_await (write() && read() && watch());
         } catch (...) {
             if (!requestedClose_) {
+                // Parallel coroutine cancellation can mask the original error
+                // with operation_aborted or multiple_exceptions. Preserve and
+                // report the first fault, never a teardown side effect.
+                reportFailure();
+                if (failure_) {
+                    std::rethrow_exception(failure_);
+                }
                 throw;
             }
         }
         if (releaseFailure_) {
-            std::rethrow_exception(releaseFailure_);
+            try {
+                std::rethrow_exception(releaseFailure_);
+            } catch (const std::exception& error) {
+                reportDesktopFailure("input_release", error.what(), session_);
+                throw;
+            }
         }
     }
 
   private:
+    void rememberFailure(const char* stage) {
+        if (!stopped_ && !failure_) {
+            failure_ = std::current_exception();
+            failureStage_ = stage;
+        }
+    }
+    void reportFailure() const noexcept {
+        if (!failure_) {
+            return;
+        }
+        try {
+            std::rethrow_exception(failure_);
+        } catch (const std::exception& error) {
+            reportDesktopFailure(failureStage_, error.what(), session_);
+        } catch (...) {
+            reportDesktopFailure(failureStage_, "Unknown desktop worker exception", session_);
+        }
+    }
     struct OutstandingProbe {
         std::uint32_t nonce;
         std::chrono::steady_clock::time_point sentAt;
@@ -305,7 +356,8 @@ class DesktopWorker {
     protocol::DesktopPipeValidator incoming_, outgoing_;
     std::string session_;
     std::unique_ptr<DesktopInput> input_;
-    std::exception_ptr releaseFailure_;
+    std::exception_ptr releaseFailure_, failure_;
+    const char* failureStage_ = "worker";
     bool writeControl_;
     bool rebindRequested_ = false;
     std::optional<wire::DesktopResize> resize_;
@@ -324,13 +376,23 @@ asio::awaitable<void> runDesktopWorker(ruvia::EventLoop loop, NamedPipeTransport
     asio::steady_timer deadline(loop.executor());
     deadline.expires_after(std::chrono::seconds(10));
     deadline.async_wait([&pipe](std::error_code error) { if (!error) { pipe.cancel(); } });
-    auto first = co_await pipe.receive();
-    deadline.cancel();
-    auto start = protocol::decodeMessage(first);
-    if (!start || !start->has_desktop_start()) {
-        throw std::runtime_error("Desktop IPC requires a startup message");
+    bool running = false;
+    try {
+        auto first = co_await pipe.receive();
+        deadline.cancel();
+        auto start = protocol::decodeMessage(first);
+        if (!start || !start->has_desktop_start()) {
+            throw std::runtime_error("Desktop IPC requires a startup message");
+        }
+        DesktopWorker worker(std::move(loop), pipe, windowsSession, *start);
+        running = true;
+        co_await worker.run();
+    } catch (const std::exception& error) {
+        deadline.cancel();
+        if (!running) {
+            reportDesktopFailure("startup", error.what());
+        }
+        throw;
     }
-    DesktopWorker worker(std::move(loop), pipe, windowsSession, *start);
-    co_await worker.run();
 }
 } // namespace ultraterimal::agent

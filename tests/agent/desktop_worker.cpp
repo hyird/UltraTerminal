@@ -2,11 +2,15 @@
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cwchar>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <windows.h>
 
@@ -184,6 +188,44 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
         }
     }
 }
+void requireFailureEvent(DWORD process, const wchar_t* expected) {
+    struct Log {
+        HANDLE handle = OpenEventLogW(nullptr, L"Application");
+        ~Log() {
+            if (handle) {
+                CloseEventLog(handle);
+            }
+        }
+    } log;
+    require(log.handle != nullptr, "Cannot read desktop diagnostic events");
+    std::vector<std::byte> buffer(65536);
+    const auto identity = L"pid=" + std::to_wstring(process) + L" ";
+    for (unsigned batch = 0; batch < 32; ++batch) {
+        DWORD bytes = 0, needed = 0;
+        if (!ReadEventLogW(log.handle, EVENTLOG_BACKWARDS_READ | EVENTLOG_SEQUENTIAL_READ, 0,
+                          buffer.data(), static_cast<DWORD>(buffer.size()), &bytes, &needed)) {
+            break;
+        }
+        for (DWORD offset = 0; offset < bytes;) {
+            const auto* record = reinterpret_cast<const EVENTLOGRECORD*>(buffer.data() + offset);
+            require(record->Length >= sizeof(EVENTLOGRECORD) && record->Length <= bytes - offset, "Invalid event record");
+            const auto* source = reinterpret_cast<const wchar_t*>(record + 1);
+            if (record->EventID == 1001 && record->NumStrings == 4 && std::wstring_view(source) == L"UltraterimalDesktop") {
+                const auto* context = reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(record) + record->StringOffset);
+                const auto* stage = context + std::wcslen(context) + 1;
+                const auto* detail = stage + std::wcslen(stage) + 1;
+                if (std::wstring_view(context).starts_with(identity)) {
+                    require(std::wstring_view(stage) == L"input_validation", "Diagnostic lost original failing stage");
+                    require(std::wstring_view(detail) == expected, "Diagnostic lost original error during cancellation");
+                    require(std::wstring_view(detail + std::wcslen(detail) + 1) == L"worker-fixture", "Diagnostic lost remote session identity");
+                    return;
+                }
+            }
+            offset += record->Length;
+        }
+    }
+    throw std::runtime_error("Desktop failure event was not recorded");
+}
 void run(const std::wstring& executable, const std::string& mode) {
     DWORD session = 0;
     require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session != 0, "Interactive test session required");
@@ -214,20 +256,29 @@ void run(const std::wstring& executable, const std::string& mode) {
     }
     require(!timedOut, "Desktop worker timed out");
     child.finish(mode == "normal" || mode == "writable" || mode == "probe_echo" || mode == "probe_recover" || mode == "probe_delayed_recover");
+    if (mode == "readonly_input") {
+        requireFailureEvent(child.id, L"Desktop command violates IPC contract");
+    } else if (mode == "probe_replay") {
+        requireFailureEvent(child.id, L"Replayed desktop probe response");
+    }
     std::cout << mode << " desktop process passed\n";
 }
 } // namespace
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) {
+    if (argc != 2 && argc != 3) {
         return 2;
     }
     std::string currentMode;
     try {
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
         for (const std::string mode : {"normal", "binding", "readonly_input", "disconnect", "writable", "process_session", "probe_echo", "probe_recover", "probe_delayed_recover", "probe_timeout", "probe_replay"}) {
+            if (argc == 3 && std::wstring(mode.begin(), mode.end()) != argv[2]) {
+                continue;
+            }
             currentMode = mode;
             run(argv[1], mode);
         }
+        require(!currentMode.empty(), "Unknown desktop worker test mode");
     } catch (const std::exception& error) {
         std::cerr << currentMode << ": " << error.what() << '\n';
         return 1;

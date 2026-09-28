@@ -14,6 +14,7 @@
 #include "bridge.runtime.h"
 #include "desktop.transport.h"
 #include "platform/windows/desktop_launch.transport.h"
+#include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/login_broker.transport.h"
 #include "platform/windows/pipe.transport.h"
 
@@ -93,11 +94,13 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         // Explicit stop owns cancellation. Never abandon a launch job or child
         // wait because a parent coroutine cancelled its await expression.
         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
+        const char* stage = "native_pairing";
         try {
             if (self->stopping) {
                 throw std::runtime_error("Desktop session stopped before pairing");
             }
             co_await self->remote.connect(std::move(credential));
+            stage = "worker_launch";
             auto launch = ruvia::runBlocking(self->pool, self->loop.handle(),
                                              [executor = self->loop.executor(), selected = self->windowsSession, executable = self->executable] {
                                                  DesktopIdentity user(selected);
@@ -111,17 +114,23 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
             if (self->stopping) {
                 throw std::runtime_error("Desktop session stopped during launch");
             }
+            stage = "worker_pipe_pairing";
             co_await self->resources.pipe->accept(self->result.processId, self->windowsSession);
+            stage = "login_broker";
             if (self->writeControl) {
                 self->login = WindowsLoginBroker::create(self->loop, self->pool, self->loginCredential, self->windowsSession);
             }
+            stage = "session_bridge";
             if (self->login) {
                 using namespace asio::experimental::awaitable_operators;
                 co_await (self->bridge() && self->login->run());
             } else {
                 co_await self->bridge();
             }
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
+            if (!self->stopping) {
+                reportDesktopFailure(stage, error.what(), self->session);
+            }
             self->terminalError("desktop_failed", "Desktop session could not continue");
         }
         self->cancelIo();

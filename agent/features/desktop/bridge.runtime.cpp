@@ -3,6 +3,7 @@
 #include <asio/experimental/awaitable_operators.hpp>
 #include <asio/steady_timer.hpp>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -15,6 +16,7 @@
 
 #include "desktop.transport.h"
 #include "platform/windows/desktop_launch.transport.h"
+#include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/pipe.transport.h"
 #include "send_queue.runtime.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
@@ -33,6 +35,7 @@ class Bridge {
         stop();
     }
     void stop() {
+        stopped_ = true;
         deadline_.cancel();
         control_.close();
         video_.close();
@@ -130,6 +133,7 @@ class Bridge {
                 }
             }
         } catch (...) {
+            recordFailure("bridge_worker_read");
             stop();
             throw;
         }
@@ -151,6 +155,7 @@ class Bridge {
                 queue.complete(bytes);
             }
         } catch (...) {
+            recordFailure(video ? "bridge_video_send" : "bridge_control_send");
             stop();
             throw;
         }
@@ -162,6 +167,7 @@ class Bridge {
                 co_await sendLocal(std::move(message));
             }
         } catch (...) {
+            recordFailure("bridge_input_receive");
             stop();
             throw;
         }
@@ -170,10 +176,24 @@ class Bridge {
         try {
             co_await remote_.watchVideo();
         } catch (...) {
+            recordFailure("bridge_video_receive");
             stop();
             throw;
         }
     }
+    void recordFailure(const char* stage) const noexcept {
+        if (stopped_) {
+            return;
+        }
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& error) {
+            reportDesktopFailure(stage, error.what(), session_);
+        } catch (...) {
+            reportDesktopFailure(stage, "Unknown desktop bridge exception", session_);
+        }
+    }
+    bool stopped_ = false;
     ruvia::EventLoop loop_;
     std::uint32_t windowsSession_;
     ruvia::BlockingPool systemPool_{{.threadCount = 1, .queueCapacity = 1}};

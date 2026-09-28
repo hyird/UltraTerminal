@@ -100,6 +100,12 @@ Agent 直接连接独立的原生 UDP/TCP 加密入口，仍需 `native_certific
 
 ## Windows 安装与配置
 
+Agent 1.0.8 起，桌面工作进程及 Agent 服务进程的桌面桥接异常在 Windows `Application` 事件日志中记录来源 `UltraterimalDesktop`、事件 ID `1001`。记录包含进程 ID、Windows 会话、远控会话 ID、失败阶段和最多 1024 字节的内部错误描述，不包含按键内容、画面或凭据。并发任务取消时保留首个异常，避免被清理阶段的 `operation_aborted` 覆盖；此日志用于定位，不能将 `desktop_failed` 一概判断为网络问题。管理员可用以下命令查看最近记录（事件未发生时查询可能返回无匹配项）：
+
+```powershell
+Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='UltraterimalDesktop'] and EventID=1001]]" -MaxEvents 10 | ForEach-Object { [pscustomobject]@{Time=$_.TimeCreated; Detail=($_.Properties.Value -join ' | ')} }
+```
+
 平台“添加设备”先保存设备名称，创建状态为“待安装”的设备记录。通过该设备的“管理 → 安装命令”选择 Windows x64，复制 `powershell -NoProfile -c "irm '安装地址' | iex"` 形式的一行命令。Linux/macOS 暂未支持。管理员 PowerShell 执行后自动下载、校验并安装 MSI，再绑定到已创建的设备 ID；无需另外填写注册码。安装地址包含十分钟有效的一次性安装凭据，重新复制会使该设备旧的未使用命令失效，长期 token 不进入命令。安装响应禁止缓存；网关与反向代理/CDN 日志必须隐藏 `/api/install.ps1` 的查询参数。已绑定设备的命令仅修复或升级原电脑，不重新签发 token。
 
 手动运行 MSI 后，也可通过交互式注册执行：
