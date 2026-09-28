@@ -6,11 +6,11 @@
 
 GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行三项检查：
 
-- Frontend：Node.js 24、`npm ci`、格式检查、类型检查、生产构建及 Chromium 交互回归测试。
-- Windows Agent：Windows Server 2025 / MSVC、`windows-agent-release` Preset、静态链接构建、非交互桌面 CTest 和 MSI 打包。
-- Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及 CTest。
+- Frontend：Node.js 24、`npm ci`、格式检查、类型检查、生产构建。
+- Windows Agent：Windows Server 2025 / MSVC、`windows-agent-release` Preset、静态链接构建、功能单元测试 和 MSI 打包。
+- Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及功能单元测试。
 
-vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 固定提交 SHA，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存前端、Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用固定版本 certifi 的 Mozilla CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
+vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存前端、Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + PostgreSQL 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
@@ -37,7 +37,7 @@ Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agen
   -AgentExe build/windows-agent/agent/Release/agent.exe `
   -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll `
   -CaBundle path/to/ca.pem `
-  -Output build/deployment/ultraterimal-agent-1.0.1.msi `
+  -Output build/deployment/ultraterimal-agent-1.0.2.msi `
   -GatewayHost <证书域名> -GatewayAddress <源站地址>
 ```
 
@@ -146,31 +146,14 @@ Agent 直接连接独立的原生 UDP/TCP 加密入口，仍需 `native_certific
 
 ## 验证
 
-原生测试需要 Python 3 和 `tests/agent/requirements.txt`；可通过 `-DPython3_EXECUTABLE=<python.exe>` 指定解释器。桌面与输入测试需要可交互、未锁定的 Windows 桌面。输入观察器截获测试注入事件，检查按键、鼠标、失焦与断开后的释放。
-
-集成测试使用独立临时 PostgreSQL 集群，不操作已有数据库服务。配置数据库工具与浏览器路径后运行：
+CI 只运行 CTest 中标记为 `unit` 的功能单元测试，不启动 Python、数据库、真实网络对端或浏览器集成测试。Python 测试脚本及其专属测试程序已移除。
 
 ```powershell
-npm ci --prefix tests/web
-cmake --preset windows-server-release "-DULTRATERIMAL_POSTGRES_BIN=<PostgreSQL bin 目录>" "-DULTRATERIMAL_BROWSER_EXECUTABLE=<browser.exe>"
-cmake --build --preset windows-server-release
-ctest --preset windows-server-release
+ctest --preset windows-agent-release -L unit --no-tests=error
+ctest --preset linux-server-release -L unit --no-tests=error
 ```
 
-`agent.quic` 验证真实 QUIC、大消息、持续数据报丢失后的原连接恢复和应用空闲时的传输推进；`agent.native` 验证 UDP 不可达时的 TCP 降级与取消；`server.registration` 覆盖原生注册、鉴权、心跳、票据、撤权、桌面配对和断线恢复；`web.desktop` 验证浏览器解码、刷新与 Windows 输入。纯前端交互回归使用 `npm run workspace --prefix tests/web`；CTest 的 `web.desktop_probe`、`web.desktop_pixels`、`web.desktop_bitrate` 分别验证探针恢复、物理像素布局和接收码率。
-
-`agent.desktop_input` 验证桌面子进程的真实采集尺寸与输入初始化，也可由 Session 0 SYSTEM 任务运行来验证服务启动路径；已有写控制者时明确拒绝竞争。独立的 `agent.input` 不依赖 DXGI，除持键释放与控制租约外，还在 Windows 上连续注入 5 组各 24 次 F24 转换并检查顺序；该适配层测试不经过生产桌面 Worker 或浏览器链路。桌面探针每约 2 秒发送一次；约 4 秒没有有效确认时先释放并暂停远端输入，短时链路恢复后仅接受新鲜探针确认并丢弃冻结期间的输入。浏览器收到 `reset_input` 或本地超时时会清除持键并暂停，回复本身不代表 Agent 已接受；仅当后续非复位探针的 `accepted_response_nonce` 确认 Worker 实际接受了冻结后排队的回复，才尝试恢复输入。此确认与状态只反映探针发送时的 Agent 状态，不保证送达时仍可接收新输入。持续无响应再结束桌面会话。明确断线与撤权仍立即结束。`agent.desktop_worker` 与 `web.desktop_probe` 覆盖此行为；这些定向测试不等于公网链路验收。浏览器输入测试先用独立进程检查观察器是否能收到 Windows 注入事件，环境检查失败时不能判定为传输故障。
-
-分辨率入口位于桌面工具栏「远程分辨率」，只列出驱动提供的尺寸。`agent.video_runtime` 验证非法尺寸拒绝与重新应用当前尺寸后的画面基准重建；`web.desktop` 从菜单发送请求并检查 Windows 响应、新代次实际显示和后续输入。此自动测试不改变本机尺寸，不能替代目标设备不同分辨率、DPI 与多屏切换验收。
-
-`web.desktop` 的原生输入观察器在采集显示器上临时绘制四色色块，浏览器在连接后及画面基准重建后验证解码像素。测试窗口不获取焦点，随观察器退出销毁；只检查帧计数或不透明黑色画布不视为采集内容通过。
-
-`web.outbound` 覆盖浏览器发送队列满、合并屏障、过期、画面代次与断连清理；`web.desktop_probe` 还验证仅有控制通道 `CHANNEL_READY` 而无首帧时不误启动输入存活计时，以及视频先于控制通道时不提前显示“可控制”或丢键；两条通道完成首次画面/控制就绪前仍受 60 秒连接时限约束；`web.desktop_network` 校验测试用 TCP 整形器；`web.desktop_synthetic` 在独立 PostgreSQL、真实 TLS/WSS 网关、浏览器和 Agent 原生桌面传输之间验证限速时 24 次 F24 按键转换的序号与顺序，但采用软件生成的合成首帧，不运行生产桌面工作进程、DXGI 或 Windows 输入注入，仅用于区分上游与本机输入问题；`web.desktop_shaped` 经保留证书校验的本机 CONNECT 隧道将浏览器上行限制为 4 KiB/s、每块增加 80 ms，检查真实 WSS→网关→Agent 的 24 次输入变化按序送达且未重连，并写入 `shaped-control.json`。运行真实桌面专项前先确认 `agent.capture` 能取得本机测试色块；若独立 DXGI 采集也失败，首帧缺失与输入尚未就绪不能判定为弱网传输故障。限速测试不注入 IP 丢包，也不测公网/CDN；完整画面仍由 `web.desktop` 验证。需要在合成桌面稳定的测试机追加限速后的输入到画面延迟时，将环境变量 `ULTRATERIMAL_DESKTOP_SHAPED_PIXEL=1` 后再运行 `web.desktop_shaped`，写入 `shaped-uplink.json`；画面检查失败不可当作网络传输通过。应用队列的画面代次屏障无法撤回已调用 `WebSocket.send()` 的输入；这些字节可能在 Agent 新画面绑定后才到达。当前源码已增加可写桌面输入契约 2：Server 拒绝旧浏览器、仅支持 v1 或不支持该契约的 Agent；前端为包括释放在内的每个输入标记创建时的绑定代次，Worker 重绑定时拒绝旧代次，并通过已接受探针回复的 nonce 抑制迟到的健康探针误解冻。协议、浏览器和合成 Agent 互操作已验证；生产 Worker 的真实重绑定、DXGI 画面与联动部署尚未验收，仍是发布阻断项，升级与回滚见 [DESIGN.md](DESIGN.md)。
-
-同一测试发送 12 次 F23 按键，每次由 Windows 输入观察器切换色块，等待浏览器显示对应像素，并将逐次耗时、中位数与 P95 写入测试截图目录的 `input-to-display.json`。计时包含浏览器自动化派发与像素观察开销，是本地输入到解码画面的测量上界；不代表物理屏幕呈现延迟、公网 CDN 性能或长期稳定性。测试按键由观察器拦截，不传入其他应用。
-
-随后通过 F22 启停 3 秒原生小窗口动画，以浏览器动画回调观察新显示帧、像素变化和帧间隔，输出 `continuous-motion.json`。报告记录观察到的帧率、实际像素变化频率、最长间隔，以及浏览器回报的解码耗时分位数和最大排队深度，不将短时小区域变化测试当作全屏滚动、视频播放或长时间稳定性验收。
-
+真实桌面、锁屏、UAC、输入注入、服务安装和公网弱网行为在专用设备人工验收。现有原生桌面探针及独立浏览器回归工具仅用于本地诊断，不在 CI 中运行。
 软件视频互操作测试使用合成色条：
 
 ```powershell
@@ -190,3 +173,5 @@ node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-
 设备列表最右侧的“管理”菜单按顺序提供凭据、重命名和删除，其中重命名和删除，仅设备注册者可操作。改名同步更新远控标签且不改变设备 ID 或 token。删除经一次确认后撤销设备、关闭远控会话并让原 token 失效；保留历史审计，重新接入需重新注册。
 
 每台设备注册时生成独立随机 token，数据库仅保存具有唯一约束的哈希，Agent 安全保存原凭据；一次性注册码只用于换取该设备凭据，不作为多台设备共享 token。
+
+Agent 结构化事件通过已鉴权的原生控制通道上传，Gateway 输出 `agent_log`，包含设备、运行实例、事件序号、Agent 时间、会话及进程退出状态。每秒最多发送一批 16 条，优先处理控制消息；缓存最多 256 条待发送事件和 16 条待确认事件，溢出丢弃最旧待发送记录并上报计数。断线后重传未确认批次，因此可能重复，可按设备、运行实例与事件序号识别。缓存仅在内存中，进程退出时未上传事件会丢失。旧 Gateway 不声明日志能力时不发送新消息。日志不包含凭据、任意异常文本、画面或终端内容。

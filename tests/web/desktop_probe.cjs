@@ -174,7 +174,7 @@ async function main() {
     assert.deepEqual(beforeFrame, { inputDeadline: false, livenessDeadline: false, firstFrameDeadline: true, displayed: 0 },
       'gateway channel readiness must not start input timers before the Agent can send a frame');
     await startup.waitForTimeout(4200);
-    assert.deepEqual(await startup.evaluate(() => ({ statuses, ended: endedCount, frozen: session.inputFrozen })),
+    assert.deepEqual(await startup.evaluate(() => ({ statuses, ended: endedCount, frozen: !!session.inputFrozen })),
       { statuses: [], ended: 0, frozen: false }, 'waiting for the initial desktop image is not an input link failure');
     await startup.evaluate(() => {
       fixtureSend(fixtureSockets[1], 'video', 2, { body: 'videoConfig', generation: 1,
@@ -184,7 +184,7 @@ async function main() {
     });
     await startup.waitForFunction(() => document.querySelector('canvas').dataset.control === 'ready');
     assert.deepEqual(await startup.evaluate(() => ({ input: !!session.inputDeadline, liveness: !!session.livenessDeadline, displayed: session.displayedFrame })),
-      { input: true, liveness: true, displayed: 1 }, 'first frame must arm input and liveness deadlines');
+      { input: false, liveness: true, displayed: 1 }, 'first frame must arm only the disconnect deadline');
     await startup.evaluate(() => session.stop());
     await startup.close();
     const videoFirst = await startSession(browser, origin, false, false);
@@ -211,7 +211,7 @@ async function main() {
     await videoFirst.waitForFunction(() => document.querySelector('canvas').dataset.control === 'ready');
     assert.deepEqual(await videoFirst.evaluate(() => ({ startup: session.deadline !== undefined,
       inputTimer: !!session.inputDeadline, livenessTimer: !!session.livenessDeadline, status: statuses.at(-1) })),
-      { startup: false, inputTimer: true, livenessTimer: true, status: '320 × 200 · 可控制' },
+      { startup: false, inputTimer: false, livenessTimer: true, status: '320 × 200 · 可控制' },
       'late control readiness must enable writable input and arm both liveness timers');
     const pairedKeys = await videoFirst.evaluate(() => {
       const canvas = document.querySelector('canvas');
@@ -285,80 +285,26 @@ async function main() {
     assert.deepEqual(duringHealthyProbes.replies, [1, 2]);
     assert.ok(duringHealthyProbes.inputs.some(event => event.kind === 3 && event.pressed), 'held key press was not transmitted');
     assert.ok(duringHealthyProbes.inputs.some(event => event.kind === 2 && event.pressed), `drag button press was not transmitted: ${JSON.stringify(duringHealthyProbes.inputs)}`);
-    const beforeCongestion = await page.evaluate(() => fixtureSockets[0].sent.length);
-    await page.evaluate(() => {
-      fixtureSockets[0].bufferedAmount = 65537;
-      fixtureSend(fixtureSockets[0], 'control', 4, { body: 'desktopProbe', desktopProbe: { nonce: 3, resetInput: true } });
-    });
-    const congested = await page.evaluate(() => ({ sent: fixtureSockets[0].sent.length, frozen: session.inputFrozen }));
-    assert.equal(congested.frozen, true, 'remote reset must freeze input even while its ACK is queued');
-    assert.equal(congested.sent, beforeCongestion, 'backpressured release and ACK must await socket drain');
-    await page.keyboard.press('b');
-    assert.equal(await page.evaluate(() => fixtureSockets[0].sent.length), beforeCongestion, 'queued reset ACK must not allow new input');
-    await page.evaluate(() => { fixtureSockets[0].bufferedAmount = 0; });
-    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 3));
-    const resetState = await page.evaluate(() => ({
-      sent: fixtureSockets[0].sent,
-      events: fixtureSockets[0].sent.filter(message => message.inputEvent),
-    }));
-    const resetAckIndex = resetState.sent.findIndex((message, index) => index >= beforeCongestion && message.desktopProbe?.nonce === 3);
-    const releaseIndex = resetState.sent.findIndex((message, index) => index >= beforeCongestion && message.inputEvent?.kind === 5);
-    if (releaseIndex < 0 || releaseIndex > resetAckIndex)
-      contractFailures.push(`resetInput did not release held key/button state before ACK: ${JSON.stringify(resetState)}`);
-    const beforeRecoveryInput = resetState.sent.length;
-    await page.keyboard.press('b');
-    const stillFrozen = await page.evaluate(() => ({ sent: fixtureSockets[0].sent, frozen: session.inputFrozen, status: statuses.at(-1) }));
-    assert.equal(stillFrozen.frozen, true, 'resetInput ACK alone must not restore input');
-    assert.equal(stillFrozen.status, '远端正在复位输入，等待恢复确认');
-    assert.equal(stillFrozen.sent.length, beforeRecoveryInput, 'input must remain paused after resetInput ACK');
-    await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 5, { body: 'desktopProbe', desktopProbe: { nonce: 4, resetInput: true } }));
-    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 4));
-    const pendingInput = await page.evaluate(() => fixtureSockets[0].sent.length);
-    await page.keyboard.press('b');
-    assert.equal(await page.evaluate(() => fixtureSockets[0].sent.length), pendingInput, 'successive resetInput probes must not thaw input');
-    await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 6, { body: 'desktopProbe', desktopProbe: { nonce: 5 } }));
-    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 5));
-    const staleRecovery = await page.evaluate(() => ({ sent: fixtureSockets[0].sent.length, frozen: session.inputFrozen }));
-    assert.equal(staleRecovery.frozen, true, 'a delayed healthy probe without acknowledgement of the reset must not thaw input');
-    await page.keyboard.press('b');
-    assert.equal(await page.evaluate(() => fixtureSockets[0].sent.length), staleRecovery.sent, 'unconfirmed recovery must not send new input');
-    await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 7, { body: 'desktopProbe', desktopProbe: { nonce: 6, acceptedResponseNonce: 4 } }));
-    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 6));
-    const resumedAt = await page.evaluate(() => ({ sent: fixtureSockets[0].sent, frozen: session.inputFrozen, status: statuses.at(-1) }));
-    const recoveryAckIndex = resumedAt.sent.findIndex(message => message.desktopProbe?.nonce === 6);
-    assert.equal(resumedAt.frozen, false, 'only a probe confirming the reset response may restore input');
-    assert.equal(resumedAt.status, '远端曾确认恢复，输入可尝试');
-    await page.keyboard.press('b');
-    const resumed = await page.evaluate(() => fixtureSockets[0].sent);
-    const resumedInputIndex = resumed.findIndex((message, index) => index > recoveryAckIndex && message.inputEvent?.kind === 3 && message.inputEvent.pressed);
-    assert.ok(resumedInputIndex > recoveryAckIndex, 'new input must follow the later non-reset probe ACK');
+    await page.keyboard.up('a');
+    await page.mouse.up();
     await page.keyboard.down('c');
-    await page.waitForTimeout(4200);
-    const timedOut = await page.evaluate(() => ({
-      ended: endedCount,
-      socketsOpen: fixtureSockets.every(socket => socket.readyState === WebSocket.OPEN),
-      events: fixtureSockets[0].sent.filter(message => message.inputEvent).map(message => message.inputEvent),
-      status: statuses.at(-1),
-    }));
-    assert.equal(timedOut.ended, 0, 'input liveness timeout must not end the session');
-    assert.equal(timedOut.socketsOpen, true, 'input timeout must preserve both WSS channels');
-    assert.equal(timedOut.status, '链路缓慢，输入已暂停');
-    if (!timedOut.events.some(event => event.kind === 5))
-      contractFailures.push(`timeout did not release held key/button state: ${JSON.stringify(timedOut)}`);
+    const beforeDelay = await page.evaluate(() => fixtureSockets[0].sent.length);
+    await page.waitForTimeout(6200);
     await page.keyboard.up('c');
-    await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 8, { body: 'desktopProbe', desktopProbe: { nonce: 7, acceptedResponseNonce: 6 } }));
-    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 7));
-    assert.equal(await page.evaluate(() => session.inputFrozen), true, 'a healthy probe sent before local timeout must not thaw input');
-    await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 9, { body: 'desktopProbe', desktopProbe: { nonce: 8, acceptedResponseNonce: 7 } }));
-    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 8));
-    const localRecovery = await page.evaluate(() => ({ sent: fixtureSockets[0].sent, frozen: session.inputFrozen, status: statuses.at(-1) }));
-    const localAckIndex = localRecovery.sent.findIndex(message => message.desktopProbe?.nonce === 8);
-    assert.equal(localRecovery.frozen, false, 'only a probe confirming the post-timeout response may restore input');
-    assert.equal(localRecovery.status, '远端曾确认恢复，输入可尝试');
     await page.keyboard.press('d');
-    const localResumed = await page.evaluate(() => fixtureSockets[0].sent);
-    assert.ok(localResumed.some((message, index) => index > localAckIndex && message.inputEvent?.kind === 3 && message.inputEvent.pressed),
-      'new input must follow the local-timeout recovery ACK');
+    const delayed = await page.evaluate((beforeDelay) => ({
+      ended: endedCount, status: statuses.at(-1),
+      events: fixtureSockets[0].sent.filter(message => message.inputEvent).map(message => message.inputEvent),
+      sent: fixtureSockets[0].sent.slice(beforeDelay),
+    }), beforeDelay);
+    assert.equal(delayed.ended, 0, 'slow probes must not disconnect the session');
+    assert.ok(!delayed.status.includes('暂停'), 'slow probes must not pause input');
+    assert.ok(delayed.sent.some(message => message.inputEvent?.kind === 3 && message.inputEvent.pressed),
+      'input must continue after more than four seconds without a probe');
+    assert.ok(delayed.sent.some(message => message.inputEvent?.kind === 3 && !message.inputEvent.pressed),
+      'held key release must continue after delayed probes');
+    await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 4, { body: 'desktopProbe', desktopProbe: { nonce: 8, acceptedResponseNonce: 1 } }));
+    await page.waitForFunction(() => fixtureSockets[0].sent.some(message => message.desktopProbe?.nonce === 8));
     // Replaying a nonce is rejected; a definite WSS close remains fatal as well.
     await page.evaluate(() => fixtureSend(fixtureSockets[0], 'control', 10, { body: 'desktopProbe', desktopProbe: { nonce: 8 } }));
     await page.waitForFunction(() => endedCount === 1);
@@ -381,7 +327,7 @@ async function main() {
     await impossible.close();
     if (contractFailures.length)
       throw new AggregateError(contractFailures.map(message => new Error(message)), 'Desktop probe regression checks failed');
-    console.log('PASS: 2s probes preserve held key/drag; 4s silence releases input without closing WSS; stale healthy probes do not thaw input before the Agent confirms a post-freeze ACK; duplicate, regressed or impossible confirmations and definite WSS close end the session');
+    console.log('PASS: slow probes preserve input after six seconds; startup ordering, replay rejection and definite disconnect cleanup passed');
   } finally {
     await browser?.close();
     await vite.close();

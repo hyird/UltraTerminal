@@ -7,7 +7,7 @@ namespace ultraterimal::server {
 ruvia::Task<ruvia::HttpResponse> DeviceInstallerController::script(ruvia::Context& context) {
     context.header("Cache-Control", "no-store");
     context.header("X-Content-Type-Options", "nosniff");
-    co_return context.textStaticView(kWindowsInstallScript);
+    co_return context.text(kWindowsInstallScript);
 }
 ruvia::Task<ruvia::HttpResponse> DeviceController::install(ruvia::Context& context) {
     context.header("Cache-Control", "no-store");

@@ -21,6 +21,7 @@ set(RUVIA_ENABLE_POSTGRESQL OFF CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_REDIS OFF CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_JWT OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(ruvia
+    SYSTEM
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
     GIT_TAG c35af166a6bdfeabca0ef8dfaa35273716f1bbb0)
 FetchContent_MakeAvailable(ruvia)

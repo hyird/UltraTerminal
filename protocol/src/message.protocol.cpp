@@ -105,6 +105,8 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         }
         break;
     case wire::Envelope::kHeartbeat:
+    case wire::Envelope::kAgentLogs:
+    case wire::Envelope::kAgentLogAck:
     case wire::Envelope::kWindowsLoginRequest:
     case wire::Envelope::kWindowsLoginResult:
     case wire::Envelope::kWindowsRestartRequest:
@@ -120,6 +122,26 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     }
     switch (m.body_case()) {
+    case wire::Envelope::kAgentLogs: {
+        const auto& batch = m.agent_logs();
+        if (!identifier(batch.runtime_id()) || batch.entries_size() < 1 || batch.entries_size() > 16 || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        std::uint64_t previous = 0;
+        for (const auto& entry : batch.entries()) {
+            if (entry.sequence() <= previous || !entry.unix_milliseconds() || !wire::AgentLog_Event_IsValid(entry.event()) || entry.event() == wire::AgentLog::UNSPECIFIED ||
+                (!entry.session_id().empty() && !identifier(entry.session_id()))) {
+                return invalid();
+            }
+            previous = entry.sequence();
+        }
+        break;
+    }
+    case wire::Envelope::kAgentLogAck:
+        if (!m.agent_log_ack().sequence() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
     case wire::Envelope::kWindowsLoginRequest: {
         const auto& request = m.windows_login_request();
         const auto text = [](const std::string& value, std::size_t maximum) {

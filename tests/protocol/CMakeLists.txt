@@ -22,3 +22,5 @@ target_compile_options(protocol-desktop-ipc-tests PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
 add_test(NAME protocol.desktop_ipc COMMAND protocol-desktop-ipc-tests)
+
+set_tests_properties(protocol.message protocol.stream protocol.native protocol.desktop protocol.desktop_ipc PROPERTIES LABELS unit)

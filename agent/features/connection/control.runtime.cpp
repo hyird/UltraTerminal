@@ -21,6 +21,7 @@
 
 #include "connection.transport.h"
 #include "features/desktop/session.runtime.h"
+#include "features/logging/log.runtime.h"
 #include "platform/windows/capability.transport.h"
 #include "platform/windows/credential.transport.h"
 #include "platform/windows/desktop_launch.transport.h"
@@ -101,7 +102,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     ruvia::StopSource stopSource;
     asio::any_io_executor executor;
     ConnectionConfig config;
-    asio::steady_timer writeReady, heartbeatTimer, deadline, backoff, sessionsDone;
+    asio::steady_timer writeReady, heartbeatTimer, deadline, backoff, sessionsDone, logTimer;
     std::filesystem::path desktopExecutable;
     struct SessionEntry {
         std::shared_ptr<DesktopSession> runtime;
@@ -115,15 +116,28 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     std::uint64_t outgoingSequence = 1, incomingSequence = 0, deadlineGeneration = 0;
     ControlStatistics statistics;
     std::mt19937 random{std::random_device{}()};
+    AgentLogBuffer logs{std::to_string(random()) + "-" + std::to_string(random())};
+    bool logsSupported = false, logPending = false, connectionFailureLogged = false;
     bool started = false, stopping = false, ended = false, heartbeatPending = false;
     unsigned heartbeatSeconds = 0;
     ~State() { settingsPool.join(); }
 
     State(ruvia::EventLoop owner, ConnectionConfig settings, std::filesystem::path executable)
         : loop(owner), executor(owner.executor()), config(std::move(settings)), writeReady(executor), heartbeatTimer(executor), deadline(executor), backoff(executor),
-          sessionsDone(executor), desktopExecutable(std::move(executable)) {
+          sessionsDone(executor), logTimer(executor), desktopExecutable(std::move(executable)) {
         if (!desktopExecutable.empty() && !desktopExecutable.is_absolute()) {
             throw std::invalid_argument("Desktop executable must be absolute");
+        }
+    }
+
+    void log(wire::AgentLog::Event event, std::string sessionId = {}, std::uint32_t exitCode = 0, bool forcedExit = false) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        logs.append(event, static_cast<std::uint64_t>(now), std::move(sessionId), exitCode, forcedExit);
+    }
+    void connectionFailure(wire::AgentLog::Event event) {
+        if (!stopping && !connectionFailureLogged) {
+            log(event);
+            connectionFailureLogged = true;
         }
     }
 
@@ -134,6 +148,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         deadline.cancel();
         writeReady.cancel();
         heartbeatTimer.cancel();
+        logTimer.cancel();
         if (transport) {
             transport->cancel();
         }
@@ -151,6 +166,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         deadline.expires_after(duration);
         deadline.async_wait([weak = weak_from_this(), generation](std::error_code error) {
             if (const auto self = weak.lock(); self && !error && generation == self->deadlineGeneration) {
+                self->connectionFailure(self->statistics.connected ? wire::AgentLog::HEARTBEAT_TIMEOUT : wire::AgentLog::CONNECT_FAILED);
                 self->disconnect();
             }
         });
@@ -185,8 +201,25 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 co_await transport->send(std::move(bytes));
             }
         } catch (...) {
+            connectionFailure(wire::AgentLog::WRITE_FAILED);
             disconnect();
             throw;
+        }
+    }
+    asio::awaitable<void> logLoop() {
+        while (!ended) {
+            // Never fill the control queue with diagnostics. One acknowledged batch at a time.
+            if (logsSupported && !logPending && outbound.empty()) {
+                if (const auto* batch = logs.next()) {
+                    wire::Envelope message;
+                    *message.mutable_agent_logs() = *batch;
+                    enqueue(std::move(message));
+                    logPending = true;
+                }
+            }
+            logTimer.expires_after(std::chrono::seconds(1));
+            std::error_code error;
+            co_await logTimer.async_wait(asio::redirect_error(asio::use_awaitable, error));
         }
     }
     asio::awaitable<void> heartbeatLoop() {
@@ -217,7 +250,12 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     throw std::runtime_error("Invalid or replayed control message");
                 }
                 incomingSequence = message->sequence();
-                if (message->has_windows_login_request()) {
+                if (message->has_agent_log_ack()) {
+                    if (!logsSupported || !logPending || !logs.acknowledge(message->agent_log_ack().sequence())) {
+                        throw std::runtime_error("Unexpected log acknowledgment");
+                    }
+                    logPending = false;
+                } else if (message->has_windows_login_request()) {
                     auto operation = ruvia::runBlocking(settingsPool, loop.handle(),
                                                         [path = config.credentialFile.parent_path() / "windows_login.credential", request = std::move(*message->mutable_windows_login_request())]() mutable {
                                                             return windowsLoginSettings(path, std::move(request));
@@ -265,6 +303,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 }
             }
         } catch (...) {
+            connectionFailure(wire::AgentLog::READ_FAILED);
             disconnect();
             throw;
         }
@@ -280,6 +319,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                                 : !selected || selected == 0xffffffff ? "desktop_unavailable"
                                                                       : nullptr;
         if (rejection) {
+            log(wire::AgentLog::DESKTOP_REJECTED, message.session_id());
             wire::Envelope response;
             response.set_session_id(message.session_id());
             response.mutable_session_error()->set_code(rejection);
@@ -295,11 +335,13 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         auto runtime = std::make_shared<DesktopSession>(loop, config, message, desktopExecutable, selected);
         sessions.emplace(message.session_id(), SessionEntry{runtime, writable});
         ++statistics.startedSessions;
+        log(wire::AgentLog::DESKTOP_STARTED, message.session_id());
         try {
             asio::co_spawn(executor, runtime->run(credential), [self = shared_from_this(), runtime, id = message.session_id()](std::exception_ptr failure, DesktopSessionResult result) {
                 self->sessions.erase(id);
                 ++self->statistics.completedSessions;
                 self->sessionsDone.cancel();
+                self->log(failure || result.terminal.has_session_error() ? wire::AgentLog::DESKTOP_FAILED : wire::AgentLog::DESKTOP_ENDED, id, result.exitCode, result.forcedExit);
                 if (!self->ended) {
                     try {
                         if (failure) {
@@ -345,14 +387,17 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         }
         incomingSequence = welcome->sequence();
         heartbeatSeconds = welcome->welcome().heartbeat_seconds();
+        logsSupported = welcome->welcome().agent_logs();
         statistics.connected = true;
         ++statistics.connections;
+        log(wire::AgentLog::CONNECTED);
     }
     static asio::awaitable<void> runConnections(std::shared_ptr<State> self) {
         if (self->started) {
             throw std::logic_error("Control runtime can only run once");
         }
         self->started = true;
+        self->log(wire::AgentLog::STARTED);
         // Missing or unreadable local identity is a startup error, not a retry loop.
         (void)loadCredential(self->config.credentialFile);
         auto retry = std::chrono::milliseconds(500);
@@ -361,19 +406,22 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
             self->outgoingSequence = 1;
             self->incomingSequence = 0;
             self->heartbeatPending = false;
+            self->logPending = false;
+            self->connectionFailureLogged = false;
             const auto startedAt = std::chrono::steady_clock::now();
             std::exception_ptr fatal;
             ++self->statistics.attempts;
             try {
                 co_await self->connect();
                 using namespace asio::experimental::awaitable_operators;
-                co_await (self->writeLoop() && self->readLoop() && self->heartbeatLoop());
+                co_await (self->writeLoop() && self->readLoop() && self->heartbeatLoop() && self->logLoop());
             } catch (const std::bad_alloc&) {
                 fatal = std::current_exception();
                 self->disconnect();
                 self->stopping = true;
             } catch (const std::exception&) {
                 // No peer-controlled exception strings or credentials enter ordinary logs.
+                self->connectionFailure(wire::AgentLog::CONNECT_FAILED);
                 self->disconnect();
             }
             self->disconnect();

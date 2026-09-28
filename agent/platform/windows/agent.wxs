@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="623D621C-448D-47E4-968B-4E6FD12813D2" Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.1" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7">
+  <Product Id="7DF54CBE-E1FA-43CB-8505-D821501A4743" Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.2" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
     <MajorUpgrade DowngradeErrorMessage="A newer Ultraterimal Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />

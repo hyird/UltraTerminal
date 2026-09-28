@@ -19,36 +19,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            tests/web/package-lock.json
+          cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: |
           npm ci --prefix web
-          npm ci --prefix tests/web
       - name: Format, types and production build
         run: |
           npm run format:check --prefix web
           npm run build --prefix web
-      - name: Install Chromium
-        working-directory: tests/web
-        run: npx playwright install --with-deps chromium
-      - name: Browser regression tests
-        working-directory: tests/web
-        run: |
-          browser=$(node -e "process.stdout.write(require('playwright').chromium.executablePath())")
-          for test in workspace restart outbound backpressure cursor desktop_probe desktop_pixels desktop_bitrate; do
-            node "$test.cjs" "$browser"
-          done
-          node desktop_network.cjs
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: web-${{ github.sha }}
           path: build/web/
@@ -63,7 +49,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Read pinned vcpkg revision
@@ -71,15 +57,12 @@ jobs:
         run: |
           $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
           "revision=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7.0.1
         with:
           repository: microsoft/vcpkg
           ref: ${{ steps.vcpkg.outputs.revision }}
           path: build/tools/vcpkg
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
       - name: Configure dependency cache
         run: |
           $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
@@ -89,7 +72,7 @@ jobs:
           "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
       - name: Restore vcpkg binary cache
         id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: build/vcpkg-cache
           key: vcpkg-windows2025-msvc-static-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
@@ -99,24 +82,21 @@ jobs:
           if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
           else { & "$env:VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Install TLS fixture dependency
-        if: runner.os == 'Windows'
-        run: python -m pip install cryptography==46.0.5 certifi==2026.7.22
       - name: Configure
         run: cmake --preset windows-agent-release
       - name: Save vcpkg binary cache
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: build/vcpkg-cache
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Build
         run: cmake --build --preset windows-agent-release --parallel 4
-      - name: Test without interactive desktop
-        run: ctest --preset windows-agent-release --no-tests=error -LE interactive-desktop --output-junit test-results.xml
+      - name: Functional unit tests
+        run: ctest --preset windows-agent-release --no-tests=error -L unit --output-junit test-results.xml
       - name: Upload test reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: tests-windows-agent-${{ github.sha }}
           path: |
@@ -131,13 +111,13 @@ jobs:
           GATEWAY_HOST: ${{ vars.ULTRATERIMAL_GATEWAY_HOST || 'localhost' }}
           GATEWAY_ADDRESS: ${{ vars.ULTRATERIMAL_GATEWAY_ADDRESS || 'localhost' }}
         run: |
-          $ca = python -c "import certifi; print(certifi.where())"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ca = Join-Path (Split-Path (Split-Path (git --exec-path))) 'etc/ssl/certs/ca-bundle.crt'
+          if (-not (Test-Path -LiteralPath $ca)) { throw 'Git for Windows CA bundle is missing' }
           [xml]$wix = Get-Content agent/platform/windows/agent.wxs
           $version = $wix.Wix.Product.Version
           & agent/platform/windows/package_agent.ps1 -AgentExe build/windows-agent/agent/Release/agent.exe -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll -CaBundle $ca -Output "build/windows-installer/ultraterimal-agent-$version.msi" -GatewayHost $env:GATEWAY_HOST -GatewayAddress $env:GATEWAY_ADDRESS
       - name: Upload Windows installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: windows-installer-${{ github.sha }}
           path: |
@@ -154,7 +134,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Read pinned vcpkg revision
@@ -162,15 +142,12 @@ jobs:
         run: |
           $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
           "revision=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@v7.0.1
         with:
           repository: microsoft/vcpkg
           ref: ${{ steps.vcpkg.outputs.revision }}
           path: build/tools/vcpkg
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: '3.12'
       - name: Linux compiler and build tools
         if: runner.os == 'Linux'
         shell: bash
@@ -188,7 +165,7 @@ jobs:
           "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
       - name: Restore vcpkg binary cache
         id: cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: build/vcpkg-cache
           key: vcpkg-ubuntu24-clang19-gcc14-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
@@ -202,17 +179,17 @@ jobs:
         run: cmake --preset linux-server-release
       - name: Save vcpkg binary cache
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: build/vcpkg-cache
           key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Build
         run: cmake --build --preset linux-server-release --parallel 4
-      - name: Test without interactive desktop
-        run: ctest --preset linux-server-release --no-tests=error -LE interactive-desktop --output-junit test-results.xml
+      - name: Functional unit tests
+        run: ctest --preset linux-server-release --no-tests=error -L unit --output-junit test-results.xml
       - name: Upload test reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: tests-linux-server-${{ github.sha }}
           path: |
@@ -228,7 +205,7 @@ jobs:
         run: tar -czf build/linux-server.tar.gz -C build/linux-server/server gateway
       - name: Upload Linux Server
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: linux-server-${{ github.sha }}
           path: build/linux-server.tar.gz

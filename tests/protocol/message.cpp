@@ -11,6 +11,35 @@ void require(bool condition, const char* message) {
 int main() {
     using namespace ultraterimal;
     try {
+        wire::Envelope logs;
+        logs.set_protocol_version(protocol::kVersion);
+        logs.set_sequence(1);
+        auto* batch = logs.mutable_agent_logs();
+        batch->set_runtime_id("runtime-1");
+        auto* entry = batch->add_entries();
+        entry->set_sequence(1);
+        entry->set_unix_milliseconds(1000);
+        entry->set_event(wire::AgentLog::CONNECTED);
+        require(protocol::encodeMessage(logs).has_value(), "Valid logs rejected");
+        logs.set_session_id("session");
+        require(!protocol::encodeMessage(logs), "Logs accepted on a session channel");
+        logs.clear_session_id();
+        batch->set_runtime_id("runtime\nforged_log");
+        require(!protocol::encodeMessage(logs), "Log identity injection accepted");
+        batch->set_runtime_id("runtime-1");
+        entry->set_event(static_cast<wire::AgentLog::Event>(999));
+        require(!protocol::encodeMessage(logs), "Unknown log event accepted");
+        entry->set_event(wire::AgentLog::CONNECTED);
+        const auto validEntry = *entry;
+        *batch->add_entries() = validEntry;
+        require(!protocol::encodeMessage(logs), "Unordered log entries accepted");
+        for (int index = 1; index <= 16; ++index) {
+            if (index > 1) {
+                *batch->add_entries() = validEntry;
+            }
+            batch->mutable_entries(index)->set_sequence(index + 1);
+        }
+        require(!protocol::encodeMessage(logs), "Oversized log batch accepted");
         wire::Envelope hello;
         hello.set_protocol_version(1);
         hello.set_sequence(1);

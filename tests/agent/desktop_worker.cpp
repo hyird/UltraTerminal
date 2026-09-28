@@ -80,7 +80,7 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
             if (mode == "probe_recover" || mode == "probe_delayed_recover") {
                 require(!packet->desktop_probe().accepted_response_nonce(), "Worker reported a response it did not accept");
                 require(probes != 1 || !packet->desktop_probe().reset_input(), "Fresh worker marked a spurious input reset");
-                require(probes < 4 || packet->desktop_probe().reset_input(), "Frozen worker did not mark the input reset boundary");
+                require(!packet->desktop_probe().reset_input(), "Delayed probes must not freeze input");
                 if (mode == "probe_delayed_recover" && probes == 3) {
                     auto staleInput = message(++probeSequence);
                     staleInput.set_channel_id("input");
@@ -168,7 +168,7 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     }
     if (mode == "probe_timeout") {
         const auto elapsed = std::chrono::steady_clock::now() - firstProbeAt;
-        require(probes >= 1 && closed && elapsed >= std::chrono::seconds(31) && elapsed < std::chrono::seconds(35), "Missing probe response did not retain then expire the worker");
+        require(probes >= 1 && closed && elapsed >= std::chrono::seconds(57) && elapsed < std::chrono::seconds(62), "Missing probe response did not retain then expire the worker");
     } else if (mode == "probe_replay") {
         require(probes == 1 && closed && std::chrono::steady_clock::now() - firstProbeAt < std::chrono::seconds(2), "Duplicate probe response did not fail closed");
     } else if (mode == "probe_echo") {
@@ -198,7 +198,7 @@ void run(const std::wstring& executable, const std::string& mode) {
     }
     asio::steady_timer deadline(io);
     bool timedOut = false;
-    deadline.expires_after(mode == "probe_timeout" ? std::chrono::seconds(40) : mode == "probe_delayed_recover" ? std::chrono::seconds(15)
+    deadline.expires_after(mode == "probe_timeout" ? std::chrono::seconds(65) : mode == "probe_delayed_recover" ? std::chrono::seconds(15)
                                                                                                                 : std::chrono::seconds(10));
     deadline.async_wait([&](std::error_code error) { if (!error) { timedOut = true; pipe.cancel(); } });
     std::exception_ptr failure;

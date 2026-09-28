@@ -38,7 +38,6 @@ export class DesktopSession {
   private pending = new Map<number, { id: number; started: number }>();
   private deadline: ReturnType<typeof setTimeout> | undefined;
   private livenessDeadline: ReturnType<typeof setTimeout> | undefined;
-  private inputDeadline: ReturnType<typeof setTimeout> | undefined;
   private cursorShape: ImageData | null = null;
   private hotspot = { x: 0, y: 0 };
   private cursor = { x: 0, y: 0, visible: false };
@@ -51,10 +50,8 @@ export class DesktopSession {
   private decodeMicroseconds = 0;
   private resizeSequence = 0;
   private resizePending = false;
-  private inputFrozen = false;
   private lastProbeNonce = 0;
   private lastAcceptedResponseNonce = 0;
-  private recoveryProbeNonce = 0;
   private resizeDeadline: ReturnType<typeof setTimeout> | undefined;
   private videoBytes = 0;
   private bitrateSince = 0;
@@ -295,38 +292,11 @@ export class DesktopSession {
           throw new Error("Invalid desktop liveness probe");
         this.lastProbeNonce = nonce;
         this.lastAcceptedResponseNonce = acceptedResponseNonce;
-        if (probe.resetInput || this.inputFrozen) {
-          this.input?.release();
-          if (this.stopped) return;
-          if (!this.inputFrozen) this.recoveryProbeNonce = 0;
-          this.inputFrozen = true;
-        }
-        this.armInputDeadline();
+        // Older workers may ask us to release held state. Slow probes never disable input.
+        if (probe.resetInput) this.input?.release();
+        if (this.stopped) return;
         this.armLivenessDeadline();
         this.send(channel, { desktopProbe: { nonce } });
-        if (this.stopped) return;
-        // Only a response queued after local freeze can be confirmed by the Worker.
-        // A healthy probe already in flight when we froze is not sufficient.
-        if (this.inputFrozen && !this.recoveryProbeNonce)
-          this.recoveryProbeNonce = nonce;
-        if (probe.resetInput) {
-          this.status("远端正在复位输入，等待恢复确认");
-        } else if (
-          this.inputFrozen &&
-          acceptedResponseNonce >= this.recoveryProbeNonce &&
-          nonce > this.recoveryProbeNonce
-        ) {
-          this.inputFrozen = false;
-          this.recoveryProbeNonce = 0;
-          this.bindInput();
-          this.status(
-            this.displayedFrame
-              ? "远端曾确认恢复，输入可尝试"
-              : "远端曾确认恢复，等待桌面画面",
-          );
-        } else if (this.inputFrozen) {
-          this.status("输入已暂停，等待远端确认");
-        }
         return;
       }
       if (
@@ -631,7 +601,6 @@ export class DesktopSession {
     clearTimeout(this.deadline);
     this.deadline = undefined;
     if (!this.lastProbeNonce) {
-      this.armInputDeadline();
       this.armLivenessDeadline();
     }
   }
@@ -640,8 +609,7 @@ export class DesktopSession {
       this.stopped ||
       !this.ticket.writeControl ||
       !this.displayedFrame ||
-      this.input ||
-      this.inputFrozen
+      this.input
     )
       return;
     const channel = this.channels.find(
@@ -653,8 +621,7 @@ export class DesktopSession {
     this.input = new DesktopInput(
       this.canvas,
       (event) => {
-        if (!this.inputFrozen)
-          this.send(channel, { generation, inputEvent: event });
+        this.send(channel, { generation, inputEvent: event });
       },
       { width: this.overlay.width, height: this.overlay.height },
       () => channel.socket.bufferedAmount > 2048,
@@ -665,20 +632,8 @@ export class DesktopSession {
     clearTimeout(this.livenessDeadline);
     this.livenessDeadline = setTimeout(
       () => this.fail("远控存活确认超时"),
-      34000,
+      60000,
     );
-  }
-  private armInputDeadline(): void {
-    if (this.stopped) return;
-    clearTimeout(this.inputDeadline);
-    this.inputDeadline = setTimeout(() => {
-      if (this.stopped || this.inputFrozen) return;
-      this.input?.release();
-      if (this.stopped) return;
-      this.inputFrozen = true;
-      this.recoveryProbeNonce = 0;
-      this.status("链路缓慢，输入已暂停");
-    }, 4000);
   }
   private fail(message: string): void {
     if (this.stopped || this.stopping) return;
@@ -711,8 +666,6 @@ export class DesktopSession {
     clearTimeout(this.deadline);
     clearTimeout(this.livenessDeadline);
     this.livenessDeadline = undefined;
-    clearTimeout(this.inputDeadline);
-    this.inputDeadline = undefined;
     clearTimeout(this.resizeDeadline);
     clearTimeout(this.bitrateTimer);
     this.bitrateTimer = undefined;

@@ -35,7 +35,38 @@ message Capabilities {
   uint32 desktop_input_contract = 12;
 }
 message Hello { string device_id = 1; string agent_version = 2; Capabilities capabilities = 3; }
-message Welcome { uint32 heartbeat_seconds = 1; }
+message Welcome {
+  uint32 heartbeat_seconds = 1;
+  bool agent_logs = 2;
+}
+// Fixed events only: never transport credentials, exception strings or screen data.
+message AgentLog {
+  enum Event {
+    UNSPECIFIED = 0;
+    STARTED = 1;
+    CONNECTED = 2;
+    CONNECT_FAILED = 3;
+    READ_FAILED = 4;
+    WRITE_FAILED = 5;
+    HEARTBEAT_TIMEOUT = 6;
+    DESKTOP_STARTED = 7;
+    DESKTOP_ENDED = 8;
+    DESKTOP_FAILED = 9;
+    DESKTOP_REJECTED = 10;
+  }
+  uint64 sequence = 1;
+  uint64 unix_milliseconds = 2;
+  Event event = 3;
+  string session_id = 4;
+  uint32 exit_code = 5;
+  bool forced_exit = 6;
+}
+message AgentLogBatch {
+  string runtime_id = 1;
+  repeated AgentLog entries = 2;
+  uint64 dropped = 3;
+}
+message AgentLogAck { uint64 sequence = 1; }
 message Heartbeat { uint64 monotonic_milliseconds = 1; }
 message ChannelGrant { string channel_id = 1; ChannelPurpose purpose = 2; bytes ticket = 3; }
 message SessionOpen { SessionKind kind = 1; string user_id = 2; reserved 3, 4; reserved "operating_system_user"; bool write_control = 5; repeated ChannelGrant channels = 6; uint32 desktop_input_contract = 7; }
@@ -111,10 +142,10 @@ message RequestRefresh {}
 // nonce in the ordered input stream. A lease reset requires a fresh reset probe.
 message DesktopProbe {
   uint32 nonce = 1;
-  // A prior liveness lease expired: discard locally held input before replying.
+  // Legacy worker reset notification; current workers never pause input for slow probes.
   bool reset_input = 2;
-  // Agent -> browser only: greatest nonce whose timely response actually renewed
-  // the input lease or cleared a reset. Zero until one is accepted; less than nonce.
+  // Agent -> browser only: greatest accepted response nonce. Zero until one is
+  // accepted; less than nonce. Diagnostic evidence, not an input gating condition.
   uint32 accepted_response_nonce = 3;
 }
 message TerminalData { bytes data = 1; }
@@ -174,5 +205,7 @@ message Envelope {
     DesktopProbe desktop_probe = 36;
     WindowsRestartRequest windows_restart_request = 37;
     WindowsRestartResult windows_restart_result = 38;
+    AgentLogBatch agent_logs = 39;
+    AgentLogAck agent_log_ack = 40;
   }
 }

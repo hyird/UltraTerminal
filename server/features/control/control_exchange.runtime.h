@@ -87,6 +87,7 @@ ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const De
     welcome.set_protocol_version(protocol::kVersion);
     welcome.set_sequence(1);
     welcome.mutable_welcome()->set_heartbeat_seconds(15);
+    welcome.mutable_welcome()->set_agent_logs(true);
     auto output = protocol::encodeMessage(welcome);
     if (!output) {
         co_return;
@@ -99,6 +100,8 @@ ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const De
     connection.ready = true;
     context.template workerState<ServerRuntime>().status.publish("d:" + device.id);
     deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    auto logWindow = std::chrono::steady_clock::now();
+    unsigned logBatches = 0;
     while ((message = co_await socket.read())) {
         if (!message->binary() || message->payload().size() > protocol::kMaximumControlBytes) {
             closeReason = "invalid_control_message";
@@ -110,6 +113,33 @@ ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const De
             break;
         }
         received = incoming->sequence();
+        if (incoming->has_agent_logs()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - logWindow >= std::chrono::seconds(1)) {
+                logWindow = now;
+                logBatches = 0;
+            }
+            if (++logBatches > 4) {
+                closeReason = "agent_log_rate_exceeded";
+                break;
+            }
+            const auto& batch = incoming->agent_logs();
+            for (const auto& entry : batch.entries()) {
+                // Identity comes from authenticated transport, never from uploaded log data.
+                spdlog::info("agent_log device_id={} runtime_id={} event_sequence={} agent_unix_ms={} event={} session_id={} exit_code={} forced_exit={}",
+                             device.id, batch.runtime_id(), entry.sequence(), entry.unix_milliseconds(), wire::AgentLog_Event_Name(entry.event()), entry.session_id(), entry.exit_code(), entry.forced_exit());
+            }
+            if (batch.dropped()) {
+                spdlog::warn("agent_log_dropped device_id={} runtime_id={} count={}", device.id, batch.runtime_id(), batch.dropped());
+            }
+            wire::Envelope response;
+            response.mutable_agent_log_ack()->set_sequence(batch.entries().rbegin()->sequence());
+            if (!connection.enqueue(std::move(response))) {
+                closeReason = "queue_closed";
+                break;
+            }
+            continue;
+        }
         if (incoming->has_windows_login_result()) {
             if (!connection.windowsLoginReply(incoming->windows_login_result())) {
                 break;

@@ -75,11 +75,10 @@ class DesktopWorker {
                     wire::Envelope probe;
                     probe.set_channel_id("input");
                     probe.mutable_desktop_probe()->set_nonce(++probeNonce_);
-                    probe.mutable_desktop_probe()->set_reset_input(inputFrozen_);
                     probe.mutable_desktop_probe()->set_accepted_response_nonce(lastAcceptedResponseNonce_);
                     const auto sentAt = std::chrono::steady_clock::now();
-                    outstandingProbes_.push_back({probeNonce_, sentAt, inputFrozen_});
-                    if (outstandingProbes_.size() > 3) {
+                    outstandingProbes_.push_back({probeNonce_, sentAt});
+                    if (outstandingProbes_.size() > 32) {
                         outstandingProbes_.pop_front();
                     }
                     nextProbe_ = sentAt + std::chrono::seconds(2);
@@ -165,21 +164,9 @@ class DesktopWorker {
         }
     }
     void checkLiveness(std::chrono::steady_clock::time_point now) {
-        if (ready_ && !inputFrozen_ && now - lastAck_ >= std::chrono::seconds(4)) {
-            inputFrozen_ = true;
-            frozenAt_ = now;
-            if (input_) {
-                try {
-                    input_->releaseAll();
-                } catch (...) {
-                    releaseFailure_ = std::current_exception();
-                    stop();
-                    throw;
-                }
-            }
-        } else if (inputFrozen_ && now - frozenAt_ >= std::chrono::seconds(30)) {
+        if (ready_ && now - lastAck_ >= std::chrono::seconds(60)) {
             stop();
-            throw std::runtime_error("Desktop browser liveness retention expired");
+            throw std::runtime_error("Desktop browser liveness expired");
         }
     }
     asio::awaitable<void> read() {
@@ -212,31 +199,20 @@ class DesktopWorker {
                         continue;
                     }
                     const auto sentAt = probe->sentAt;
-                    const bool resetInput = probe->resetInput;
                     outstandingProbes_.erase(probe);
                     confirmedProbes_.push_back(nonce);
-                    if (confirmedProbes_.size() > 3) {
+                    if (confirmedProbes_.size() > 32) {
                         confirmedProbes_.pop_front();
                     }
-                    if (now - sentAt >= std::chrono::seconds(4)) {
+                    if (now - sentAt >= std::chrono::seconds(60)) {
                         continue;
                     }
-                    if (inputFrozen_) {
-                        if (!resetInput || sentAt < frozenAt_) {
-                            continue;
-                        }
-                        inputFrozen_ = false;
-                        lastAck_ = now;
-                    } else {
-                        lastAck_ = now;
-                    }
-                    // Only accepted, timely replies are evidence of a live input lease.
-                    // confirmedProbes_ also includes late replies and cannot be advertised.
+                    lastAck_ = now;
                     lastAcceptedResponseNonce_ = std::max(lastAcceptedResponseNonce_, nonce);
                 } else if (message->has_input_event()) {
                     // Old coordinates can arrive while Windows changes the mode.
                     // Resume only after the new capture configuration binds input.
-                    if (inputFrozen_ || resizing_ || (ready_ && !input_)) {
+                    if (resizing_ || (ready_ && !input_)) {
                         continue;
                     }
                     if (!ready_ || !input_) {
@@ -308,7 +284,6 @@ class DesktopWorker {
     struct OutstandingProbe {
         std::uint32_t nonce;
         std::chrono::steady_clock::time_point sentAt;
-        bool resetInput;
     };
 
     NamedPipeTransport& pipe_;
@@ -328,8 +303,7 @@ class DesktopWorker {
     std::uint32_t lastAcceptedResponseNonce_ = 0;
     std::deque<OutstandingProbe> outstandingProbes_;
     std::deque<std::uint32_t> confirmedProbes_;
-    std::chrono::steady_clock::time_point lastAck_{}, frozenAt_{}, nextProbe_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    bool inputFrozen_ = false;
+    std::chrono::steady_clock::time_point lastAck_{}, nextProbe_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false;
 };
 } // namespace
