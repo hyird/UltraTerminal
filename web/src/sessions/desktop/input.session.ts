@@ -9,6 +9,7 @@ const buttonBits = [1, 4, 2, 8, 16];
 export class DesktopInput {
   private listeners = new AbortController();
   private heldKeys = new Set<number>();
+  private inferredShift = false;
   private buttons = 0;
   private pointer: number | null = null;
   private move: { x: number; y: number } | null = null;
@@ -120,15 +121,64 @@ export class DesktopInput {
   }
   private key(event: KeyboardEvent, pressed: boolean): void {
     if (!this.focused()) return;
-    const code = virtualKey(event.code);
-    if (code === undefined || event.isComposing) return;
+    const code =
+      virtualKey(event.code) ??
+      (event.key === "Shift"
+        ? event.location === 2
+          ? 0xa1
+          : 0xa0
+        : undefined);
+    if (code === undefined) return;
+    const shift = code === 0xa0 || code === 0xa1;
+    const modifier =
+      (code >= 0xa0 && code <= 0xa5) || code === 0x5b || code === 0x5c;
+    // Composition owns text, not physical modifiers or already-owned keyups.
+    if (event.isComposing && pressed && !modifier) return;
     event.preventDefault();
     if (pressed && event.repeat && !this.heldKeys.has(code)) return;
-    if (!pressed && !this.heldKeys.has(code)) return;
+    if (
+      !pressed &&
+      !this.heldKeys.has(code) &&
+      (!shift || (!this.heldKeys.has(0xa0) && !this.heldKeys.has(0xa1)))
+    )
+      return;
+    this.flushMove();
+    if (shift) {
+      if (this.inferredShift) {
+        if (!pressed) {
+          if (!event.shiftKey) this.syncShift(false);
+          return;
+        }
+        if (code !== 0xa0) this.sendKey(0xa0, false);
+        this.inferredShift = false;
+      }
+      if (pressed || this.heldKeys.has(code)) this.sendKey(code, pressed);
+      if (!pressed) this.syncShift(event.shiftKey);
+    } else {
+      this.syncShift(event.shiftKey);
+      this.sendKey(code, pressed);
+    }
+  }
+  private sendKey(code: number, pressed: boolean): void {
     if (pressed) this.heldKeys.add(code);
     else this.heldKeys.delete(code);
-    this.flushMove();
     this.send({ kind: Kind.KEY, code, pressed });
+  }
+  private syncShift(pressed: boolean): void {
+    if (pressed) {
+      if (!this.heldKeys.has(0xa0) && !this.heldKeys.has(0xa1)) {
+        // A chord carries Shift state even when its initial keydown was lost
+        // or happened before focus. Without a side, use the protocol's left
+        // Shift; a subsequent identified Shift event takes over ownership.
+        this.inferredShift = true;
+        this.sendKey(0xa0, true);
+      }
+    } else {
+      for (const code of [0xa0, 0xa1]) {
+        if (this.heldKeys.has(code)) this.sendKey(code, false);
+      }
+      this.inferredShift = false;
+    }
   }
   private point(event: PointerEvent, down: boolean): void {
     if (this.disposed || event.pointerType !== "mouse") return;
@@ -222,6 +272,7 @@ export class DesktopInput {
     if (this.disposed) return;
     const held = this.heldKeys.size > 0 || this.buttons !== 0;
     this.heldKeys.clear();
+    this.inferredShift = false;
     this.buttons = 0;
     this.move = null;
     this.wheelRemainder = [0, 0];

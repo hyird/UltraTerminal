@@ -39,8 +39,116 @@ async function main() {
       assert.deepEqual(await page.evaluate(() => window.events), [['release']]);
       await page.locator('canvas').focus();
     }
-    await page.evaluate(() => window.input.dispose());
-    console.log('PASS: Chrome left/right Shift chords, protobuf round trip, ordered release and blur cleanup');
+    const cases = [
+      {
+        name: 'Missing right Shift down is recovered from the chord modifier flag',
+        keys: [
+          ['keydown', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'ShiftRight', key: 'Shift', location: 2 }],
+          ['keyup', { code: 'KeyA' }],
+        ],
+        expected: [[0xa0, true], [0x41, true], [0xa0, false], [0x41, false]],
+      },
+      {
+        name: 'Identified right Shift takes over an inferred left Shift',
+        keys: [
+          ['keydown', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'KeyA', shiftKey: true }],
+          ['keydown', { code: 'ShiftRight', shiftKey: true }],
+          ['keyup', { code: 'ShiftRight' }],
+        ],
+        expected: [[0xa0, true], [0x41, true], [0x41, false], [0xa0, false], [0xa1, true], [0xa1, false]],
+      },
+      {
+        name: 'An inferred Shift remains held while another physical Shift remains down',
+        keys: [
+          ['keydown', { code: 'Digit1', shiftKey: true }],
+          ['keyup', { code: 'Digit1', shiftKey: true }],
+          ['keyup', { code: 'ShiftRight', shiftKey: true }],
+          ['keyup', { code: 'ShiftLeft' }],
+        ],
+        expected: [[0xa0, true], [0x31, true], [0x31, false], [0xa0, false]],
+      },
+      {
+        name: 'Unowned releases and repeats must not adopt a Shift',
+        keys: [
+          ['keyup', { code: 'ShiftRight', shiftKey: true }],
+          ['keydown', { code: 'KeyA', shiftKey: true, repeat: true }],
+          ['keyup', { code: 'KeyA', shiftKey: true }],
+        ],
+        expected: [],
+      },
+      {
+        name: 'Missing Shift up is recovered before the next unshifted key',
+        keys: [
+          ['keydown', { code: 'ShiftRight', shiftKey: true }],
+          ['keydown', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'KeyA', shiftKey: true }],
+          ['keydown', { code: 'Digit1' }],
+          ['keyup', { code: 'Digit1' }],
+        ],
+        expected: [[0xa1, true], [0x41, true], [0x41, false], [0xa1, false], [0x31, true], [0x31, false]],
+      },
+      {
+        name: 'IME composition must not swallow modifiers or owned releases',
+        keys: [
+          ['keydown', { code: 'ShiftRight', shiftKey: true, isComposing: true }],
+          ['keydown', { code: 'KeyB', shiftKey: true, isComposing: true }],
+          ['keyup', { code: 'KeyB', shiftKey: true, isComposing: true }],
+          ['keydown', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'KeyA', shiftKey: true, isComposing: true }],
+          ['keyup', { code: 'ShiftRight', isComposing: true }],
+        ],
+        expected: [[0xa1, true], [0x41, true], [0x41, false], [0xa1, false]],
+      },
+      {
+        name: 'Unidentified Shift uses the browser key location',
+        keys: [
+          ['keydown', { code: 'Unidentified', key: 'Shift', location: 2, shiftKey: true }],
+          ['keydown', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'Unidentified', key: 'Shift', location: 2 }],
+        ],
+        expected: [[0xa1, true], [0x41, true], [0x41, false], [0xa1, false]],
+      },
+      {
+        name: 'Releasing one physical Shift retains the other',
+        keys: [
+          ['keydown', { code: 'ShiftLeft', shiftKey: true }],
+          ['keydown', { code: 'ShiftRight', shiftKey: true }],
+          ['keyup', { code: 'ShiftLeft', shiftKey: true }],
+          ['keydown', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'KeyA', shiftKey: true }],
+          ['keyup', { code: 'ShiftRight' }],
+        ],
+        expected: [[0xa0, true], [0xa1, true], [0xa0, false], [0x41, true], [0x41, false], [0xa1, false]],
+      },
+    ];
+    for (const test of cases) {
+      const events = await page.evaluate(keys => {
+        window.events = [];
+        const canvas = document.querySelector('canvas');
+        for (const [type, options] of keys)
+          canvas.dispatchEvent(new KeyboardEvent(type, { ...options, bubbles: true, cancelable: true }));
+        window.input.release();
+        return window.events;
+      }, test.keys);
+      assert.deepEqual(events, test.expected, test.name);
+    }
+    const blurred = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      window.events = [];
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyA', shiftKey: true }));
+      canvas.blur();
+      canvas.focus();
+      canvas.dispatchEvent(new KeyboardEvent('keyup', { code: 'ShiftRight' }));
+      canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyB' }));
+      canvas.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyB' }));
+      window.input.dispose();
+      return window.events;
+    });
+    assert.deepEqual(blurred, [[0xa0, true], [0x41, true], ['release'], [0x42, true], [0x42, false]]);
+    console.log('PASS: Chrome Shift chords, modifier recovery, composition, key location, protobuf ordering and blur cleanup');
   } finally {
     await browser.close();
     await server.close();
