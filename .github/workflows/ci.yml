@@ -64,19 +64,26 @@ jobs:
           path: build/tools/vcpkg
           persist-credentials: false
       - name: Configure dependency cache
+        id: cache-context
         run: |
           $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
           New-Item -ItemType Directory -Force $cache | Out-Null
           "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
           "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
+          if (!$env:ImageOS -or !$env:ImageVersion) { throw 'Runner image identity is missing' }
+          "image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
+      # Binary ABIs are checked by vcpkg. A new runner image needs a new
+      # immutable Actions key so rebuilt packages can actually be saved.
       - name: Restore vcpkg binary cache
         id: cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: build/vcpkg-cache
-          key: vcpkg-windows2025-msvc-static-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
-          restore-keys: vcpkg-windows2025-msvc-static-
+          key: vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'ports/**', 'triplets/**') }}
+          restore-keys: |
+            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-
+            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-
       - name: Bootstrap vcpkg
         run: |
           if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
@@ -157,19 +164,25 @@ jobs:
           echo 'CC=clang-19' >> "$GITHUB_ENV"
           echo 'CXX=clang++-19' >> "$GITHUB_ENV"
       - name: Configure dependency cache
+        id: cache-context
         run: |
           $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
           New-Item -ItemType Directory -Force $cache | Out-Null
           "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
           "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
+          if (!$env:ImageOS -or !$env:ImageVersion) { throw 'Runner image identity is missing' }
+          "image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
       - name: Restore vcpkg binary cache
         id: cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: build/vcpkg-cache
-          key: vcpkg-ubuntu24-clang19-gcc14-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
-          restore-keys: vcpkg-ubuntu24-clang19-gcc14-
+          key: vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-x64-linux-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'ports/**', 'triplets/**') }}
+          restore-keys: |
+            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-x64-linux-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-
+            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-x64-linux-${{ steps.vcpkg.outputs.revision }}-
+            vcpkg-ubuntu24-clang19-gcc14-
       - name: Bootstrap vcpkg
         run: |
           if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
