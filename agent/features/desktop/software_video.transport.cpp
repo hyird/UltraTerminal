@@ -14,6 +14,14 @@
 
 namespace ultraterimal::agent {
 namespace {
+std::uint32_t codecBitrate(std::uint32_t bitrate) {
+    // OpenH264 2.6.0 redistributes SPATIAL_LAYER_ALL through float even with
+    // one layer. An unrepresentable integer can round UP past its exact layer
+    // ceiling, causing SetOption(BITRATE) to fail after mutating codec state.
+    // Multiples of 8 are exactly representable throughout our <=100 Mbps range.
+    // Normalize target and ceilings together, down by at most 7 bits/second.
+    return bitrate - bitrate % 8;
+}
 void requireCodec(int result, const char* operation) {
     if (result != cmResultSuccess) {
         throw std::runtime_error(operation);
@@ -44,6 +52,7 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
         config.bitrate < 64000 || config.bitrate > 100000000 || !config.framesPerSecond || config.framesPerSecond > 120) {
         throw std::invalid_argument("Invalid software video configuration");
     }
+    config.bitrate = codecBitrate(config.bitrate);
     state_->config = config;
     state_->i420.resize(static_cast<std::size_t>(pixels * 3 / 2));
     requireCodec(WelsCreateSVCEncoder(&state_->encoder), "Cannot create OpenH264 encoder");
@@ -124,6 +133,7 @@ void SoftwareVideoEncoder::setRate(std::uint32_t framesPerSecond, std::uint32_t 
     if (!framesPerSecond || framesPerSecond > 120 || bitrate < 64000 || bitrate > 100000000) {
         throw std::invalid_argument("Invalid adaptive video rate");
     }
+    bitrate = codecBitrate(bitrate);
     if (framesPerSecond != state_->config.framesPerSecond) {
         float rate = static_cast<float>(framesPerSecond);
         requireCodec(state_->encoder->SetOption(ENCODER_OPTION_FRAME_RATE, &rate), "Cannot update encoder frame rate");
