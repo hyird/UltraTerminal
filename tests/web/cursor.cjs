@@ -12,7 +12,7 @@ async function main() {
   const browser = await chromium.launch({ executablePath: process.argv[2] || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   try {
     const page = await browser.newPage();
-    await page.route('**/cursor-fixture', route => route.fulfill({ contentType: 'text/html', body: '<div class="desktop-stage" style="width:640px"><canvas width="1280" height="800"></canvas><canvas class="cursor-overlay" width="1280" height="800"></canvas></div>' }));
+    await page.route('**/cursor-fixture', route => route.fulfill({ contentType: 'text/html', body: '<div class="desktop-viewport" data-scale="fit" style="width:640px;height:400px;flex:none"><div class="desktop-stage"><canvas width="1280" height="800"></canvas><canvas class="cursor-overlay" width="1280" height="800"></canvas></div></div>' }));
     await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/cursor-fixture`);
     await page.evaluate(async () => {
       await import('/src/styles/index.css');
@@ -33,22 +33,17 @@ async function main() {
     assert.equal(await page.locator('.cursor-overlay').evaluate(c => getComputedStyle(c).visibility), 'hidden');
     await page.mouse.move(400, 200);
     assert.match(await page.locator('canvas').first().evaluate(c => getComputedStyle(c).cursor), /data:image\/png/);
-    await page.locator('.desktop-stage').evaluate(c => c.style.width = '1280px');
+    await page.locator('.desktop-viewport').evaluate(c => { c.style.width = '1280px'; c.style.height = '800px'; });
     await page.waitForFunction(() => getComputedStyle(document.querySelector('canvas')).cursor.includes('4 6, default'));
     assert.equal(await page.locator('.cursor-overlay').evaluate(c => c.getContext('2d').getImageData(96, 94, 1, 1).data[3]), 0);
     await page.locator('canvas').first().evaluate(c => c.blur());
     await page.mouse.move(0, 0);
     assert.equal(await page.locator('.cursor-overlay').evaluate(c => getComputedStyle(c).visibility), 'hidden');
     await page.evaluate(() => {
-      const stage = document.querySelector('.desktop-stage');
-      const viewport = document.createElement('div');
-      viewport.className = 'desktop-viewport';
+      const viewport = document.querySelector('.desktop-viewport');
       viewport.style.cssText = 'width:800px;height:400px;flex:none';
-      stage.replaceWith(viewport);
-      viewport.append(stage);
-      stage.style.removeProperty('width');
-      window.session.viewportResize.observe(viewport);
-      window.session.sizeDesktop();
+      viewport.dataset.scale = 'native';
+      window.session.setScaleMode('native');
     });
     const fit = await page.locator('.desktop-stage').evaluate(c => ({ width: c.clientWidth, height: c.clientHeight, scroll: c.parentElement.scrollHeight > c.parentElement.clientHeight }));
     assert.deepEqual(fit, {width:1280,height:800,scroll:true});

@@ -585,12 +585,8 @@ export class DesktopSession {
     let height = this.overlay.height / ratio;
     if (this.scaleMode === "fit" && viewport && width && height) {
       if (!viewport.clientWidth || !viewport.clientHeight) return;
-      const scale = Math.min(
-        viewport.clientWidth / width,
-        viewport.clientHeight / height,
-      );
-      width *= scale;
-      height *= scale;
+      width = viewport.clientWidth;
+      height = viewport.clientHeight;
     }
     stage.style.width = `${width}px`;
     stage.style.height = `${height}px`;
@@ -617,24 +613,32 @@ export class DesktopSession {
   private updateLocalCursor(): void {
     if (!this.ticket.writeControl || this.stopped || !this.cursorShape) return;
     const shape = this.cursorShape;
-    const scale = Math.min(
-      this.canvas.getBoundingClientRect().width / this.overlay.width,
-      128 / shape.width,
-      128 / shape.height,
+    const bounds = this.canvas.getBoundingClientRect();
+    let scaleX = bounds.width / this.overlay.width;
+    let scaleY = bounds.height / this.overlay.height;
+    if (scaleX <= 0 || scaleY <= 0) return;
+    const limit = Math.min(
+      1,
+      128 / (shape.width * scaleX),
+      128 / (shape.height * scaleY),
     );
-    if (scale <= 0) return;
+    scaleX *= limit;
+    scaleY *= limit;
     const source = document.createElement("canvas");
     source.width = shape.width;
     source.height = shape.height;
     source.getContext("2d")?.putImageData(shape, 0, 0);
     const rendered = document.createElement("canvas");
-    rendered.width = Math.max(1, Math.round(shape.width * scale));
-    rendered.height = Math.max(1, Math.round(shape.height * scale));
+    rendered.width = Math.max(1, Math.round(shape.width * scaleX));
+    rendered.height = Math.max(1, Math.round(shape.height * scaleY));
     rendered
       .getContext("2d")
       ?.drawImage(source, 0, 0, rendered.width, rendered.height);
-    const x = Math.min(rendered.width - 1, Math.round(this.hotspot.x * scale));
-    const y = Math.min(rendered.height - 1, Math.round(this.hotspot.y * scale));
+    const x = Math.min(rendered.width - 1, Math.round(this.hotspot.x * scaleX));
+    const y = Math.min(
+      rendered.height - 1,
+      Math.round(this.hotspot.y * scaleY),
+    );
     this.canvas.style.setProperty(
       "--desktop-cursor",
       `url("${rendered.toDataURL()}") ${x} ${y}, default`,
