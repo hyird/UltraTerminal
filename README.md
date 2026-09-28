@@ -176,6 +176,8 @@ ctest --preset linux-server-release -L unit --no-tests=error
 ```
 
 真实桌面、锁屏、UAC、输入注入、服务安装和公网弱网行为在专用设备人工验收。现有原生桌面探针及独立浏览器回归工具仅用于本地诊断，不在 CI 中运行。
+单显示器测试机可显式运行 `build/windows-agent/tests/agent/Release/agent-video-runtime-tests.exe --resize`：连续切换六次真实分辨率，在同一协议通道校验尺寸、递增画面基准和独立关键帧解码，再在模式切换后验证关闭响应。测试正常退出或抛出异常时恢复原分辨率（强制终止进程不保证恢复）；不在 CI 中执行。
+
 软件视频互操作测试使用合成色条：
 
 ```powershell

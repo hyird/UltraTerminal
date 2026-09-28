@@ -268,13 +268,21 @@ struct DesktopVideoRuntime::State {
                     return false;
                 }
                 owned->discard();
+                // An accepted user-requested mode change starts a new recovery
+                // episode. Successful frames alone never reset a flapping
+                // device's budget, but earlier modes must not penalize this one.
+                owned->recovery = CaptureRecovery{};
                 return true;
             } catch (const DesktopChanged&) {
                 owned->discard();
                 return false;
             }
         });
-        co_return co_await ruvia::asAwaitable(std::move(operation));
+        const bool applied = co_await ruvia::asAwaitable(std::move(operation));
+        if (applied) {
+            self->nextFrameAt = {};
+        }
+        co_return applied;
     }
 };
 DesktopVideoRuntime::DesktopVideoRuntime(ruvia::EventLoop loop, std::uint32_t displayIndex) : state_(std::make_shared<State>(std::move(loop), displayIndex)) {}

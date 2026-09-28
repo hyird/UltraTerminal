@@ -7,6 +7,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string_view>
 
 #include <windows.h>
 
@@ -23,6 +24,36 @@ void require(bool condition, const char* reason) {
         throw std::runtime_error(reason);
     }
 }
+// Resolution-changing coverage is opt-in and only runs on a single display.
+// Restore the original mode even when capture recovery or decoding fails.
+struct DisplayRestore {
+    DEVMODEW original{};
+    explicit DisplayRestore(bool enabled) {
+        if (enabled) {
+            require(GetSystemMetrics(SM_CMONITORS) == 1, "Resize test requires exactly one monitor");
+            original.dmSize = sizeof(original);
+            require(EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &original), "Cannot save original display mode");
+        }
+    }
+    void restore() {
+        if (!original.dmSize) {
+            return;
+        }
+        DEVMODEW current{};
+        current.dmSize = sizeof(current);
+        if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &current) && current.dmPelsWidth == original.dmPelsWidth && current.dmPelsHeight == original.dmPelsHeight) {
+            return;
+        }
+        require(ChangeDisplaySettingsExW(nullptr, &original, nullptr, CDS_UPDATEREGISTRY | CDS_GLOBAL, nullptr) == DISP_CHANGE_SUCCESSFUL, "Cannot restore original display mode");
+    }
+    ~DisplayRestore() {
+        try {
+            restore();
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << '\n';
+        }
+    }
+};
 void decode(const agent::DesktopVideoUpdate& update, const wire::VideoConfig& config) {
     require(update.frame.encode_microseconds() > 0, "Successful desktop frame omitted encoding duration");
     ISVCDecoder* decoder = nullptr;
@@ -47,7 +78,7 @@ void decode(const agent::DesktopVideoUpdate& update, const wire::VideoConfig& co
     require(information.UsrData.sSystemBuffer.iWidth == static_cast<int>(config.width()) && information.UsrData.sSystemBuffer.iHeight == static_cast<int>(config.height()), "Desktop dimensions changed in encoding");
     require(information.uiOutYuvTimeStamp == update.frame.timestamp_microseconds(), "Desktop presentation timestamp changed");
 }
-asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_timer& pulse, unsigned& ticks) {
+asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_timer& pulse, unsigned& ticks, bool changeResolution) {
     std::optional<agent::DesktopVideoUpdate> first;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (!first && std::chrono::steady_clock::now() < deadline) {
@@ -195,11 +226,68 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     require(resized->configuration->display_modes_size() > 0, "Driver display modes were not advertised");
     decode(*resized, *resized->configuration);
 
+    if (changeResolution) {
+        std::optional<wire::DisplayMode> alternative;
+        std::uint64_t distance = UINT64_MAX;
+        for (const auto& mode : configuration.display_modes()) {
+            const auto dx = mode.width() > configuration.width() ? mode.width() - configuration.width() : configuration.width() - mode.width();
+            const auto dy = mode.height() > configuration.height() ? mode.height() - configuration.height() : configuration.height() - mode.height();
+            const auto difference = static_cast<std::uint64_t>(dx) + dy;
+            if (difference && difference < distance) {
+                alternative = mode;
+                distance = difference;
+            }
+        }
+        require(alternative.has_value(), "No alternative display mode for resize coverage");
+        auto generation = resized->generation;
+        auto timestamp = resized->frame.timestamp_microseconds();
+        // Rapid user-requested changes must keep one channel and always publish
+        // a fresh, independently decodable baseline, never retained old pixels.
+        for (unsigned iteration = 0; iteration < 6; ++iteration) {
+            const auto width = iteration % 2 ? configuration.width() : alternative->width();
+            const auto height = iteration % 2 ? configuration.height() : alternative->height();
+            require(co_await video.resize(width, height), "Advertised display mode was rejected");
+            std::optional<agent::DesktopVideoUpdate> changed;
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+            while (!changed && std::chrono::steady_clock::now() < until) {
+                changed = co_await video.next(true);
+                if (changed && changed->frame.data().empty()) {
+                    changed.reset();
+                }
+            }
+            require(changed && changed->configuration && changed->generation == ++generation && changed->frameId == 1 && changed->frame.key_frame(), "Resize lost the configured key-frame baseline");
+            require(changed->configuration->width() == width && changed->configuration->height() == height, "Resize published stale dimensions");
+            require(changed->frame.timestamp_microseconds() > timestamp, "Resize reset the presentation clock");
+            timestamp = changed->frame.timestamp_microseconds();
+            message.set_sequence(message.sequence() + 1);
+            message.set_generation(changed->generation);
+            message.clear_frame_id();
+            *message.mutable_video_config() = *changed->configuration;
+            require(bool(validator.accept(message)), "Resize configuration broke the existing channel");
+            message.set_sequence(message.sequence() + 1);
+            message.set_frame_id(1);
+            *message.mutable_video_frame() = changed->frame;
+            require(bool(validator.accept(message)), "Resize frame broke the existing channel");
+            decode(*changed, *changed->configuration);
+            feedback.set_background(false);
+            feedback.set_displayed_generation(changed->generation);
+            feedback.set_displayed_frame(changed->frameId);
+            video.feedback(feedback);
+            std::cout << "Resize " << width << 'x' << height << " generation=" << generation << " decoded on original channel\n";
+        }
+        // Cancel capture immediately after a mode change, before a new baseline.
+        // next() may be in capture creation or its recovery timer when stopped.
+        require(co_await video.resize(alternative->width(), alternative->height()), "Pre-cancellation resize failed");
+    }
+
     // Stop while next() is suspended, then await its completion before teardown.
     pulse.cancel();
     const auto stopRequested = std::make_shared<bool>(false);
-    pulse.expires_after(std::chrono::milliseconds(1));
-    pulse.async_wait([&video, stopRequested](std::error_code error) {
+    // A previously queued successful pulse callback can rearm pulse after
+    // cancel(). Keep the stop timer independent of that recurring test clock.
+    asio::steady_timer stopTimer(pulse.get_executor());
+    stopTimer.expires_after(std::chrono::milliseconds(1));
+    stopTimer.async_wait([&video, stopRequested](std::error_code error) {
         if (!error) {
             *stopRequested = true;
             video.stop();
@@ -214,11 +302,15 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
         const auto stopped = co_await video.next();
         require(!*stopRequested || !stopped, "Stopped video runtime published a frame");
     }
+    require(std::chrono::steady_clock::now() < stopDeadline, "Capture cancellation exceeded its completion deadline");
     require(!(co_await video.next(true)), "Stopped video runtime restarted capture");
 }
 } // namespace
-int main() {
+int main(int argc, char** argv) {
     try {
+        require(argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--resize"), "Usage: agent-video-runtime-tests [--resize]");
+        const bool changeResolution = argc == 2;
+        DisplayRestore displayRestore(changeResolution);
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
         asio::io_context io;
         auto attachment = ruvia::attachEventLoop(io);
@@ -236,7 +328,7 @@ int main() {
         pulse.expires_after(std::chrono::milliseconds(1));
         pulse.async_wait(tick);
         std::exception_ptr failure;
-        asio::co_spawn(io, verify(video, pulse, ticks), [&](std::exception_ptr error) {
+        asio::co_spawn(io, verify(video, pulse, ticks, changeResolution), [&](std::exception_ptr error) {
             failure = error;
             pulse.cancel();
             video.stop();
@@ -246,6 +338,7 @@ int main() {
         if (failure) {
             std::rethrow_exception(failure);
         }
+        displayRestore.restore();
         std::cout << "Real desktop capture/encode, twelve baseline rebuilds, independent refresh decode, event-loop responsiveness and stop passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

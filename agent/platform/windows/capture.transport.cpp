@@ -155,7 +155,14 @@ DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_un
     require(D3D11CreateDevice(selectedAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                               nullptr, 0, D3D11_SDK_VERSION, &state_->device, nullptr, &state_->context),
             "D3D11CreateDevice");
-    require(selected->DuplicateOutput(state_->device.Get(), &state_->duplication), "DuplicateOutput (requires an accessible interactive desktop)");
+    const auto duplicationStatus = selected->DuplicateOutput(state_->device.Get(), &state_->duplication);
+    // Mode/desktop transitions can temporarily deny duplication or leave the
+    // output unsupported/unavailable. Use the owner's bounded recovery budget,
+    // not a fatal session error or an unbounded retry inside this worker.
+    if (duplicationStatus == E_ACCESSDENIED || duplicationStatus == DXGI_ERROR_UNSUPPORTED || duplicationStatus == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) {
+        throw CaptureReset();
+    }
+    require(duplicationStatus, "DuplicateOutput (requires an accessible interactive desktop)");
     state_->duplication->GetDesc(&state_->description);
 }
 DesktopCapture::~DesktopCapture() = default;
