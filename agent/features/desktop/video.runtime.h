@@ -1,6 +1,7 @@
 #pragma once
 
 #include <asio/awaitable.hpp>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -34,6 +35,7 @@ class DesktopVideoRuntime {
     void stop();       // Owning event loop only.
     void invalidate(); // Discard an in-flight old frame and rebuild the source.
     void feedback(const wire::QualityFeedback& feedback);
+    void observeRoundTrip(std::chrono::microseconds elapsed);
 
   private:
     struct State;

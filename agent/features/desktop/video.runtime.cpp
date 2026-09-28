@@ -241,7 +241,7 @@ struct DesktopVideoRuntime::State {
             co_return std::nullopt;
         }
         if (result && !result->frame.data().empty()) {
-            self->pacing.sent(result->generation, result->frameId, std::chrono::steady_clock::now());
+            self->pacing.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), result->frame.ByteSizeLong());
         }
         co_return result;
     }
@@ -281,6 +281,9 @@ void DesktopVideoRuntime::stop() {
     state_->pace.cancel();
 }
 void DesktopVideoRuntime::invalidate() { state_->reset = true; }
+void DesktopVideoRuntime::observeRoundTrip(std::chrono::microseconds elapsed) {
+    state_->pacing.observeRoundTrip(elapsed, std::chrono::steady_clock::now());
+}
 void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
     const bool wasBackground = state_->pacing.background();
     if (!state_->pacing.acknowledge(feedback.displayed_generation(), feedback.displayed_frame(),

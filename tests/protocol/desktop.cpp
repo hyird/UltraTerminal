@@ -87,6 +87,30 @@ void verifyPermissions() {
     cursor.set_sequence(4);
     require(rejected(viewer.accept(cursor), DesktopMessageError::kDirection));
 }
+void verifySecureAttention() {
+    auto request = envelope(2, "input");
+    request.set_generation(1);
+    request.mutable_input_event()->set_kind(wire::InputEvent::SECURE_ATTENTION);
+    DesktopChannelValidator viewer({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, false});
+    DesktopChannelValidator writer({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, true});
+    DesktopChannelValidator agent({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kAgent, true});
+    require(rejected(viewer.accept(request), DesktopMessageError::kReadOnly));
+    auto malformed = request;
+    malformed.mutable_input_event()->set_code(46);
+    require(rejected(writer.accept(malformed), DesktopMessageError::kMalformed));
+    malformed = request;
+    malformed.set_generation(0);
+    require(rejected(writer.accept(malformed), DesktopMessageError::kMalformed));
+    require(rejected(agent.accept(request), DesktopMessageError::kDirection));
+    const auto encoded = encodeMessage(request);
+    require(encoded.has_value());
+    require(writer.accept(*decodeMessage(*encoded)).has_value());
+    require(rejected(writer.accept(request), DesktopMessageError::kReplay));
+    auto result = envelope(3, "input");
+    result.mutable_desktop_secure_attention_result()->set_win32_error(1260);
+    require(agent.accept(result).has_value());
+    require(rejected(writer.accept(result), DesktopMessageError::kDirection));
+}
 void verifyProbe() {
     for (const auto source : {ChannelSource::kAgent, ChannelSource::kBrowser}) {
         DesktopChannelValidator input({"session", "input", wire::DESKTOP_INPUT, source, false});
@@ -180,6 +204,7 @@ void verifyFrames() {
 int main() {
     try {
         verifyPermissions();
+        verifySecureAttention();
         verifyProbe();
         verifyFrames();
         std::cout << "Desktop channel binding, direction, read-only access, replay and frame continuity passed\n";

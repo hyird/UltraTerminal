@@ -19,9 +19,11 @@ import {
 import { ApiError } from "../../lib/http";
 import { useEffect, useRef, useState } from "react";
 import { DesktopSession } from "../../sessions/desktop/desktop.session";
+import { desktopShortcuts } from "../../sessions/desktop/shortcuts.protocol";
 import type { DesktopTicket } from "../../sessions/desktop/desktop.types";
 import {
   renameDevice,
+  updateAgent,
   deleteDevice,
   closeDesktop,
   createEnrollment,
@@ -260,6 +262,11 @@ export function DevicesPage() {
               ...(device.canManage
                 ? [
                     { key: "install", label: "安装命令" },
+                    {
+                      key: "update",
+                      label: "更新 Agent",
+                      disabled: !device.online,
+                    },
                     { key: "rename", label: "重命名" },
                     { key: "delete", label: "删除", danger: true },
                   ]
@@ -267,7 +274,28 @@ export function DevicesPage() {
             ],
             onClick: ({ key }) => {
               if (key === "credentials") setLoginDevice(device);
-              else if (key === "install") {
+              else if (key === "update") {
+                modal.confirm({
+                  title: "更新 Agent",
+                  content: `为 ${device.name} 安装已发布的最新版本？安装时远控会短暂断开，Windows 不会重启。`,
+                  okText: "更新",
+                  cancelText: "取消",
+                  onOk: async () => {
+                    try {
+                      const result = await updateAgent(device.id);
+                      void message.success(
+                        result.status === "current"
+                          ? `已是最新版本 ${result.version}`
+                          : `已请求更新至 ${result.version}，结果将上报后台日志`,
+                      );
+                    } catch (failure) {
+                      void message.error(
+                        failure instanceof Error ? failure.message : "更新失败",
+                      );
+                    }
+                  },
+                });
+              } else if (key === "install") {
                 setInstallDevice(device);
                 setInstallPlatform("windows-x64");
                 setEnrollment(null);
@@ -793,6 +821,27 @@ function DesktopView({
               disabled={ended || !ticket.writeControl || !displayModes.length}
             >
               远程分辨率
+            </Button>
+          </Dropdown>
+          <Dropdown
+            trigger={["click"]}
+            disabled={ended || recovering || !ticket.writeControl}
+            menu={{
+              items: desktopShortcuts.map(({ id, label }) => ({
+                key: id,
+                label,
+              })),
+              onClick: ({ key }) => {
+                if (!runtime.current?.shortcut(key))
+                  setStatus("控制通道尚未就绪，请稍后重试快捷键");
+              },
+            }}
+          >
+            <Button
+              size="small"
+              disabled={ended || recovering || !ticket.writeControl}
+            >
+              快捷键
             </Button>
           </Dropdown>
           <Button size="small" onClick={() => void toggleFullScreen()}>

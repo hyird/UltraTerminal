@@ -11,9 +11,11 @@
 #include <ruvia/core/EventLoopAttachment.h>
 
 #include "config/command_line.config.h"
+#include "config/version.config.h"
 #include "features/connection/control.runtime.h"
 #include "features/desktop/worker.runtime.h"
 #include "features/enrollment/enrollment.runtime.h"
+#include "features/update/update.runtime.h"
 #include "platform/windows/capability.transport.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/login_install.transport.h"
@@ -23,17 +25,21 @@
 
 int wmain(int argc, wchar_t** argv) {
     using namespace ultraterimal::agent;
+    bool background = false;
     try {
         std::vector<std::wstring_view> arguments;
         for (int i = 1; i < argc; ++i) {
             arguments.emplace_back(argv[i]);
         }
         const auto options = parseCommandLine(arguments);
+        background = options && (options->command == Command::kService || options->command == Command::kDesktop || options->command == Command::kApplyUpdate);
         if (!options) {
             std::wcerr << options.error() << L'\n';
             return 2;
         }
         switch (options->command) {
+        case Command::kApplyUpdate:
+            return runAgentUpdate();
         case Command::kHelp:
             std::cout << "Ultraterimal Agent\n"
                          "  --terminal-check  Verify local ConPTY without remote access\n"
@@ -139,7 +145,7 @@ int wmain(int argc, wchar_t** argv) {
             break;
         }
         case Command::kVersion:
-            std::cout << "0.1.0\n";
+            std::cout << kAgentVersion << '\n';
             break;
         case Command::kProbe:
             std::cout << capabilityJson(detectCapabilities()) << '\n';
@@ -189,7 +195,9 @@ int wmain(int argc, wchar_t** argv) {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "Agent error: " << error.what() << '\n';
+        if (!background) {
+            std::cerr << "Agent error: " << error.what() << '\n';
+        }
         return 1;
     }
 }

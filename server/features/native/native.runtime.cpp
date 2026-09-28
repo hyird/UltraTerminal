@@ -25,6 +25,7 @@
 #include "quic.transport.h"
 #include "stream.transport.h"
 #include "ultraterimal/protocol/stream.protocol.h"
+#include "update.runtime.h"
 
 namespace ultraterimal::server {
 namespace {
@@ -92,6 +93,8 @@ ruvia::Task<void> serveNative(ruvia::WebWorkerContext& context, std::shared_ptr<
                 NativeContext authenticated(context, std::move(*device), channel);
                 if (purpose == wire::NativeConnect::CONTROL) {
                     co_await runControlConnection(authenticated, *channel);
+                } else if (purpose == wire::NativeConnect::AGENT_UPDATE) {
+                    co_await serveAgentUpdate(authenticated, *channel);
                 } else {
                     co_await runDesktopChannel(authenticated, *channel, protocol::ChannelSource::kAgent);
                 }

@@ -106,7 +106,7 @@ ruvia::Task<void> watchChannel(Context& context, Connection& socket, ChannelStat
     }
 }
 template <typename Context, typename Connection>
-ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol::ChannelSource source, ChannelState& state, ruvia::TaskScope& scope) {
+ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol::ChannelSource source, ChannelState& state, ruvia::TaskScope& scope, std::optional<wire::ChannelPurpose> expectedPurpose) {
     auto incoming = co_await socket.read();
     if (!incoming || !incoming->binary() || incoming->payload().size() > protocol::kMaximumControlBytes) {
         co_return;
@@ -114,7 +114,7 @@ ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol
     auto open = protocol::decodeMessage(incoming->payload());
     incoming.reset();
     if (!open || !open->has_channel_open() || open->sequence() != 1 || open->generation() || open->frame_id() || open->base_frame_id() ||
-        !protocol::purposeMatches(wire::DESKTOP, open->channel_open().purpose())) {
+        !protocol::purposeMatches(wire::DESKTOP, open->channel_open().purpose()) || (expectedPurpose && open->channel_open().purpose() != *expectedPurpose)) {
         co_return;
     }
     if (source == protocol::ChannelSource::kBrowser) {
@@ -167,14 +167,14 @@ ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol
     }
 }
 template <typename Context, typename Connection>
-ruvia::Task<void> channel(Context& context, Connection& socket, protocol::ChannelSource source) {
+ruvia::Task<void> channel(Context& context, Connection& socket, protocol::ChannelSource source, std::optional<wire::ChannelPurpose> expectedPurpose = std::nullopt) {
     ChannelState state;
     state.source = source;
     auto worker = context.worker();
     ruvia::TaskScope scope(worker);
     scope.spawn(watchChannel(context, socket, state, scope));
     try {
-        co_await exchangeChannel(context, socket, source, state, scope);
+        co_await exchangeChannel(context, socket, source, state, scope, expectedPurpose);
     } catch (const std::exception&) {
         if (state.session) {
             state.session->close(DesktopCloseReason::kReadFailed, state.origin());
@@ -209,7 +209,7 @@ ruvia::Task<void> channel(Context& context, Connection& socket, protocol::Channe
 }
 } // namespace
 template <typename Context, typename Connection>
-ruvia::Task<void> runDesktopChannel(Context& context, Connection& socket, protocol::ChannelSource source) {
-    co_await channel(context, socket, source);
+ruvia::Task<void> runDesktopChannel(Context& context, Connection& socket, protocol::ChannelSource source, std::optional<wire::ChannelPurpose> expectedPurpose = std::nullopt) {
+    co_await channel(context, socket, source, expectedPurpose);
 }
 } // namespace ultraterimal::server

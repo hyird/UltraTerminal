@@ -12,7 +12,7 @@ export const ultraterimal = {
     VideoConfig: { create(message) { return message; } },
     DisplayMode: { create(message) { return message; } },
     VideoFrame: { create(message) { return message; } },
-    InputEvent: { Kind: { POINTER_MOVE: 1, BUTTON: 2, KEY: 3, WHEEL: 4, RELEASE_ALL: 5 } },
+    InputEvent: { Kind: { POINTER_MOVE: 1, BUTTON: 2, KEY: 3, WHEEL: 4, RELEASE_ALL: 5, SECURE_ATTENTION: 6 } },
     QualityFeedback: { Preference: { BALANCED: 1 } },
   },
 };

@@ -7,7 +7,7 @@
 GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行三项检查：
 
 - Frontend：Node.js 24、`npm ci`、格式检查、类型检查、生产构建。
-- Windows Agent：Windows Server 2025 / MSVC、`windows-agent-release` Preset、静态链接构建、功能单元测试 和 MSI 打包。
+- Windows Agent：Windows Server 2022 / MSVC、`windows-agent-release` Preset、静态链接构建、功能单元测试和 MSI 打包。
 - Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及功能单元测试。
 
 vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存前端、Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
@@ -37,7 +37,7 @@ Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agen
   -AgentExe build/windows-agent/agent/Release/agent.exe `
   -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll `
   -CaBundle path/to/ca.pem `
-  -Output build/deployment/ultraterimal-agent-1.0.2.msi `
+  -Output build/deployment/ultraterimal-agent-1.0.6.msi `
   -GatewayHost <证书域名> -GatewayAddress <源站地址>
 ```
 
@@ -166,7 +166,7 @@ node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-
 
 `agent-software-video-benchmark` 输出 720p、1080p、2560×1600 合成窗口移动与滚动场景的 JSON 行报告，记录预热后 180 帧的编码平均/P95/P99 耗时、CPU 时间、字节量、吞吐与亮度 PSNR，每帧立即独立解码校验。运行 `build/windows-agent/tests/agent/Release/agent-software-video-benchmark.exe`，输出重定向至 `build/`。结果只衡量软件颜色转换与编码，不包含采集、网络和浏览器显示延迟，也不代表远端实测帧率；合成场景的亮度 PSNR 不替代文字、色彩和真实应用画质验收。
 
-桌面默认高清：流畅、均衡、高清的目标码率分别为 8、16、24 Mbps，拥塞下限分别为 2、4、8 Mbps，仍按真实显示反馈自适应。高清启用编码细节保护。
+桌面默认高清，初始目标码率 24 Mbps，启用编码细节保护。持续拥塞允许降至 512 kbps；链路恢复后逐步回升。控制通道 RTT 用于区分传播延迟与画面排队，稳定高 RTT 不会单独触发降码率。
 
 ### 设备管理
 
@@ -175,3 +175,19 @@ node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-
 每台设备注册时生成独立随机 token，数据库仅保存具有唯一约束的哈希，Agent 安全保存原凭据；一次性注册码只用于换取该设备凭据，不作为多台设备共享 token。
 
 Agent 结构化事件通过已鉴权的原生控制通道上传，Gateway 输出 `agent_log`，包含设备、运行实例、事件序号、Agent 时间、会话及进程退出状态。每秒最多发送一批 16 条，优先处理控制消息；缓存最多 256 条待发送事件和 16 条待确认事件，溢出丢弃最旧待发送记录并上报计数。断线后重传未确认批次，因此可能重复，可按设备、运行实例与事件序号识别。缓存仅在内存中，进程退出时未上传事件会丢失。旧 Gateway 不声明日志能力时不发送新消息。日志不包含凭据、任意异常文本、画面或终端内容。
+
+### 远控传输调度
+
+每个远控会话使用独立控制、画面连接与写调度器。浏览器 WebSocket 路径分别为 `/api/desktop/control`（输入、光标、探针和反馈）与 `/api/desktop/video`（编码配置和画面）；登录 Cookie、Origin、一次性通道票据以及服务端用途校验继续生效，票据不进入 URL。旧 `/api/channels/browser` 已移除，部署须同步网关与前端，结束旧会话并刷新页面；回滚也应同步。
+
+参考 [RDP 多传输通道](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/5aa61c5c-e864-4ec6-bd80-e1df51555a48)和 [RDP 图形帧确认](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0241e258-77ef-4a58-b426-5039ed6296ce)的设计原则：画面按解码显示确认回收在途字节，以控制探针 RTT、有效 ACK 交付速率和解码压力调整负载；初始窗口 64 KiB，学习链路后按带宽时延积加 50 ms 队列余量调整，范围 32 KiB 至 2 MiB，另保留 16 帧硬上限。编码前无法精确知道压缩大小，因此最多可超出窗口一张已编码帧；后续等待确认，采集仅保留最新源画面，不丢弃已经编码的增量依赖。桥接控制队列 2 MiB、视频队列 32 MiB，均最多 32 条并包含正在写出的消息；队列满时等待空间，关闭时唤醒等待者。单个 IPC 字节流仍共用，但正常画面确认窗口提前限制积压，网络大帧写入不再串行阻塞后续控制消息。
+
+以上是应用层调度优化，不实现 RDP 协议、UDP FEC 或浏览器直连 Agent；QUIC 的拥塞控制和重传仍交给 OpenSSL，浏览器 WSS 内的 TCP 队头阻塞仍存在。
+
+### 安全登录快捷键（Agent 1.0.6）
+
+远控工具栏的快捷键仅显示组合键。`Ctrl+Alt+Del` 使用独立的 `SECURE_ATTENTION` 输入事件，经服务端控制权限、桌面工作进程的画面代次和存活校验后，由 Session 0 服务调用系统 `SendSAS`，不模拟普通按键，不依赖 RDP。服务仅操作当前控制台会话，每个连接两秒内最多调用一次；返回错误码给浏览器，失败不关闭远控。
+
+首次使用时，如果 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\SoftwareSASGeneration` 尚未配置，服务设置为 `1`（仅允许服务）。已有策略保持原值；`0` 或 `2` 会明确提示策略禁止。该机器级设置不会在卸载时删除，以免覆盖管理员后续策略。调用成功只表示已派发，实际界面变化需端到端验证。
+
+部署时先升级 Gateway，再更新 Agent 至 1.0.6，刷新前端并重建远控会话；旧 Agent 不支持该输入事件。后台“更新 Agent”通过独立原生连接获取 MSI，验证 SHA-256 后安装，保留设备凭据；安装失败由 MSI 事务回滚，结果上报后台日志。前端生产构建只输出包含样式、脚本和许可文本的 `index.html`；安装包和更新清单仍作为独立部署资源保留。

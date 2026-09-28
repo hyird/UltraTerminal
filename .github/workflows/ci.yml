@@ -43,7 +43,7 @@ jobs:
 
   windows:
     name: Windows Agent and MSI
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 90
     defaults:
       run:
@@ -153,7 +153,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-19 g++-14 nasm ninja-build pkg-config autoconf automake libtool
+          sudo apt-get install -y clang-19 clang-tools-19 g++-14 nasm ninja-build pkg-config autoconf automake libtool
           echo 'CC=clang-19' >> "$GITHUB_ENV"
           echo 'CXX=clang++-19' >> "$GITHUB_ENV"
       - name: Configure dependency cache

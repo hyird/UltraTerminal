@@ -1,6 +1,14 @@
 import { ApiError, record, text } from "../../lib/http";
 import { deviceApi } from "./device.api";
 import type { Device } from "./device.types";
+export async function updateAgent(
+  id: string,
+): Promise<{ status: "requested" | "current"; version: string }> {
+  const result = record(await deviceApi.update(id));
+  if (result.status !== "requested" && result.status !== "current")
+    throw new Error("更新响应格式错误");
+  return { status: result.status, version: text(result.version) };
+}
 export type RestartStatus =
   | "requested"
   | "agent_accepted"

@@ -64,6 +64,18 @@ int main() {
         auto ready = message(1);
         ready.mutable_desktop_ready();
         require(desktop.accept(ready).has_value());
+        protocol::DesktopPipeValidator sasDesktop({"session", 7, true, protocol::DesktopPipeSource::kDesktop});
+        require(sasDesktop.accept(ready).has_value());
+        auto sas = message(2, "input");
+        sas.set_generation(1);
+        sas.mutable_input_event()->set_kind(wire::InputEvent::SECURE_ATTENTION);
+        require(!desktop.accept(sas));
+        require(sasDesktop.accept(sas).has_value());
+        require(!sasDesktop.accept(sas));
+        sas.set_sequence(3);
+        sas.mutable_input_event()->set_kind(wire::InputEvent::KEY);
+        sas.mutable_input_event()->set_code(65);
+        require(!sasDesktop.accept(sas));
         auto config = message(2, "video");
         config.set_generation(1);
         config.mutable_video_config()->set_codec("avc1.42C01E");

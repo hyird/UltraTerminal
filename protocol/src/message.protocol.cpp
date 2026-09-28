@@ -5,6 +5,8 @@
 
 #include <google/protobuf/io/coded_stream.h>
 
+#include "ultraterimal/protocol/update.protocol.h"
+
 namespace ultraterimal::protocol {
 namespace {
 bool identifier(std::string_view value) {
@@ -54,6 +56,7 @@ std::expected<void, MessageError> validateInputEvent(const wire::InputEvent& inp
         valid = noPosition && input.code() <= 1 && !input.pressed() && input.wheel_delta() != 0 && input.wheel_delta() >= -12000 && input.wheel_delta() <= 12000;
         break;
     case wire::InputEvent::RELEASE_ALL:
+    case wire::InputEvent::SECURE_ATTENTION:
         valid = noPosition && !input.code() && !input.pressed() && !input.wheel_delta();
         break;
     default:
@@ -107,6 +110,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kHeartbeat:
     case wire::Envelope::kAgentLogs:
     case wire::Envelope::kAgentLogAck:
+    case wire::Envelope::kAgentUpdate:
     case wire::Envelope::kWindowsLoginRequest:
     case wire::Envelope::kWindowsLoginResult:
     case wire::Envelope::kWindowsRestartRequest:
@@ -122,6 +126,11 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     }
     switch (m.body_case()) {
+    case wire::Envelope::kAgentUpdate:
+        if (!validUpdate(m.agent_update()) || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
     case wire::Envelope::kAgentLogs: {
         const auto& batch = m.agent_logs();
         if (!identifier(batch.runtime_id()) || batch.entries_size() < 1 || batch.entries_size() > 16 || m.generation() || m.frame_id() || m.base_frame_id()) {
@@ -286,6 +295,11 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kDesktopResizeResult:
         if (!m.desktop_resize_result().request_id() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kDesktopSecureAttentionResult:
+        if (m.generation() || m.frame_id() || m.base_frame_id()) {
             return invalid();
         }
         break;

@@ -7,6 +7,7 @@ export const deviceApi = {
   rename: (id: string, name: string) =>
     jsonRequest("/api/devices/rename", { device_id: id, name }),
   remove: (id: string) => jsonRequest("/api/devices/delete", { device_id: id }),
+  update: (id: string) => jsonRequest("/api/devices/update", { device_id: id }),
   windowsLogin: (
     id: string,
     action: "read" | "save",

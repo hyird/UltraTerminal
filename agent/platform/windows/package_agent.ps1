@@ -10,6 +10,8 @@ param(
     [ValidateRange(1,65535)][int]$GatewayPort = 7443
 )
 $ErrorActionPreference = 'Stop'
+$product = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent.wxs') -Raw)).Wix.Product
+if ((& $AgentExe --version).Trim() -ne [string]$product.Version) { throw 'Agent binary and MSI version differ' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $toolRoot = Join-Path $repository 'build\tools'
 $archive = Join-Path $toolRoot 'wix3141-binaries.zip'
@@ -38,7 +40,7 @@ if ($LASTEXITCODE -ne 0) { throw 'WiX candle failed' }
 & (Join-Path $wix 'light.exe') -nologo -out $resolvedOutput $object
 if ($LASTEXITCODE -ne 0) { throw 'WiX light failed' }
 $outputDirectory = Split-Path -Parent $resolvedOutput
-$manifest = @{ file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash; native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
+$manifest = @{ version = [string]$product.Version; file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash.ToLowerInvariant(); native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
 [IO.File]::WriteAllText((Join-Path $outputDirectory 'windows-agent.json'), ($manifest | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
 Write-Output "MSI: $resolvedOutput"
 Write-Output "SHA256: $((Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash)"

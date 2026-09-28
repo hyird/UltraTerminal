@@ -257,6 +257,28 @@ async function main() {
     await rebound.close();
     const contractFailures = [];
     const page = await startSession(browser, origin);
+    const shortcut = await page.evaluate(() => {
+      const control = fixtureSockets[0];
+      const offset = control.sent.length;
+      const accepted = session.shortcut('run');
+      return { accepted, messages: control.sent.slice(offset).filter(message => message.inputEvent) };
+    });
+    assert.equal(shortcut.accepted, true);
+    assert.deepEqual(shortcut.messages.map(message => [message.inputEvent.code, message.inputEvent.pressed]),
+      [[0x5b, true], [0x52, true], [0x52, false], [0x5b, false]]);
+    assert.ok(shortcut.messages.every(message => message.generation === 1));
+    const sas = await page.evaluate(() => {
+      const count = fixtureSockets[0].sent.length;
+      const accepted = session.shortcut('secure-attention');
+      return { accepted, messages: fixtureSockets[0].sent.slice(count).filter(message => message.inputEvent) };
+    });
+    assert.equal(sas.accepted, true);
+    assert.equal(sas.messages.length, 1);
+    assert.equal(sas.messages[0].inputEvent.kind, 6);
+    assert.equal(sas.messages[0].generation, 1);
+    await page.evaluate(() => session.setVisible(false));
+    assert.equal(await page.evaluate(() => session.shortcut('run')), false);
+    await page.evaluate(() => session.setVisible(true));
     await page.evaluate(() => document.querySelector('canvas').focus());
     const keyDown = () => page.keyboard.down('a');
     await keyDown();

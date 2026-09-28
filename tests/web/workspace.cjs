@@ -134,7 +134,7 @@ async function main() {
       else throw new Error(`Unexpected request ${endpoint}`);
       await route.fulfill({ status, json: value });
     });
-    await page.routeWebSocket("**/api/channels/browser", (socket) => {
+    await page.routeWebSocket("**/api/desktop/{control,video}", (socket) => {
       connections.push(socket);
       socket.onMessage(() => {});
     });

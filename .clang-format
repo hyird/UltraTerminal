@@ -14,7 +14,7 @@ IncludeBlocks: Regroup
 IncludeCategories:
   - Regex: '^<windows\.h>'
     Priority: 2
-  - Regex: '^<(boost/|google/|openssl/|wels/|ruvia/|pqxx/|spdlog/|d3d|dxgi|dwmapi\.h|dpapi\.h|bcrypt\.h|sddl\.h|aclapi\.h|credentialprovider\.h|ntsecapi\.h|wincred\.h|wtsapi32\.h|psapi\.h|wrl/)'
+  - Regex: '^<(boost/|google/|openssl/|wels/|ruvia/|pqxx/|spdlog/|d3d|dxgi|dwmapi\.h|dpapi\.h|bcrypt\.h|sddl\.h|aclapi\.h|credentialprovider\.h|ntsecapi\.h|wincred\.h|msi\.h|msiquery\.h|wtsapi32\.h|wtsprotocol\.h|psapi\.h|wrl/)'
     Priority: 3
   - Regex: '^<'
     Priority: 1

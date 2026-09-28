@@ -34,6 +34,16 @@ std::expected<void, DesktopMessageError> DesktopPipeValidator::accept(const wire
         started_ = true;
     } else {
         if (message.channel_id() == "input") {
+            // Only the authenticated desktop child may ask its parent service to
+            // dispatch SAS, after validating the current input generation.
+            if (binding_.source == DesktopPipeSource::kDesktop && message.has_input_event() &&
+                message.input_event().kind() == wire::InputEvent::SECURE_ATTENTION) {
+                if (!binding_.writeControl) {
+                    return std::unexpected(DesktopMessageError::kReadOnly);
+                }
+                sequence_ = message.sequence();
+                return {};
+            }
             if (auto result = input_.accept(message); !result) {
                 return result;
             }

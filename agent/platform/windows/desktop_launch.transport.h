@@ -20,6 +20,9 @@ class DesktopIdentity {
     DesktopIdentity& operator=(const DesktopIdentity&) = delete;
     const std::wstring& pipeSid() const;
     std::uint32_t session() const;
+    // Service-only, current console only. Blocking; returns a Win32 error or
+    // zero once SendSAS has been dispatched. Does not assert a UI transition.
+    std::uint32_t sendSecureAttention() const;
 
   private:
     friend class DesktopProcess;

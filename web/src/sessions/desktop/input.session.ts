@@ -90,6 +90,34 @@ export class DesktopInput {
       !document.hidden
     );
   }
+  shortcut(keys: readonly string[]): boolean {
+    if (this.disposed || document.hidden || keys.length < 1 || keys.length > 4)
+      return false;
+    const codes = keys.map(virtualKey);
+    if (codes.some((code) => code === undefined)) return false;
+    this.release();
+    this.canvas.focus({ preventScroll: true });
+    try {
+      for (const code of codes) {
+        if (code === undefined) continue;
+        this.heldKeys.add(code);
+        this.send({ kind: Kind.KEY, code, pressed: true });
+      }
+    } finally {
+      for (const code of [...this.heldKeys].reverse()) {
+        this.send({ kind: Kind.KEY, code, pressed: false });
+        this.heldKeys.delete(code);
+      }
+    }
+    return true;
+  }
+  secureAttention(): boolean {
+    if (this.disposed || document.hidden) return false;
+    this.release();
+    this.canvas.focus({ preventScroll: true });
+    this.send({ kind: Kind.SECURE_ATTENTION });
+    return true;
+  }
   private key(event: KeyboardEvent, pressed: boolean): void {
     if (!this.focused()) return;
     const code = virtualKey(event.code);

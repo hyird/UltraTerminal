@@ -19,6 +19,7 @@
 #include <ruvia/core/BlockingPool.h>
 #include <ruvia/core/Timer.h>
 
+#include "config/version.config.h"
 #include "connection.transport.h"
 #include "features/desktop/session.runtime.h"
 #include "features/logging/log.runtime.h"
@@ -26,6 +27,7 @@
 #include "platform/windows/credential.transport.h"
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/system_restart.transport.h"
+#include "platform/windows/update.transport.h"
 #include "platform/windows/windows_login.transport.h"
 #include "ultraterimal/protocol/message.protocol.h"
 
@@ -36,10 +38,11 @@ wire::Envelope makeHello(const ConnectionConfig& config, bool desktop = false) {
     hello.set_protocol_version(protocol::kVersion);
     hello.set_sequence(1);
     hello.mutable_hello()->set_device_id(config.deviceId);
-    hello.mutable_hello()->set_agent_version("0.1.0");
+    hello.mutable_hello()->set_agent_version(kAgentVersion);
     const auto capabilities = detectCapabilities();
     auto* reported = hello.mutable_hello()->mutable_capabilities();
     reported->set_windows_login_settings(true);
+    reported->set_agent_update(nativeSystemRestartPlatform().isSessionZeroLocalSystem());
     reported->set_system_restart(nativeSystemRestartPlatform().isSessionZeroLocalSystem());
     reported->set_boot_time_unix_seconds(systemBootTimeUnixSeconds());
     reported->set_conpty(capabilities.conpty);
@@ -118,6 +121,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     std::mt19937 random{std::random_device{}()};
     AgentLogBuffer logs{std::to_string(random()) + "-" + std::to_string(random())};
     bool logsSupported = false, logPending = false, connectionFailureLogged = false;
+    bool updating = false;
     bool started = false, stopping = false, ended = false, heartbeatPending = false;
     unsigned heartbeatSeconds = 0;
     ~State() { settingsPool.join(); }
@@ -208,6 +212,15 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     }
     asio::awaitable<void> logLoop() {
         while (!ended) {
+            // The durable update result is a recovery record, not a local log.
+            try {
+                const auto result = co_await ruvia::asAwaitable(ruvia::runBlocking(settingsPool, loop.handle(), [root = desktopExecutable.parent_path()] { return takeAgentUpdateResult(root); }));
+                if (result) {
+                    updating = false;
+                    log(*result == 0 || *result == 3010 ? wire::AgentLog::UPDATE_COMPLETED : wire::AgentLog::UPDATE_FAILED, {}, *result);
+                }
+            } catch (const std::exception&) { /* Retry if the bounded settings pool is busy. */
+            }
             // Never fill the control queue with diagnostics. One acknowledged batch at a time.
             if (logsSupported && !logPending && outbound.empty()) {
                 if (const auto* batch = logs.next()) {
@@ -250,7 +263,17 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     throw std::runtime_error("Invalid or replayed control message");
                 }
                 incomingSequence = message->sequence();
-                if (message->has_agent_log_ack()) {
+                if (message->has_agent_update()) {
+                    if (!updating) {
+                        bool launched = false;
+                        try {
+                            launched = co_await ruvia::asAwaitable(ruvia::runBlocking(settingsPool, loop.handle(), [path = desktopExecutable, update = message->agent_update()] { return launchAgentUpdate(path, update); }));
+                        } catch (const std::exception&) {
+                        }
+                        updating = launched;
+                        log(launched ? wire::AgentLog::UPDATE_STARTED : wire::AgentLog::UPDATE_FAILED);
+                    }
+                } else if (message->has_agent_log_ack()) {
                     if (!logsSupported || !logPending || !logs.acknowledge(message->agent_log_ack().sequence())) {
                         throw std::runtime_error("Unexpected log acknowledgment");
                     }

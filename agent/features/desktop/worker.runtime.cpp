@@ -68,6 +68,12 @@ class DesktopWorker {
     asio::awaitable<void> write() {
         try {
             while (!stopped_) {
+                if (secureAttention_) {
+                    auto request = std::exchange(secureAttention_, std::nullopt);
+                    if (request->generation() == inputGeneration_ && !resizing_) {
+                        co_await send(std::move(*request));
+                    }
+                }
                 if (ready_ && std::chrono::steady_clock::now() >= nextProbe_) {
                     if (probeNonce_ == std::numeric_limits<std::uint32_t>::max()) {
                         throw std::overflow_error("Desktop probe sequence exhausted");
@@ -208,6 +214,7 @@ class DesktopWorker {
                         continue;
                     }
                     lastAck_ = now;
+                    video_.observeRoundTrip(std::chrono::duration_cast<std::chrono::microseconds>(now - sentAt));
                     lastAcceptedResponseNonce_ = std::max(lastAcceptedResponseNonce_, nonce);
                 } else if (message->has_input_event()) {
                     // Old coordinates can arrive while Windows changes the mode.
@@ -226,6 +233,11 @@ class DesktopWorker {
                     }
                     if (message->generation() != inputGeneration_) {
                         throw std::runtime_error("Desktop input belongs to an unknown generation");
+                    }
+                    if (message->input_event().kind() == wire::InputEvent::SECURE_ATTENTION) {
+                        input_->releaseAll();
+                        secureAttention_ = std::move(*message);
+                        continue;
                     }
                     input_->apply(message->input_event());
                     if (input_->needsRebind() && !rebindRequested_) {
@@ -287,6 +299,7 @@ class DesktopWorker {
     };
 
     NamedPipeTransport& pipe_;
+    std::optional<wire::Envelope> secureAttention_;
     asio::steady_timer probeTimer_;
     DesktopVideoRuntime video_;
     protocol::DesktopPipeValidator incoming_, outgoing_;

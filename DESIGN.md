@@ -121,7 +121,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 自定义消息使用 Protobuf，二进制数据使用 `bytes`，不做 Base64。
 - 消息包含版本、会话、通道、类型、序号和载荷；画面消息携带 `generation`、`frame_id`，差分另带 `base_frame_id`。
 - 原生桌面通道以序号 1 的 `CHANNEL_OPEN` 绑定票据，后续消息序号严格递增；输入、反馈与刷新请求由浏览器发送，光标和画面由 Agent 发送。只读会话禁止所有输入事件。
-- 浏览器桌面入口为 `/api/channels/browser`（登录 Cookie 与同源校验），Agent 桌面使用原生连接的 `DESKTOP_CHANNEL` 用途（设备凭据鉴权）；票据在 `CHANNEL_OPEN` 中提交，不进入 URL。首消息限时 10 秒，配对受 60 秒票据期限约束；配齐后各端点收到序号 1 的 `CHANNEL_READY`，随后才发送数据。活动会话按 5 秒周期复核权限，撤权或会话关闭后终止全部通道。
+- 浏览器桌面控制入口为 `/api/desktop/control`，画面入口为 `/api/desktop/video`，首消息用途必须与路由一致（登录 Cookie 与同源校验），Agent 桌面使用原生连接的 `DESKTOP_CHANNEL` 用途（设备凭据鉴权）；票据在 `CHANNEL_OPEN` 中提交，不进入 URL。首消息限时 10 秒，配对受 60 秒票据期限约束；配齐后各端点收到序号 1 的 `CHANNEL_READY`，随后才发送数据。活动会话按 5 秒周期复核权限，撤权或会话关闭后终止全部通道。
 - 浏览器和 Agent 的输入、画面四个端点全部配对后才允许转发；任一端点断开或协议校验失败即结束整会话。每端点发送队列最多 8 条，单会话待发送数据上限 32 MiB，单 Worker 合计上限 256 MiB；正在写出的数据仍计入额度，超限关闭会话，不静默丢弃画面。
 - 浏览器 VNC 通道提供标准 RFB 字节流，由网关剥离内部封装；SSH 隧道提供可靠有序字节流，WebSocket 消息边界不作为协议包边界。
 - libssh、LibVNCServer 通过已授权传输适配器接入隧道；libssh2 使用非阻塞收发回调。适配器处理部分读写、背压、关闭和取消。
@@ -168,6 +168,21 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 ## 3. 产品边界
 
+### RDS 登录原型
+
+当前运行路径仍为控制台会话与 DXGI Desktop Duplication。RDS 的凭据适配原型尚未接入 TermService，不注册协议提供程序，不宣称独立会话登录或虚拟显示已经可用。
+
+- `prepareSavedRdsLogon` 与控制台登录共用 Windows 凭据存储的 DPAPI 解密、格式验证和账户规范化。它生成 `IWRdsProtocolConnection::GetUserCredentials` 所需的 `WRDS_USER_CREDENTIAL`；不验证密码、不创建会话，也不代表登录成功。
+- Windows 凭据保留在 Agent 本机，设备 Token 不作为 Windows 密码。集成时只能由已验证可写远控授权的 SYSTEM 服务向受信任的协议提供程序提交凭据；不得经桌面 Worker、网关日志或浏览器回传。
+- 该传统 RDS 接口要求进程内明文用户名、域和密码。原型按 SDK 数组容量验证全部字段，拒绝嵌入空字符和超长值，失败清空全部输出；不截断原有存储允许的较长密码。临时解密缓冲退出作用域后清零。输出所有权按 RDS 接口契约处理，不能将现有 Credential Provider 的保护缓冲直接解释为 RDS 的序列化凭据。
+- 已有纯功能单元测试验证字段、Unicode、容量边界、空值及失败清零；本机存储测试验证 DPAPI、账户规范化及损坏凭据。通过这些检查不等于 Winlogon、TermService 或真实登录联调通过。
+- 独立会话的下一步需要完整 Protocol Provider 的连接、授权、注销/重连生命周期，以及远程 IDD、输入适配和对应系统版本的验证。普通控制台虚拟屏驱动不能直接替代远程 IDD。远程 IDD 必须声明 `REMOTE_SESSION_DRIVER`、`USE_SMALLEST_MODE`，由远程桌面栈创建设备并设置会话显示配置。
+- IDD 帧输出接入编码器并完成无人登录、登录、锁屏、注销、恢复和物理控制台隔离验证后，才能在该远程会话路径移除 Desktop Duplication；RDS 登录接口本身不提供视频流，也不替代图形设备及编码器所使用的 Direct3D/DXGI 基础接口。
+
+参考：[RDS 凭据接口](https://learn.microsoft.com/en-us/windows/win32/api/wtsprotocol/nf-wtsprotocol-iwrdsprotocolconnection-getusercredentials)、[微软 Protocol Provider 示例](https://github.com/Azure/Remote-Desktop-Services-Protocol-Sample)、[远程 IDD 要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/iddcx1.4-updates-for-remote-idds)。
+
+### 当前交付范围
+
 - Windows Agent 为优先实现目标，独立构建并验证服务、用户会话、本机终端与桌面能力；网关和前端后置接入。
 
 - 首版面向具备 ConPTY 的 Windows，控制当前控制台的单个交互会话，同一桌面只允许一个写控制者；覆盖开机无人登录、登录、锁屏、解锁、注销和 UAC 桌面切换。会话或桌面切换时停止旧画面及输入，重建后恢复，不能持续显示过期画面。
@@ -195,3 +210,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 ### 远控布局与弱网输入
 
 远控标签与设备列表共用主布局，不自动隐藏页头或侧栏；仅显式全屏时全屏显示工作区。输入在正常链路随下一次显示帧发送鼠标位置；输入通道 bufferedAmount 超过 2 KiB 时才使用 16 ms 的位置合并窗口，按键、鼠标按钮、滚轮始终先立即刷新当前位置再发送。保留可靠事件顺序、1 秒过期上限及恢复安全检查，不通过放宽断线超时隐藏积压。浏览器断线诊断只记录会话 ID、原因、通道编号、关闭码与队列计数，不记录凭据或输入内容。
+
+### 安全注意序列
+
+`InputEvent.SECURE_ATTENTION` 的其他字段必须为零，并携带当前 `Envelope.generation`。网络方向只允许已授权的可写浏览器控制通道；桌面工作进程完成代次校验并释放已按输入后，经现有单写入器回送该事件给服务。IPC 仅为此事件允许桌面到服务方向，普通输入不得反向传输。服务在有界阻塞池中调用当前控制台身份的 `SendSAS`，通过原控制通道返回 `DesktopSecureAttentionResult.win32_error`，零表示派发完成。会话终止和队列关闭仍使用原生命周期管理。

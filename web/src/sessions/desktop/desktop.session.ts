@@ -1,6 +1,7 @@
 import { ultraterimal } from "../../generated/session";
 import type { DesktopTicket } from "./desktop.types";
 import { DesktopInput } from "./input.session";
+import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
 
 const wire = ultraterimal.wire;
@@ -93,7 +94,10 @@ export class DesktopSession {
         },
       );
       for (const grant of ticket.channels) {
-        const url = new URL("/api/channels/browser", location.href);
+        const url = new URL(
+          grant.purpose === 2 ? "/api/desktop/control" : "/api/desktop/video",
+          location.href,
+        );
         url.protocol = "wss:";
         const socket = new WebSocket(url);
         const channel: Channel = {
@@ -215,6 +219,15 @@ export class DesktopSession {
     }, 15000);
     this.send(channel, { desktopResize: { requestId, width, height } });
   }
+  shortcut(id: string): boolean {
+    if (this.stopped || !this.visible || !this.ticket.writeControl)
+      return false;
+    const shortcut = desktopShortcuts.find((item) => item.id === id);
+    if (!shortcut) return false;
+    return shortcut.id === "secure-attention"
+      ? !!this.input?.secureAttention()
+      : !!this.input?.shortcut(shortcut.keys);
+  }
   setVisible(visible: boolean): void {
     if (this.stopped || this.visible === visible) return;
     this.visible = visible;
@@ -323,6 +336,24 @@ export class DesktopSession {
               : "Windows 未能应用此分辨率，原会话保持连接",
           );
         }
+        return;
+      }
+      if (
+        message.body === "desktopSecureAttentionResult" &&
+        message.desktopSecureAttentionResult
+      ) {
+        if (generationId || frameId || baseFrameId)
+          throw new Error("Invalid secure attention result");
+        const error = message.desktopSecureAttentionResult.win32Error ?? 0;
+        this.status(
+          error === 0
+            ? "Ctrl+Alt+Del 已发送"
+            : error === 1260
+              ? "Windows 策略禁止发送 Ctrl+Alt+Del"
+              : error === 1237
+                ? "操作过于频繁，请稍后再试"
+                : `Ctrl+Alt+Del 发送失败（${error}）`,
+        );
         return;
       }
       if (message.body !== "cursorUpdate" || !message.cursorUpdate)

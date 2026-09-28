@@ -22,6 +22,7 @@ enum class Command { kHelp,
                      kConnectionCheck,
                      kConnect,
                      kEnroll,
+                     kApplyUpdate,
                      kDesktop };
 struct CommandLine {
     Command command = Command::kHelp;

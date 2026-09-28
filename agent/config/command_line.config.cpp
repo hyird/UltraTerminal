@@ -51,6 +51,7 @@ std::expected<CommandLine, std::wstring> parseCommandLine(std::span<const std::w
     }
     constexpr std::array commands{
         std::pair{L"--help", Command::kHelp}, std::pair{L"--version", Command::kVersion},
+        std::pair{L"--apply-update", Command::kApplyUpdate},
         std::pair{L"--probe", Command::kProbe}, std::pair{L"--service", Command::kService},
         std::pair{L"--install", Command::kInstall}, std::pair{L"--uninstall", Command::kUninstall},
         std::pair{L"--install-login-provider", Command::kInstallLoginProvider}, std::pair{L"--remove-login-provider", Command::kRemoveLoginProvider},

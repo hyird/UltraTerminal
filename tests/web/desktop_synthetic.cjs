@@ -33,7 +33,7 @@ async function main() {
     const schema = await protobuf.load(path.resolve(__dirname, '../../protocol/schemas/session.proto'));
     const envelope = schema.lookupType('ultraterimal.wire.Envelope');
     page.on('websocket', socket => {
-      if (!socket.url().includes('/api/channels/browser')) return;
+      if (!/\/api\/desktop\/(control|video)$/.test(socket.url())) return;
       sockets.add(socket);
       socket.on('close', () => sockets.delete(socket));
       socket.on('framesent', ({ payload }) => {

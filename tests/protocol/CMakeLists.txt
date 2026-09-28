@@ -1,4 +1,8 @@
 add_executable(protocol-message-tests message.cpp)
+add_executable(protocol-update-tests update.cpp)
+target_link_libraries(protocol-update-tests PRIVATE ultraterimal::protocol)
+add_test(NAME protocol.update COMMAND protocol-update-tests)
+set_tests_properties(protocol.update PROPERTIES LABELS unit)
 target_compile_features(protocol-message-tests PRIVATE cxx_std_23)
 target_link_libraries(protocol-message-tests PRIVATE ultraterimal::protocol)
 add_test(NAME protocol.message COMMAND protocol-message-tests)

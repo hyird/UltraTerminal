@@ -112,7 +112,7 @@ async function main() {
       }
       await route.fulfill({ status, json: value });
     });
-    await page.routeWebSocket("**/api/channels/browser", (socket) => {
+    await page.routeWebSocket("**/api/desktop/{control,video}", (socket) => {
       socket.onMessage(() => {});
     });
 

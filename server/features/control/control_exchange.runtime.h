@@ -10,6 +10,7 @@
 #include "config/server.runtime.h"
 #include "modules/identity/identity.service.h"
 #include "ultraterimal/protocol/message.protocol.h"
+#include "ultraterimal/protocol/update.protocol.h"
 namespace ultraterimal::server {
 namespace {
 struct ConnectionLease {
@@ -94,6 +95,8 @@ ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const De
     }
     co_await socket.binary(*output);
     connection.capabilities = hello->hello().capabilities();
+    connection.agentVersion = hello->hello().agent_version();
+    spdlog::info("agent_connected device_id={} version={}", device.id, protocol::updateVersion(connection.agentVersion) ? connection.agentVersion : "unknown");
     if (connection.capabilities.system_restart()) {
         co_await context.runBlocking([service = context.template workerState<ServerRuntime>().devices, device, bootTime = connection.capabilities.boot_time_unix_seconds()] { service.confirmRestart(device.id, bootTime); });
     }
@@ -125,6 +128,9 @@ ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const De
             }
             const auto& batch = incoming->agent_logs();
             for (const auto& entry : batch.entries()) {
+                if (entry.event() == wire::AgentLog::UPDATE_FAILED || entry.event() == wire::AgentLog::UPDATE_COMPLETED) {
+                    connection.updatePending = false;
+                }
                 // Identity comes from authenticated transport, never from uploaded log data.
                 spdlog::info("agent_log device_id={} runtime_id={} event_sequence={} agent_unix_ms={} event={} session_id={} exit_code={} forced_exit={}",
                              device.id, batch.runtime_id(), entry.sequence(), entry.unix_milliseconds(), wire::AgentLog_Event_Name(entry.event()), entry.session_id(), entry.exit_code(), entry.forced_exit());

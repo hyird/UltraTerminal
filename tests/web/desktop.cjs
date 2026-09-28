@@ -97,7 +97,7 @@ async function main() {
         }
         constructor(...args) {
           super(...args);
-          if (new URL(args[0], location.href).pathname === '/api/channels/browser') {
+          if (['/api/desktop/control', '/api/desktop/video'].includes(new URL(args[0], location.href).pathname)) {
             window.fixtureDesktopSockets.add(this);
             this.addEventListener('close', () => window.fixtureDesktopSockets.delete(this));
           }
@@ -118,7 +118,7 @@ async function main() {
     const probeKey = message => `${message.sessionId}/${message.channelId}/${message.desktopProbe.nonce}`;
     const desktopSockets = new Set();
     page.on('websocket', socket => {
-      if (socket.url().includes('/api/channels/browser')) {
+      if (/\/api\/desktop\/(control|video)$/.test(socket.url())) {
         desktopSockets.add(socket);
         socket.on('close', () => desktopSockets.delete(socket));
       }

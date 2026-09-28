@@ -4,14 +4,15 @@
 #include <asio/use_awaitable.hpp>
 #include <asio/windows/object_handle.hpp>
 #include <exception>
-#include <sddl.h>
 #include <stdexcept>
 #include <system_error>
 #include <userenv.h>
 #include <vector>
-#include <wtsapi32.h>
 
 #include <windows.h>
+
+#include <sddl.h>
+#include <wtsapi32.h>
 
 #include "handle.types.h"
 
@@ -186,6 +187,54 @@ std::uint32_t currentDesktopSession() {
 DesktopIdentity::~DesktopIdentity() = default;
 const std::wstring& DesktopIdentity::pipeSid() const { return state_->sid; }
 std::uint32_t DesktopIdentity::session() const { return state_->session; }
+std::uint32_t DesktopIdentity::sendSecureAttention() const {
+    if (state_->current || WTSGetActiveConsoleSessionId() != state_->session) {
+        return ERROR_ACCESS_DENIED;
+    }
+    // Preserve an explicitly configured policy, including a domain denial.
+    constexpr auto key = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System";
+    constexpr auto name = L"SoftwareSASGeneration";
+    DWORD policy = 0, bytes = sizeof(policy);
+    auto error = RegGetValueW(HKEY_LOCAL_MACHINE, key, name, RRF_RT_REG_DWORD, nullptr, &policy, &bytes);
+    if (error == ERROR_FILE_NOT_FOUND) {
+        policy = 1; // Windows policy: services only; never enable arbitrary UI apps.
+        error = RegSetKeyValueW(HKEY_LOCAL_MACHINE, key, name, REG_DWORD, &policy, sizeof(policy));
+    }
+    if (error != ERROR_SUCCESS) {
+        return static_cast<std::uint32_t>(error);
+    }
+    if (policy != 1 && policy != 3) {
+        return ERROR_ACCESS_DISABLED_BY_POLICY;
+    }
+    struct Library {
+        HMODULE value = LoadLibraryExW(L"sas.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        ~Library() {
+            if (value) {
+                FreeLibrary(value);
+            }
+        }
+    } library;
+    if (!library.value) {
+        return GetLastError();
+    }
+    const auto send = reinterpret_cast<void(WINAPI*)(BOOL)>(GetProcAddress(library.value, "SendSAS"));
+    if (!send) {
+        return ERROR_PROC_NOT_FOUND;
+    }
+    HANDLE existing = nullptr;
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &existing)) {
+        CloseHandle(existing);
+        return ERROR_ACCESS_DENIED;
+    }
+    if (GetLastError() != ERROR_NO_TOKEN) {
+        return GetLastError();
+    }
+    // The current console is serviced from Session 0. Keep the actual service
+    // identity: a cloned SYSTEM token with only TokenSessionId changed is not
+    // a logged-on client identity for SendSAS's impersonation path.
+    send(FALSE);
+    return ERROR_SUCCESS;
+}
 DesktopProcess::DesktopProcess(asio::any_io_executor executor, const DesktopIdentity& user,
                                const std::filesystem::path& executable, const std::wstring& pipeName) : state_(std::make_shared<State>(executor)) {
     const auto path = executable.native();

@@ -18,6 +18,8 @@ class ControlConnection {
     explicit ControlConnection(ruvia::WorkerHandle worker);
     bool ready = false;
     wire::Capabilities capabilities;
+    std::string agentVersion;
+    bool updatePending = false;
     bool enqueue(wire::Envelope message);
     ruvia::Task<std::optional<std::string>> receive(ruvia::StopToken stop);
     void close();
