@@ -1,0 +1,7 @@
+node_modules
+src/generated
+package-lock.json
+public
+LICENSE
+src/assets
+src/icons/svg

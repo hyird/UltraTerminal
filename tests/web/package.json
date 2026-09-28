@@ -1,0 +1,16 @@
+{
+  "name": "ultraterimal-browser-tests",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "video": "node software_video.cjs",
+    "workspace": "node workspace.cjs",
+    "pixels": "node desktop_pixels.cjs",
+    "bitrate": "node desktop_bitrate.cjs",
+    "desktop-probe": "node desktop_probe.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "vite": "8.3.0"
+  }
+}

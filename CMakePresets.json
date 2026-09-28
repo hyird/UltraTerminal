@@ -1,0 +1,86 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-agent-release",
+      "displayName": "Windows Agent x64 Release",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-agent",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "windows-server-release",
+      "inherits": "windows-agent-release",
+      "displayName": "Windows gateway and Agent x64 Release",
+      "binaryDir": "${sourceDir}/build/windows-server",
+      "cacheVariables": {
+        "ULTRATERIMAL_BUILD_SERVER": "ON",
+        "VCPKG_MANIFEST_FEATURES": "server",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg-server-installed"
+      }
+    },
+    {
+      "name": "linux-server-release",
+      "displayName": "Linux gateway Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-server",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg-linux-installed",
+        "VCPKG_MANIFEST_FEATURES": "server",
+        "ULTRATERIMAL_BUILD_AGENT": "OFF",
+        "ULTRATERIMAL_BUILD_SERVER": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-agent-release",
+      "configurePreset": "windows-agent-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-server-release",
+      "configurePreset": "windows-server-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-server-release",
+      "configurePreset": "linux-server-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-agent-release",
+      "configurePreset": "windows-agent-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-server-release",
+      "configurePreset": "windows-server-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-server-release",
+      "configurePreset": "linux-server-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

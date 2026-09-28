@@ -1,0 +1,4 @@
+LIBRARY ultraterimal_login
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

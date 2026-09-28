@@ -1,0 +1,203 @@
+#pragma once
+
+#include <chrono>
+#include <string_view>
+
+#include <ruvia/core/TaskScope.h>
+#include <ruvia/core/Timer.h>
+#include <spdlog/spdlog.h>
+
+#include "config/server.runtime.h"
+#include "modules/identity/identity.service.h"
+#include "ultraterimal/protocol/message.protocol.h"
+namespace ultraterimal::server {
+namespace {
+struct ConnectionLease {
+    std::unordered_map<std::string, std::shared_ptr<ControlConnection>>& connections;
+    std::string id;
+    ~ConnectionLease() {
+        connections.at(id)->close();
+        connections.erase(id);
+    }
+};
+std::string_view agentErrorName(std::string_view code) {
+    if (code == "desktop_failed" || code == "desktop_exit_timeout" || code == "desktop_unavailable" || code == "capability_unavailable") {
+        return code;
+    }
+    return "unknown";
+}
+template <typename Connection>
+ruvia::Task<void> writeControl(Connection& socket, ControlConnection& connection, ruvia::TaskScope& scope, std::string_view& closeReason) {
+    try {
+        while (!scope.stopRequested()) {
+            auto bytes = co_await connection.receive(scope.stopToken());
+            if (scope.stopRequested()) {
+                break;
+            }
+            if (!bytes || !connection.ready) {
+                if (closeReason == "peer_closed") {
+                    closeReason = connection.ready ? "queue_closed" : "server_closed";
+                }
+                socket.abort();
+                break;
+            }
+            co_await socket.binary(*bytes);
+        }
+    } catch (const std::exception&) {
+        if (closeReason == "peer_closed") {
+            closeReason = "write_failed";
+        }
+        connection.close();
+        socket.abort();
+    }
+}
+template <typename Context, typename Connection>
+ruvia::Task<void> watchControl(Context& context, Connection& socket, ruvia::TaskScope& scope, std::chrono::steady_clock::time_point& deadline, std::string_view& closeReason) {
+    while (co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1), scope.stopToken()) == ruvia::TimerSleepResult::kElapsed) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            if (closeReason == "peer_closed") {
+                closeReason = "heartbeat_timeout";
+            }
+            socket.abort();
+            co_return;
+        }
+    }
+}
+template <typename Context, typename Connection>
+ruvia::Task<void> exchangeControl(Context& context, Connection& socket, const DeviceIdentity& device, ControlConnection& connection, std::chrono::steady_clock::time_point& deadline, std::string_view& closeReason) {
+    auto message = co_await socket.read();
+    if (!message || !message->binary() || message->payload().size() > protocol::kMaximumControlBytes) {
+        co_return;
+    }
+    const auto hello = protocol::decodeMessage(message->payload());
+    if (!hello || !hello->has_hello() || hello->hello().device_id() != device.id || !hello->session_id().empty() || !hello->channel_id().empty()) {
+        co_return;
+    }
+    if (!(co_await context.runBlocking([service = context.template workerState<ServerRuntime>().devices, sessions = context.template workerState<ServerRuntime>().sessions, device, bytes = hello->hello().capabilities().SerializeAsString()] {
+            if (!service.capabilities(device, bytes)) {
+                return false;
+            }
+            sessions.disconnectDevice(device);
+            return true;
+        }))) {
+        co_return;
+    }
+    std::uint64_t received = hello->sequence();
+    wire::Envelope welcome;
+    welcome.set_protocol_version(protocol::kVersion);
+    welcome.set_sequence(1);
+    welcome.mutable_welcome()->set_heartbeat_seconds(15);
+    auto output = protocol::encodeMessage(welcome);
+    if (!output) {
+        co_return;
+    }
+    co_await socket.binary(*output);
+    connection.capabilities = hello->hello().capabilities();
+    if (connection.capabilities.system_restart()) {
+        co_await context.runBlocking([service = context.template workerState<ServerRuntime>().devices, device, bootTime = connection.capabilities.boot_time_unix_seconds()] { service.confirmRestart(device.id, bootTime); });
+    }
+    connection.ready = true;
+    context.template workerState<ServerRuntime>().status.publish("d:" + device.id);
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while ((message = co_await socket.read())) {
+        if (!message->binary() || message->payload().size() > protocol::kMaximumControlBytes) {
+            closeReason = "invalid_control_message";
+            break;
+        }
+        const auto incoming = protocol::decodeMessage(message->payload());
+        if (!incoming || incoming->sequence() <= received || !incoming->channel_id().empty()) {
+            closeReason = "invalid_control_message";
+            break;
+        }
+        received = incoming->sequence();
+        if (incoming->has_windows_login_result()) {
+            if (!connection.windowsLoginReply(incoming->windows_login_result())) {
+                break;
+            }
+            continue;
+        }
+        if (incoming->has_windows_restart_result()) {
+            const auto result = incoming->windows_restart_result();
+            if (!connection.windowsRestartReply(result)) {
+                break;
+            }
+            co_await context.runBlocking([service = context.template workerState<ServerRuntime>().devices, device, result] {
+                service.applyRestartResult(device, result);
+            });
+            continue;
+        }
+        if (incoming->has_session_error() || incoming->has_session_close()) {
+            const bool failed = incoming->has_session_error();
+            const auto code = failed ? agentErrorName(incoming->session_error().code()) : std::string_view("agent_closed");
+            if (!(co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, device, sessionId = incoming->session_id(), reason = failed ? SessionEnd::kFailure : SessionEnd::kAgentClosed] { return service.closeForDevice(device, sessionId, reason); }))) {
+                closeReason = "invalid_session_event";
+                break;
+            }
+            spdlog::info("desktop_agent_event session_id={} device_id={} outcome={} code={}", incoming->session_id(), device.id, failed ? "failed" : "closed", code);
+            continue;
+        }
+        if (!incoming->has_heartbeat() || !incoming->session_id().empty()) {
+            closeReason = "invalid_control_message";
+            break;
+        }
+        if (!(co_await context.runBlocking([service = context.template workerState<ServerRuntime>().devices, device] { return service.heartbeat(device); }))) {
+            closeReason = "heartbeat_rejected";
+            break;
+        }
+        wire::Envelope response;
+        response.mutable_heartbeat()->set_monotonic_milliseconds(incoming->heartbeat().monotonic_milliseconds());
+        if (!connection.enqueue(std::move(response))) {
+            closeReason = "queue_closed";
+            break;
+        }
+        deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    }
+}
+} // namespace
+template <typename Context, typename Connection>
+ruvia::Task<void> runControlConnection(Context& context, Connection& socket) {
+    const auto device = context.template requestState<DeviceIdentity>();
+    auto& connections = context.template workerState<ServerRuntime>().controlConnections;
+    const auto connection = std::make_shared<ControlConnection>(context.worker());
+    if (!connections.emplace(device.id, connection).second) {
+        socket.abort();
+        co_return;
+    }
+    ConnectionLease lease{connections, device.id};
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto started = std::chrono::steady_clock::now();
+    std::string_view closeReason = "peer_closed";
+    ruvia::TaskScope scope(context.worker());
+    scope.spawn(watchControl(context, socket, scope, deadline, closeReason));
+    scope.spawn(writeControl(socket, *connection, scope, closeReason));
+    try {
+        co_await exchangeControl(context, socket, device, *connection, deadline, closeReason);
+    } catch (const std::exception&) {
+        if (closeReason == "peer_closed") {
+            closeReason = "read_or_storage_failed";
+        }
+    }
+    const auto dispatchedRestarts = connection->restartOperations();
+    connection->close();
+    for (const auto& operationId : dispatchedRestarts) {
+        wire::WindowsRestartResult unknown;
+        unknown.set_operation_id(operationId);
+        unknown.set_status(wire::WindowsRestartResult::UNKNOWN);
+        try {
+            co_await context.runBlocking([service = context.template workerState<ServerRuntime>().devices, device, unknown] {
+                service.applyRestartResult(device, unknown);
+            });
+        } catch (const std::exception&) { /* Pending operations expire conservatively if storage is unavailable. */
+        }
+    }
+    context.template workerState<ServerRuntime>().status.publish("d:" + device.id);
+    scope.requestStop();
+    co_await scope.join();
+    spdlog::info("agent_control_end device_id={} reason={} transport={} duration_ms={}", device.id, closeReason, context.transportCloseCause(),
+                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+    try {
+        co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, device] { service.disconnectDevice(device); });
+    } catch (const std::exception&) { /* Recovery on the next HELLO or gateway restart closes stale database sessions. */
+    }
+}
+} // namespace ultraterimal::server

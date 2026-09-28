@@ -1,0 +1,13 @@
+import type { AppRouteRecordRaw } from "#src/router/types";
+
+import { addRouteIdByPath } from "#src/router/utils/add-route-id-by-path";
+
+import authRoutes from "./auth";
+
+import fallbackRoute from "./fallback";
+
+/** 核心路由 */
+export const coreRoutes: AppRouteRecordRaw[] = [
+  ...addRouteIdByPath(authRoutes),
+  ...fallbackRoute,
+] satisfies AppRouteRecordRaw[];

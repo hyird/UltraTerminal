@@ -1,0 +1,218 @@
+import { ultraterimal } from "../../generated/session";
+import { virtualKey } from "./input.protocol";
+
+type Input = ultraterimal.wire.IInputEvent;
+const Kind = ultraterimal.wire.InputEvent.Kind;
+const buttonBits = [1, 4, 2, 8, 16];
+
+// Owns DOM listeners and locally held input for one writable desktop binding.
+export class DesktopInput {
+  private listeners = new AbortController();
+  private heldKeys = new Set<number>();
+  private buttons = 0;
+  private pointer: number | null = null;
+  private move: { x: number; y: number } | null = null;
+  private moveTimer = 0;
+  private animation = 0;
+  private wheelRemainder = [0, 0];
+  private disposed = false;
+  constructor(
+    private canvas: HTMLCanvasElement,
+    private send: (event: Input) => void,
+    private source: { width: number; height: number } = canvas,
+    private congested: () => boolean = () => false,
+  ) {
+    const options = { signal: this.listeners.signal };
+    canvas.addEventListener(
+      "keydown",
+      (event) => this.key(event, true),
+      options,
+    );
+    canvas.addEventListener(
+      "keyup",
+      (event) => this.key(event, false),
+      options,
+    );
+    canvas.addEventListener(
+      "pointerdown",
+      (event) => this.point(event, true),
+      options,
+    );
+    canvas.addEventListener(
+      "pointermove",
+      (event) => this.point(event, false),
+      options,
+    );
+    canvas.addEventListener(
+      "pointerup",
+      (event) => this.point(event, false),
+      options,
+    );
+    canvas.addEventListener("pointercancel", () => this.release(), options);
+    canvas.addEventListener(
+      "lostpointercapture",
+      () => {
+        if (this.pointer !== null) this.release();
+      },
+      options,
+    );
+    canvas.addEventListener("blur", () => this.release(), options);
+    canvas.addEventListener(
+      "contextmenu",
+      (event) => event.preventDefault(),
+      options,
+    );
+    canvas.addEventListener(
+      "auxclick",
+      (event) => event.preventDefault(),
+      options,
+    );
+    canvas.addEventListener("wheel", (event) => this.wheel(event), {
+      ...options,
+      passive: false,
+    });
+    window.addEventListener("blur", () => this.release(), options);
+    window.addEventListener("pagehide", () => this.release(), options);
+    document.addEventListener(
+      "visibilitychange",
+      () => {
+        if (document.hidden) this.release();
+      },
+      options,
+    );
+    canvas.tabIndex = 0;
+    canvas.dataset.control = "ready";
+  }
+  private focused(): boolean {
+    return (
+      !this.disposed &&
+      document.activeElement === this.canvas &&
+      !document.hidden
+    );
+  }
+  private key(event: KeyboardEvent, pressed: boolean): void {
+    if (!this.focused()) return;
+    const code = virtualKey(event.code);
+    if (code === undefined || event.isComposing) return;
+    event.preventDefault();
+    if (pressed && event.repeat && !this.heldKeys.has(code)) return;
+    if (!pressed && !this.heldKeys.has(code)) return;
+    if (pressed) this.heldKeys.add(code);
+    else this.heldKeys.delete(code);
+    this.flushMove();
+    this.send({ kind: Kind.KEY, code, pressed });
+  }
+  private point(event: PointerEvent, down: boolean): void {
+    if (this.disposed || event.pointerType !== "mouse") return;
+    if (down) this.canvas.focus({ preventScroll: true });
+    if (
+      !this.focused() ||
+      (this.pointer !== null && event.pointerId !== this.pointer)
+    )
+      return;
+    const bounds = this.canvas.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    event.preventDefault();
+    this.move = {
+      x: Math.max(
+        0,
+        Math.min(
+          this.source.width - 1,
+          Math.floor(
+            ((event.clientX - bounds.left) * this.source.width) / bounds.width,
+          ),
+        ),
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          this.source.height - 1,
+          Math.floor(
+            ((event.clientY - bounds.top) * this.source.height) / bounds.height,
+          ),
+        ),
+      ),
+    };
+    // Pointer events report chorded mouse button transitions through `buttons`.
+    // Never adopt a drag started outside this canvas.
+    const next = down || this.pointer !== null ? event.buttons & 31 : 0;
+    if (down && this.pointer === null) {
+      this.pointer = event.pointerId;
+      this.canvas.setPointerCapture(event.pointerId);
+    }
+    if (next !== this.buttons) {
+      this.flushMove();
+      const previous = this.buttons;
+      this.buttons = next;
+      buttonBits.forEach((bit, code) => {
+        if ((previous & bit) !== (next & bit))
+          this.send({ kind: Kind.BUTTON, code, pressed: !!(next & bit) });
+      });
+    } else if (!this.moveTimer && !this.animation) {
+      // Healthy links follow the next display tick; only a backed-up uplink
+      // coalesces more movement. Discrete input still flushes immediately.
+      if (this.congested())
+        this.moveTimer = window.setTimeout(() => this.flushMove(), 16);
+      else this.animation = requestAnimationFrame(() => this.flushMove());
+    }
+    if (!next && this.pointer !== null) {
+      const pointer = this.pointer;
+      this.pointer = null;
+      if (this.canvas.hasPointerCapture(pointer))
+        this.canvas.releasePointerCapture(pointer);
+    }
+  }
+  private flushMove(): void {
+    if (this.animation) cancelAnimationFrame(this.animation);
+    this.animation = 0;
+    if (this.moveTimer) clearTimeout(this.moveTimer);
+    this.moveTimer = 0;
+    const move = this.move;
+    this.move = null;
+    if (move && !this.disposed) this.send({ kind: Kind.POINTER_MOVE, ...move });
+  }
+  private wheel(event: WheelEvent): void {
+    if (!this.focused()) return;
+    event.preventDefault();
+    this.flushMove();
+    const scale =
+      event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 40
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? 120
+          : 1;
+    [-event.deltaY, event.deltaX].forEach((delta, code) => {
+      const accumulated =
+        (this.wheelRemainder[code] ?? 0) +
+        Math.max(-12000, Math.min(12000, delta * scale));
+      const wheelDelta = Math.trunc(accumulated);
+      this.wheelRemainder[code] = accumulated - wheelDelta;
+      if (wheelDelta) this.send({ kind: Kind.WHEEL, code, wheelDelta });
+    });
+  }
+  release(): void {
+    if (this.disposed) return;
+    const held = this.heldKeys.size > 0 || this.buttons !== 0;
+    this.heldKeys.clear();
+    this.buttons = 0;
+    this.move = null;
+    this.wheelRemainder = [0, 0];
+    if (this.animation) cancelAnimationFrame(this.animation);
+    this.animation = 0;
+    if (this.moveTimer) clearTimeout(this.moveTimer);
+    this.moveTimer = 0;
+    const pointer = this.pointer;
+    this.pointer = null;
+    if (held) this.send({ kind: Kind.RELEASE_ALL });
+    if (pointer !== null && this.canvas.hasPointerCapture(pointer))
+      this.canvas.releasePointerCapture(pointer);
+  }
+  dispose(): void {
+    if (this.disposed) return;
+    this.release();
+    this.disposed = true;
+    this.listeners.abort();
+    this.canvas.tabIndex = -1;
+    delete this.canvas.dataset.control;
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "ultraterimal-web",
+  "type": "module",
+  "version": "0.0.0",
+  "private": true,
+  "description": "React Hooks + TypeScript + Ant Design = react-antd-admin",
+  "author": "Condor Hero",
+  "license": "MIT",
+  "homepage": "https://github.com/condorheroblog/react-antd-admin/blob/main/README.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/condorheroblog/react-antd-admin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/condorheroblog/react-antd-admin/issues"
+  },
+  "imports": {
+    "#*": "./*"
+  },
+  "scripts": {
+    "protocol": "node -e \"require('node:fs').mkdirSync('src/generated', {recursive:true})\" && pbjs -t static-module -w es6 -o src/generated/session.js ../protocol/schemas/session.proto && pbts -o src/generated/session.d.ts src/generated/session.js",
+    "typecheck": "npm run protocol && tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "format:check": "prettier --check . --ignore-path .prettierignore",
+    "format": "prettier --write . --ignore-path .prettierignore",
+    "dev": "vite --host"
+  },
+  "dependencies": {
+    "@ant-design/icons": "6.3.4",
+    "@ant-design/cssinjs": "^2.1.2",
+    "ahooks": "^3.9.7",
+    "antd": "6.6.4",
+    "dayjs": "^1.11.20",
+    "i18next": "^26.2.0",
+    "motion": "^12.38.0",
+    "nprogress": "^0.2.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-error-boundary": "^6.1.1",
+    "react-i18next": "^17.0.8",
+    "react-jss": "^10.10.0",
+    "react-router": "7.18.4",
+    "simplebar-react": "^3.3.2",
+    "tailwind-merge": "^3.6.0",
+    "zustand": "^5.0.13",
+    "clsx": "^2.1.1",
+    "protobufjs": "8.8.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "^25.8.0",
+    "@types/nprogress": "^0.2.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "unplugin-icons": "^23.0.1",
+    "vite": "8.3.0",
+    "vite-plugin-svgr": "^5.2.0",
+    "@iconify-json/ri": "^1.2.10",
+    "prettier": "3.9.8",
+    "protobufjs-cli": "2.7.0"
+  }
+}

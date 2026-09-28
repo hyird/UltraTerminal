@@ -1,0 +1,178 @@
+syntax = "proto3";
+package ultraterimal.wire;
+
+// First record of an authenticated TLS/QUIC connection, before Envelope traffic.
+message NativeConnect {
+  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; }
+  uint32 protocol_version = 1;
+  Purpose purpose = 2;
+  bytes credential = 3;
+  bytes enrollment_code = 4;
+  string device_name = 5;
+}
+message NativeAccepted {
+  uint32 protocol_version = 1;
+  bool accepted = 2;
+  string device_id = 3;
+  bytes credential = 4;
+}
+
+enum SessionKind { SESSION_UNSPECIFIED = 0; DESKTOP = 1; VNC = 2; SSH = 3; }
+enum ChannelPurpose { CHANNEL_UNSPECIFIED = 0; DEVICE_CONTROL = 1; DESKTOP_INPUT = 2; DESKTOP_VIDEO = 3; VNC_STREAM = 4; SSH_STREAM = 5; }
+message Capabilities {
+  bool conpty = 1;
+  bool capture_available = 2;
+  bool h264_software = 3;
+  bool h264_hardware = 4;
+  bool h265_hardware = 5;
+  bool vnc = 6;
+  bool ssh = 7;
+  uint32 display_count = 8;
+  bool windows_login_settings = 9;
+  bool system_restart = 10;
+  uint64 boot_time_unix_seconds = 11;
+  // Contract 1: each writable desktop InputEvent carries its input binding's Envelope.generation.
+  uint32 desktop_input_contract = 12;
+}
+message Hello { string device_id = 1; string agent_version = 2; Capabilities capabilities = 3; }
+message Welcome { uint32 heartbeat_seconds = 1; }
+message Heartbeat { uint64 monotonic_milliseconds = 1; }
+message ChannelGrant { string channel_id = 1; ChannelPurpose purpose = 2; bytes ticket = 3; }
+message SessionOpen { SessionKind kind = 1; string user_id = 2; reserved 3, 4; reserved "operating_system_user"; bool write_control = 5; repeated ChannelGrant channels = 6; uint32 desktop_input_contract = 7; }
+message ChannelOpen { ChannelPurpose purpose = 1; bytes ticket = 2; }
+message ChannelReady { ChannelPurpose purpose = 1; }
+// Local service/desktop IPC only. No device credential or remote channel ticket.
+message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; }
+message DesktopReady {}
+message ChannelData { bytes data = 1; }
+message SessionClose { string reason = 1; }
+message SessionError { string code = 1; string message = 2; }
+message DisplayMode { uint32 width = 1; uint32 height = 2; }
+message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; }
+message DesktopResize { uint64 request_id = 1; uint32 width = 2; uint32 height = 3; }
+message DesktopResizeResult { uint64 request_id = 1; bool applied = 2; }
+// Device control only: never forwarded to the desktop worker or echoed in a reply.
+message WindowsLoginRequest {
+  enum Action { UNSPECIFIED = 0; READ = 1; SAVE = 2; CLEAR = 3; }
+  uint64 request_id = 1;
+  Action action = 2;
+  string username = 3;
+  string domain = 4;
+  string password = 5;
+}
+message WindowsLoginResult {
+  uint64 request_id = 1;
+  bool success = 2;
+  bool saved = 3;
+  string username = 4;
+  string domain = 5;
+}
+message WindowsRestartRequest {
+  string operation_id = 1;
+  string device_id = 2;
+  uint64 expires_at_unix_seconds = 3;
+}
+message WindowsRestartResult {
+  enum Status { UNSPECIFIED = 0; ACCEPTED = 1; FAILED = 2; UNKNOWN = 3; }
+  string operation_id = 1;
+  Status status = 2;
+  uint32 win32_error = 3;
+}
+message VideoFrame { bytes data = 1; bool key_frame = 2; uint64 timestamp_microseconds = 3; }
+message Rectangle { uint32 x = 1; uint32 y = 2; uint32 width = 3; uint32 height = 4; }
+message FullFrame { uint32 width = 1; uint32 height = 2; bytes rgba = 3; }
+message CopyRect { Rectangle destination = 1; uint32 source_x = 2; uint32 source_y = 3; }
+message PatchRect { Rectangle destination = 1; bytes png = 2; }
+message DiffBatch { repeated CopyRect copies = 1; repeated PatchRect patches = 2; }
+// POINTER_MOVE: output-local physical pixels. BUTTON: 0 left, 1 middle, 2 right,
+// 3 back, 4 forward. KEY: Windows virtual-key code (left/right modifiers),
+// 0x10D for keypad Enter. WHEEL: code 0 vertical / 1 horizontal, delta in 120ths
+// of a detent, positive up/right. Unused fields must be zero. RELEASE_ALL
+// releases only input pressed by this session.
+// For desktop_input_contract=2, all writable input (including RELEASE_ALL) carries
+// the video/input binding generation in the enclosing Envelope, stamped when queued.
+message InputEvent { enum Kind { UNSPECIFIED = 0; POINTER_MOVE = 1; BUTTON = 2; KEY = 3; WHEEL = 4; RELEASE_ALL = 5; } Kind kind = 1; sint32 x = 2; sint32 y = 3; uint32 code = 4; bool pressed = 5; sint32 wheel_delta = 6; }
+// x/y locate the hotspot within the selected display. Draw at x-hotspot_x,
+// y-hotspot_y. Empty rgba retains the previous shape and its hotspot.
+message CursorUpdate { sint32 x = 1; sint32 y = 2; uint32 width = 3; uint32 height = 4; uint32 hotspot_x = 5; uint32 hotspot_y = 6; bytes rgba = 7; bool visible = 8; }
+message QualityFeedback {
+  enum Preference { UNCHANGED = 0; BALANCED = 1; SMOOTH = 2; SHARP = 3; }
+  uint64 displayed_frame = 1;
+  uint32 decode_microseconds = 2;
+  uint32 queue_depth = 3;
+  bool background = 4;
+  uint64 displayed_generation = 5;
+  // Optional preference; zero preserves the current policy for older clients.
+  Preference preference = 6;
+}
+message RequestRefresh {}
+// Agent issues monotonically increasing nonces on the input channel and retains
+// a bounded number in flight for delayed acknowledgments; browser echoes each
+// nonce in the ordered input stream. A lease reset requires a fresh reset probe.
+message DesktopProbe {
+  uint32 nonce = 1;
+  // A prior liveness lease expired: discard locally held input before replying.
+  bool reset_input = 2;
+  // Agent -> browser only: greatest nonce whose timely response actually renewed
+  // the input lease or cleared a reset. Zero until one is accepted; less than nonce.
+  uint32 accepted_response_nonce = 3;
+}
+message TerminalData { bytes data = 1; }
+message TerminalResize { uint32 columns = 1; uint32 rows = 2; }
+message TerminalExit { uint32 exit_code = 1; }
+// Local SYSTEM service <-> LogonUI pipe only; never an Envelope body.
+message WindowsLoginHello {
+  enum Scenario { UNSPECIFIED = 0; LOGON = 1; UNLOCK = 2; }
+  uint32 version = 1;
+  uint32 windows_session_id = 2;
+  Scenario scenario = 3;
+}
+message WindowsLoginDelivery {
+  uint32 version = 1;
+  fixed64 expires_at = 2;
+  uint32 authentication_package = 3;
+  bytes protected_logon = 4;
+  string account = 5;
+  string sid = 6;
+  WindowsLoginHello.Scenario scenario = 7;
+}
+message Envelope {
+  uint32 protocol_version = 1;
+  string session_id = 2;
+  string channel_id = 3;
+  uint64 sequence = 4;
+  uint64 generation = 5;
+  uint64 frame_id = 6;
+  uint64 base_frame_id = 7;
+  oneof body {
+    Hello hello = 10;
+    Welcome welcome = 11;
+    Heartbeat heartbeat = 12;
+    SessionOpen session_open = 13;
+    SessionClose session_close = 14;
+    SessionError session_error = 15;
+    ChannelOpen channel_open = 16;
+    ChannelData channel_data = 17;
+    VideoConfig video_config = 18;
+    VideoFrame video_frame = 19;
+    FullFrame full_frame = 20;
+    DiffBatch diff_batch = 21;
+    InputEvent input_event = 22;
+    CursorUpdate cursor_update = 23;
+    QualityFeedback quality_feedback = 24;
+    RequestRefresh request_refresh = 25;
+    TerminalData terminal_data = 26;
+    TerminalResize terminal_resize = 27;
+    TerminalExit terminal_exit = 28;
+    ChannelReady channel_ready = 29;
+    DesktopStart desktop_start = 30;
+    DesktopReady desktop_ready = 31;
+    DesktopResize desktop_resize = 32;
+    DesktopResizeResult desktop_resize_result = 33;
+    WindowsLoginRequest windows_login_request = 34;
+    WindowsLoginResult windows_login_result = 35;
+    DesktopProbe desktop_probe = 36;
+    WindowsRestartRequest windows_restart_request = 37;
+    WindowsRestartResult windows_restart_result = 38;
+  }
+}

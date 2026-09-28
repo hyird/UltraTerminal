@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="623D621C-448D-47E4-968B-4E6FD12813D2" Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.1" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <MajorUpgrade DowngradeErrorMessage="A newer Ultraterimal Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Feature Id="Agent" Title="Ultraterimal Agent" Level="1">
+      <ComponentRef Id="AgentExecutable" />
+      <ComponentRef Id="LoginProvider" />
+      <ComponentRef Id="AgentData" />
+    </Feature>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Ultraterimal">
+          <Component Id="AgentExecutable" Guid="D2F2FCA5-0E75-49B0-ACB0-59B25836A6A0" Win64="yes">
+            <File Id="AgentExe" Source="$(var.Payload)\agent.exe" KeyPath="yes" />
+            <ServiceInstall Id="AgentService" Name="UltraterimalAgent" DisplayName="Ultraterimal Agent" Description="Ultraterimal remote desktop Agent and authorized Windows login service." Type="ownProcess" Start="demand" ErrorControl="normal" Arguments="--service" />
+            <ServiceControl Id="AgentServiceControl" Name="UltraterimalAgent" Stop="both" Remove="uninstall" Wait="yes" />
+          </Component>
+          <Component Id="LoginProvider" Guid="1C895E30-E243-492A-AF4A-1F02859D7D49" Win64="yes">
+            <File Id="LoginDll" Source="$(var.Payload)\ultraterimal_login.dll" KeyPath="yes" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\Classes\CLSID\{1D064384-A0E1-4534-9216-96C19CDBBA3D}" Type="string" Value="Ultraterimal Windows Login" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\Classes\CLSID\{1D064384-A0E1-4534-9216-96C19CDBBA3D}\InprocServer32" Type="string" Value="[#LoginDll]" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\Classes\CLSID\{1D064384-A0E1-4534-9216-96C19CDBBA3D}\InprocServer32" Name="ThreadingModel" Type="string" Value="Apartment" />
+            <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{1D064384-A0E1-4534-9216-96C19CDBBA3D}" Type="string" Value="Ultraterimal Windows Login" />
+          </Component>
+          <Component Id="AgentData" Guid="513913F5-EC5A-4501-894A-C119352631E5" Win64="yes">
+            <File Id="CaBundle" Source="$(var.Payload)\ca.pem" KeyPath="yes" />
+            <File Id="InstallScript" Source="$(var.Payload)\install_agent.ps1" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+  </Product>
+</Wix>

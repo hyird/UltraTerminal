@@ -1,0 +1,11 @@
+#pragma once
+#include <string_view>
+namespace ultraterimal::server {
+inline constexpr std::string_view kInitialMigration = R"migration(@ULTRATERIMAL_INITIAL_MIGRATION@)migration";
+inline constexpr std::string_view kSessionMigration = R"migration(@ULTRATERIMAL_SESSION_MIGRATION@)migration";
+inline constexpr std::string_view kAccountMigration = R"migration(@ULTRATERIMAL_ACCOUNT_MIGRATION@)migration";
+inline constexpr std::string_view kRestartMigration = R"migration(@ULTRATERIMAL_RESTART_MIGRATION@)migration";
+inline constexpr std::string_view kRestartResolutionMigration = R"migration(@ULTRATERIMAL_RESTART_RESOLUTION_MIGRATION@)migration";
+inline constexpr std::string_view kRestartDirectMigration = R"migration(@ULTRATERIMAL_RESTART_DIRECT_MIGRATION@)migration";
+inline constexpr std::string_view kDeviceProvisioningMigration = R"migration(@ULTRATERIMAL_DEVICE_PROVISIONING_MIGRATION@)migration";
+}

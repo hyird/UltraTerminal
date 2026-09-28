@@ -1,0 +1,11 @@
+/build/
+/NUL
+/vcpkg_installed/
+/.vs/
+/.codex/
+/.claude/
+/.agents/
+CMakeUserPresets.json
+**/__pycache__/
+**/node_modules/
+/web/src/generated/
