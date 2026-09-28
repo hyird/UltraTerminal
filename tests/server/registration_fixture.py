@@ -22,6 +22,7 @@ from ctypes import wintypes
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "support"))
 from certificate import certificate
 from wire_fixture import binary, envelope, fields, number, record
+from http_proxy import HttpProxy
 
 
 class ControlBusy(Exception):
@@ -588,13 +589,15 @@ def run(gateway, agent, postgres, workspace, session_test, desktop_test, native_
         password_file.write_text(password, encoding='ascii')
         db_port = port()
         gateway_port = port(excluded={db_port})
-        native_port = port(udp=True, excluded={db_port, gateway_port})
+        http_port = port(excluded={db_port, gateway_port})
+        native_port = port(udp=True, excluded={db_port, gateway_port, http_port})
         execute([postgres / 'initdb.exe', '-D', cluster, '-U', 'ultraterimal_test', '--pwfile', password_file,
                  '--auth=scram-sha-256', '--encoding=UTF8', '--no-locale'])
         password_file.unlink()
         environment = dict(os.environ, PGPASSWORD=password, PGCONNECT_TIMEOUT='3')
         running_database = False
         process = None
+        proxy = None
         try:
             running_database = True
             execute([postgres / 'pg_ctl.exe', '-D', cluster, '-l', folder / 'postgres.log', '-o',
@@ -603,8 +606,7 @@ def run(gateway, agent, postgres, workspace, session_test, desktop_test, native_
             cert, key = certificate(folder)
             origin = f'https://localhost:{gateway_port}'
             settings = folder / 'gateway.json'
-            settings.write_text(json.dumps({'address':'127.0.0.1','port':gateway_port,'certificate_file':str(cert),
-                                            'key_file':str(key),'origin':origin,
+            settings.write_text(json.dumps({'address':'127.0.0.1','port':http_port,'origin':origin,
                                             'native_address':'127.0.0.1','native_public_address':'127.0.0.1','native_port':native_port,
                                             'native_certificate_file':str(cert),'native_key_file':str(key),
                                             'database':f'host=127.0.0.1 port={db_port} dbname=postgres user=ultraterimal_test password={password}'}), encoding='utf8')
@@ -626,6 +628,8 @@ def run(gateway, agent, postgres, workspace, session_test, desktop_test, native_
                                        creationflags=subprocess.CREATE_NO_WINDOW)
             context = ssl.create_default_context(cafile=str(cert))
             context.set_alpn_protocols(['ultraterimal/1', 'http/1.1'])
+
+            proxy = HttpProxy(gateway_port, http_port, cert, key)
 
             def request(method, route, body=None, cookie=None, request_origin=None, headers=None):
                 connection = http.client.HTTPSConnection('localhost', gateway_port, context=context, timeout=5)
@@ -650,8 +654,11 @@ def run(gateway, agent, postgres, workspace, session_test, desktop_test, native_
                 except (OSError, http.client.HTTPException): pass
                 time.sleep(.1)
             else: raise AssertionError('Gateway did not become ready')
-            if not web_root:
-                assert request('GET', '/install.ps1')[2].replace('\r\n', '\n') == "Write-Output 'installer fixture'\n", 'PowerShell static script must be served'
+            with contextlib.closing(http.client.HTTPConnection('127.0.0.1', http_port, timeout=5)) as direct:
+                direct.request('GET', '/api/health')
+                assert direct.getresponse().status == 200, 'Gateway must accept plain HTTP behind the proxy'
+            install_status, _, bootstrap_script = request('GET', '/install.ps1')
+            assert install_status == 200 and 'MSI checksum mismatch' in bootstrap_script, 'Gateway must serve the embedded installer instead of a static file'
             print(execute([native_test, cert, str(native_port), 'gateway']).decode().strip(), flush=True)
             untrusted = folder / 'untrusted'
             untrusted.mkdir()
@@ -976,7 +983,7 @@ def run(gateway, agent, postgres, workspace, session_test, desktop_test, native_
             log.close()
             logs = (folder / 'gateway.log').read_text(encoding='utf8',errors='replace')
             assert all(secret not in logs for secret in (login_password,password,enrollment['code'],registered['credential'],*session_secrets))
-            print('Verified Ruvia TLS, PostgreSQL migrations, Agent registration and heartbeat, control authorization, session tickets, restart recovery and database lease loss')
+            print('Verified HTTPS/WSS proxy to HTTP gateway, PostgreSQL migrations, native TLS, Agent registration and heartbeat, control authorization, session tickets, restart recovery and database lease loss')
         except Exception:
             if process is not None:
                 print('Gateway process exit status:', process.poll(), flush=True)
@@ -989,6 +996,8 @@ def run(gateway, agent, postgres, workspace, session_test, desktop_test, native_
                 print(diagnostic[-4000:], flush=True)
             raise
         finally:
+            if proxy is not None:
+                proxy.close()
             if process is not None and process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)

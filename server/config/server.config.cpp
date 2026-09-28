@@ -22,7 +22,7 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
     }
     const auto& object = value.as_object();
     for (const auto& item : object) {
-        if (item.key() != "address" && item.key() != "port" && item.key() != "certificate_file" && item.key() != "key_file" && item.key() != "database" && item.key() != "origin" && item.key() != "web_root" && item.key() != "native_address" && item.key() != "native_public_address" && item.key() != "native_host" && item.key() != "native_port" && item.key() != "native_certificate_file" && item.key() != "native_key_file") {
+        if (item.key() != "address" && item.key() != "port" && item.key() != "database" && item.key() != "origin" && item.key() != "web_root" && item.key() != "native_address" && item.key() != "native_public_address" && item.key() != "native_host" && item.key() != "native_port" && item.key() != "native_certificate_file" && item.key() != "native_key_file") {
             throw std::invalid_argument("Unknown gateway setting");
         }
     }
@@ -39,8 +39,6 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
         config.port = static_cast<std::uint16_t>(p);
     }
     const auto localPath = [&](const char* key) { const auto t=text(key); auto path=std::filesystem::path(std::u8string(t.begin(),t.end())); return path.is_absolute()?path:file.parent_path()/path; };
-    config.certificateFile = localPath("certificate_file");
-    config.keyFile = localPath("key_file");
     if (object.contains("native_port")) {
         const auto port = object.at("native_port").as_int64();
         if (port < 1 || port > 65535) {

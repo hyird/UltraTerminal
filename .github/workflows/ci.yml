@@ -55,21 +55,100 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  native:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows Agent
-            os: windows-2022
-            preset: windows-agent-release
-            build: windows-agent
-          - name: Linux Server
-            os: ubuntu-24.04
-            preset: linux-server-release
-            build: linux-server
-    runs-on: ${{ matrix.os }}
+  windows:
+    name: Windows Agent and MSI
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Read pinned vcpkg revision
+        id: vcpkg
+        run: |
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          "revision=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ steps.vcpkg.outputs.revision }}
+          path: build/tools/vcpkg
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Configure dependency cache
+        run: |
+          $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
+          "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
+      - name: Restore vcpkg binary cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/vcpkg-cache
+          key: vcpkg-windows2025-msvc-static-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
+          restore-keys: vcpkg-windows2025-msvc-static-
+      - name: Bootstrap vcpkg
+        run: |
+          if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
+          else { & "$env:VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install TLS fixture dependency
+        if: runner.os == 'Windows'
+        run: python -m pip install cryptography==46.0.5 certifi==2026.7.22
+      - name: Configure
+        run: cmake --preset windows-agent-release
+      - name: Save vcpkg binary cache
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/vcpkg-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Build
+        run: cmake --build --preset windows-agent-release --parallel 4
+      - name: Test without interactive desktop
+        run: ctest --preset windows-agent-release --no-tests=error -LE interactive-desktop --output-junit test-results.xml
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: tests-windows-agent-${{ github.sha }}
+          path: |
+            build/windows-agent/test-results.xml
+            test-results.xml
+            build/windows-agent/vcpkg-manifest-install.log
+            build/windows-agent/Testing/Temporary/LastTest.log
+            build/windows-agent/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+      - name: Package MSI
+        env:
+          GATEWAY_HOST: ${{ vars.ULTRATERIMAL_GATEWAY_HOST || 'localhost' }}
+          GATEWAY_ADDRESS: ${{ vars.ULTRATERIMAL_GATEWAY_ADDRESS || 'localhost' }}
+        run: |
+          $ca = python -c "import certifi; print(certifi.where())"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$wix = Get-Content agent/platform/windows/agent.wxs
+          $version = $wix.Wix.Product.Version
+          & agent/platform/windows/package_agent.ps1 -AgentExe build/windows-agent/agent/Release/agent.exe -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll -CaBundle $ca -Output "build/windows-installer/ultraterimal-agent-$version.msi" -GatewayHost $env:GATEWAY_HOST -GatewayAddress $env:GATEWAY_ADDRESS
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-installer-${{ github.sha }}
+          path: |
+            build/windows-installer/*.msi
+            build/windows-installer/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux Server
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
       run:
@@ -97,9 +176,9 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-14 ninja-build pkg-config autoconf automake libtool
-          echo 'CC=gcc-14' >> "$GITHUB_ENV"
-          echo 'CXX=g++-14' >> "$GITHUB_ENV"
+          sudo apt-get install -y clang-19 g++-14 nasm ninja-build pkg-config autoconf automake libtool
+          echo 'CC=clang-19' >> "$GITHUB_ENV"
+          echo 'CXX=clang++-19' >> "$GITHUB_ENV"
       - name: Configure dependency cache
         run: |
           $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
@@ -107,47 +186,42 @@ jobs:
           "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
           "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
           "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Restore vcpkg binary cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: build/vcpkg-cache
-          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
-          restore-keys: vcpkg-${{ matrix.os }}-
+          key: vcpkg-ubuntu24-clang19-gcc14-${{ hashFiles('vcpkg.json', 'CMakePresets.json') }}
+          restore-keys: vcpkg-ubuntu24-clang19-gcc14-
       - name: Bootstrap vcpkg
         run: |
           if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
           else { & "$env:VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Install TLS fixture dependency
-        if: runner.os == 'Windows'
-        run: python -m pip install cryptography==46.0.5
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset linux-server-release
+      - name: Save vcpkg binary cache
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build/vcpkg-cache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} --parallel 4
+        run: cmake --build --preset linux-server-release --parallel 4
       - name: Test without interactive desktop
-        run: ctest --preset ${{ matrix.preset }} --no-tests=error -LE interactive-desktop --output-junit test-results.xml
+        run: ctest --preset linux-server-release --no-tests=error -LE interactive-desktop --output-junit test-results.xml
       - name: Upload test reports
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: tests-${{ matrix.build }}-${{ github.sha }}
+          name: tests-linux-server-${{ github.sha }}
           path: |
-            build/${{ matrix.build }}/test-results.xml
+            build/linux-server/test-results.xml
             test-results.xml
-            build/${{ matrix.build }}/Testing/Temporary/LastTest.log
-            build/${{ matrix.build }}/CMakeFiles/CMakeConfigureLog.yaml
+            build/linux-server/vcpkg-manifest-install.log
+            build/linux-server/Testing/Temporary/LastTest.log
+            build/linux-server/CMakeFiles/CMakeConfigureLog.yaml
           retention-days: 7
-      - name: Upload Windows Agent
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: windows-agent-${{ github.sha }}
-          path: |
-            build/windows-agent/agent/Release/agent.exe
-            build/windows-agent/agent/Release/ultraterimal_login.dll
-            agent/platform/windows/install_agent.ps1
-          if-no-files-found: error
-          retention-days: 14
       - name: Archive Linux executable
         if: runner.os == 'Linux'
         shell: bash

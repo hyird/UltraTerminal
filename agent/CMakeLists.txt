@@ -1,5 +1,4 @@
 find_package(Boost CONFIG REQUIRED COMPONENTS json)
-find_package(ruvia CONFIG REQUIRED COMPONENTS core)
 find_package(OpenSSL REQUIRED)
 add_library(ultraterimal-login-serialization STATIC
     platform/windows/login_serialization.transport.cpp

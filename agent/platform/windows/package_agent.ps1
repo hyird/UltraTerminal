@@ -40,6 +40,5 @@ if ($LASTEXITCODE -ne 0) { throw 'WiX light failed' }
 $outputDirectory = Split-Path -Parent $resolvedOutput
 $manifest = @{ file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash; native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
 [IO.File]::WriteAllText((Join-Path $outputDirectory 'windows-agent.json'), ($manifest | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bootstrap_agent.ps1') -Destination (Join-Path $outputDirectory 'install.ps1') -Force
 Write-Output "MSI: $resolvedOutput"
 Write-Output "SHA256: $((Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash)"

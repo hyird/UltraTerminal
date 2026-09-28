@@ -14,7 +14,6 @@ target_compile_options(server-desktop-tests PRIVATE
 add_test(NAME server.desktop COMMAND server-desktop-tests)
 set_tests_properties(server.desktop PROPERTIES TIMEOUT 15)
 if(ULTRATERIMAL_BUILD_AGENT)
-    find_package(ruvia CONFIG REQUIRED COMPONENTS web)
     find_package(Boost CONFIG REQUIRED COMPONENTS json)
     find_package(spdlog CONFIG REQUIRED)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)

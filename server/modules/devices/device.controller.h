@@ -4,6 +4,15 @@
 
 #include "middleware/authentication.h"
 namespace ultraterimal::server {
+class DeviceInstallerController final : public ruvia::Controller<DeviceInstallerController> {
+  public:
+    RUVIA_CONTROLLER_GROUP("")
+    RUVIA_ROUTES_BEGIN
+    RUVIA_GET("/install.ps1", script);
+    RUVIA_ROUTES_END
+  private:
+    ruvia::Task<ruvia::HttpResponse> script(ruvia::Context& context);
+};
 class DeviceController final : public ruvia::Controller<DeviceController> {
   public:
     RUVIA_CONTROLLER_GROUP("/api")

@@ -7,10 +7,10 @@
 GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行三项检查：
 
 - Frontend：Node.js 24、`npm ci`、格式检查、类型检查、生产构建及 Chromium 交互回归测试。
-- Windows Agent：Windows Server 2022 / MSVC、`windows-agent-release` Preset、静态链接构建及非交互桌面 CTest。
-- Linux Server：Ubuntu 24.04 / GCC 14、`linux-server-release` Preset、网关与协议构建及 CTest。
+- Windows Agent：Windows Server 2025 / MSVC、`windows-agent-release` Preset、静态链接构建、非交互桌面 CTest 和 MSI 打包。
+- Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及 CTest。
 
-vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 固定提交 SHA，并缓存 vcpkg 二进制依赖。成功构建保存前端、Windows Agent 和 Linux Server 产物 14 天，测试报告保存 7 天。可在仓库 Actions 页下载对应提交的产物。
+vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 固定提交 SHA，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存前端、Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用固定版本 certifi 的 Mozilla CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + PostgreSQL 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
@@ -30,7 +30,7 @@ ctest --preset windows-agent-release
 
 Agent 输出到 `build/windows-agent/agent/Release/agent.exe`。
 
-Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合和注册脚本。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI、`install.ps1` 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，其余两文件发布到 Web 根目录。
+Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合和注册脚本。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
 
 ```powershell
 ./agent/platform/windows/package_agent.ps1 `
@@ -65,8 +65,7 @@ npm run format:check --prefix web
 
 | 字段 | 含义 |
 | --- | --- |
-| `address`、`port` | 浏览器 HTTPS/WSS 监听地址与端口，默认 `127.0.0.1`、`443` |
-| `certificate_file`、`key_file` | Web 入口证书链与私钥 |
+| `address`、`port` | 反向代理上游 HTTP/WS 监听地址与端口，默认 `127.0.0.1`、`8080` |
 | `native_address`、`native_port` | Agent 原生 UDP/TCP 入口，默认 `0.0.0.0`、`7443` |
 | `native_host`、`native_public_address` | Agent 证书校验域名、可直连的源站地址；添加设备命令使用。默认由 `origin` 域名推导，CDN 场景必须配置真实源站地址 |
 | `native_certificate_file`、`native_key_file` | 原生入口证书链与私钥，必填 |
@@ -76,7 +75,28 @@ npm run format:check --prefix web
 
 `gateway --migrate <config.json>` 执行版本化迁移。`gateway --bootstrap <config.json>` 从标准输入读取 `username`、`password` JSON，仅用于创建首个用户；密码至少 12 字节，不放入命令行。`gateway --serve <config.json>` 启动 Web 与原生入口。同一数据库只运行一个网关，数据库锁失效时停止服务。
 
-浏览器经 CDN 使用 HTTPS/WSS 443，CDN 需支持 WebSocket Upgrade、二进制消息及长连接，API 和会话响应禁止缓存。Agent 直接连接源站 UDP/TCP 端口；两种入口都需有效证书。证书续期后同步受保护的证书文件并重启网关加载，浏览器与 Agent 自动重建连接。
+网关 Web 入口仅提供 HTTP/WS，由外部反向代理终止 HTTPS/WSS。浏览器仍使用 HTTPS/WSS 443，`origin` 配置外部 HTTPS 地址，登录 Cookie 保持 `Secure`、`HttpOnly` 和 `SameSite`，Origin 校验保持启用。反向代理需支持 WebSocket Upgrade、二进制消息及长连接，API 和会话响应禁止缓存。HTTP 上游只绑定回环地址或受控内网，跨主机部署时由网络规则限制为反向代理可达。
+
+旧配置迁移：删除 `certificate_file`、`key_file`，设置 `address` 和 HTTP `port`，同时将反向代理上游改为 `http://`。旧 Web 证书字段不再接受。升级或回滚必须同时切换网关二进制、配置和代理上游协议。
+
+Nginx HTTPS 虚拟主机内的上游示例（公网证书由 Nginx 配置）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_buffering off;
+    proxy_read_timeout 75s;
+    proxy_send_timeout 75s;
+}
+```
+
+Agent 直接连接独立的原生 UDP/TCP 加密入口，仍需 `native_certificate_file`、`native_key_file`。原生证书续期后同步受保护的证书文件并重启网关加载；Web 证书续期由反向代理负责。
 
 ## Windows 安装与配置
 

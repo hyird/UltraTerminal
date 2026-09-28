@@ -1,8 +1,14 @@
 #include "device.controller.h"
 
 #include "config/request.schema.h"
+#include "installer.script.h"
 #include "middleware/json.transport.h"
 namespace ultraterimal::server {
+ruvia::Task<ruvia::HttpResponse> DeviceInstallerController::script(ruvia::Context& context) {
+    context.header("Cache-Control", "no-store");
+    context.header("X-Content-Type-Options", "nosniff");
+    co_return context.textStaticView(kWindowsInstallScript);
+}
 ruvia::Task<ruvia::HttpResponse> DeviceController::install(ruvia::Context& context) {
     context.header("Cache-Control", "no-store");
     context.header("Referrer-Policy", "no-referrer");

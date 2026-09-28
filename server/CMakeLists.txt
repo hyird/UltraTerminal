@@ -1,7 +1,10 @@
-find_package(ruvia CONFIG REQUIRED COMPONENTS web)
 find_package(libpqxx CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(Boost CONFIG REQUIRED COMPONENTS json)
+set(ULTRATERIMAL_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/devices/install.ps1")
+file(READ "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}" ULTRATERIMAL_INSTALL_SCRIPT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}")
+configure_file(config/installer.script.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/installer.script.h" @ONLY)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/001_identity_devices.sql" ULTRATERIMAL_INITIAL_MIGRATION)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/002_remote_sessions.sql" ULTRATERIMAL_SESSION_MIGRATION)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/003_agent_execution_account.sql" ULTRATERIMAL_ACCOUNT_MIGRATION)
@@ -54,6 +57,7 @@ add_executable(ultraterimal-server main.cpp
     modules/sessions/session.controller.cpp
     features/desktop/desktop.controller.cpp)
 target_compile_features(ultraterimal-server PRIVATE cxx_std_23)
+target_include_directories(ultraterimal-server PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set_target_properties(ultraterimal-server PROPERTIES CXX_EXTENSIONS OFF OUTPUT_NAME gateway)
 target_compile_options(ultraterimal-server PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc;/bigobj>"
