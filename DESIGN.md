@@ -153,8 +153,9 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 降速需要连续三个新画面的拥塞反馈，单次解码抖动不触发降速；重复确认不累计拥塞样本。队列数量与等待时长的硬限制始终立即生效，后台切换和画面代次变化清除拥塞样本。
 - 增量视频与差分不得任意丢弃，恢复时重建基准；SSH/VNC 超限时背压或关闭，禁止静默删字节。
 - 鼠标移动可合并，按键及按钮事件保持顺序；失焦、断线和结束时释放已按下输入。
-- 浏览器每个桌面 WSS 使用单一发送调度器：`bufferedAmount` 超过 16 KiB 时暂缓提交，每 25 ms 检查排空；应用队列至多 128 项、最老项至多等待 1 秒，超过任一上限明确结束会话，避免恢复后重放过时输入。仅相邻鼠标位置或相邻显示反馈可合并，不跨越按键、按钮、滚轮、释放或探针消息；合并不延长原项期限，协议序号在实际发送时分配。结束会话先禁止发送并清理待发项，再释放本地输入对象，避免释放操作重新排空旧输入；远端通过通道关闭清理持键。新画面代次到达时若应用队列仍有输入待发，则结束会话，不继续提交队列中的旧坐标。1 秒期限仅约束应用待发项，不保证已提交给 WebSocket 的字节仍在期限内；独立视频与输入通道之间也没有重绑定顺序保证，已提交的旧输入（含 `RELEASE_ALL`）仍可能在新输入绑定后到达。桌面输入契约 `desktop_input_contract=2` 显式协商输入代次及上述探针回复确认：浏览器只在申请可写桌面时提交版本 2；Server 先鉴权，再检查 Agent `Capabilities.desktop_input_contract=2`，不支持时在创建/抢占会话前拒绝；Agent 服务将版本从 `SessionOpen` 原样送入桌面进程的 `DesktopStart`。旧的 0/1 可写契约均拒绝，不静默沿用仅有代次校验的 v1；浏览器在每个输入绑定创建事件时固定 `Envelope.generation`，包括旧绑定释放；Worker 重绑定先释放旧输入，再在新绑定上只接受相同代次，丢弃已过期代次（含释放），拒绝未知未来代次。无代次可写输入、旧浏览器、旧 Agent 均 fail closed，不能以未协商的 Protobuf 字段存在当成兼容；只读桌面和其他会话不需要此输入契约，旧只读客户端不在探针确认机制的升级保证范围。此保护不能证明同代次积压输入新鲜，也不替代真实 Windows 验收。部署时结束旧桌面会话、同步更新 Server、Agent 与缓存前端，保留三者成套回滚；此前不得只发布一端。仅在 Worker 上临时实施“可写会话重绑定即结束”虽能防跨绑定，但会中断分辨率/编码恢复，不作为完整交付。源码已实现协商与代次校验，当前真实 Worker 的重绑定与部署验收仍因 DXGI 环境不可用而阻断发布；不修改 Agent 原生 QUIC/TLS 链路和视频基准规则。
+- 浏览器每个桌面 WSS 使用单一发送调度器：`bufferedAmount` 超过 16 KiB 时暂缓提交，每 25 ms 检查排空；应用队列至多 128 项、最老项至多等待 1 秒，超过任一上限明确结束会话，避免恢复后重放过时输入。仅相邻鼠标位置或相邻显示反馈可合并，不跨越按键、按钮、滚轮、释放或探针消息；合并不延长原项期限，协议序号在实际发送时分配。结束会话先禁止发送并清理待发项，再释放本地输入对象，避免释放操作重新排空旧输入；远端通过通道关闭清理持键。新画面代次到达时若应用队列仍有输入待发，则结束会话，不继续提交队列中的旧坐标。1 秒期限仅约束应用待发项，不保证已提交给 WebSocket 的字节仍在期限内；独立视频与输入通道之间也没有重绑定顺序保证，已提交的旧输入（含 `RELEASE_ALL`）仍可能在新输入绑定后到达。桌面输入契约 `desktop_input_contract=2` 显式协商输入代次及上述探针回复确认：浏览器只在申请可写桌面时提交版本 2；Server 先鉴权，再检查 Agent `Capabilities.desktop_input_contract=2`，不支持时在创建/抢占会话前拒绝；Agent 服务将版本从 `SessionOpen` 原样送入桌面进程的 `DesktopStart`。旧的 0/1 可写契约均拒绝，不静默沿用仅有代次校验的 v1；浏览器在每个输入绑定创建事件时固定 `Envelope.generation`，包括旧绑定释放；Worker 重绑定先释放旧输入，再在新绑定上只接受相同代次，丢弃已过期代次（含释放），拒绝未知未来代次。无代次可写输入、旧浏览器、旧 Agent 均 fail closed，不能以未协商的 Protobuf 字段存在当成兼容；只读桌面和其他会话不需要此输入契约，旧只读客户端不在探针确认机制的升级保证范围。此保护不能证明同代次积压输入新鲜，也不替代真实 Windows 验收。部署时结束旧桌面会话、同步更新 Server、Agent 与缓存前端，保留三者成套回滚；此前不得只发布一端。仅在 Worker 上临时实施“可写会话重绑定即结束”虽能防跨绑定，但会中断分辨率/编码恢复，不作为完整交付。源码已实现协商与代次校验，真实 Worker 的重绑定仍须专项实机验收；基础桌面连接通过不等于全部输入恢复场景通过。不修改 Agent 原生 QUIC/TLS 链路和视频基准规则。
 - 重连采用带抖动的退避并重新授权；桌面重建基准，VNC 重建连接，SSH 断线关闭终端。
+- 浏览器恢复桌面前查询原会话终态；`session_failed` 表示 Agent 已报告运行失败，结束自动恢复并提示检查后台日志，避免驱动或桌面进程故障时反复创建会话。网络断连继续现有恢复流程，`preempted` 仍交出控制权。
 - QUIC 单条发送与接收记录的总装配期限为 60 秒，发送无进展连续 10 秒则提前失败；结束应用 I/O 后保留连接事件处理，最多用 2 秒完成待发送数据与关闭通知，超期中止并释放连接。连接关闭期间仍计入并发限额。服务停止时先停止接入与业务 I/O，保留 UDP 事件处理等待连接清理，整体最多 3 秒后关闭监听套接字与事件循环，不无限等待失联对端。
 
 ### 身份与安全
@@ -168,18 +169,11 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 ## 3. 产品边界
 
-### RDS 登录原型
+### Windows 桌面
 
-当前运行路径仍为控制台会话与 DXGI Desktop Duplication。RDS 的凭据适配原型尚未接入 TermService，不注册协议提供程序，不宣称独立会话登录或虚拟显示已经可用。
+Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI Desktop Duplication 采集现有桌面，支持未登录、锁屏和 UAC 桌面。兼容目标为 Windows 10、Windows 11，包含 Windows 10 LTSC 2019（1809）；各系统仍须分别完成实机验收。
 
-- `prepareSavedRdsLogon` 与控制台登录共用 Windows 凭据存储的 DPAPI 解密、格式验证和账户规范化。它生成 `IWRdsProtocolConnection::GetUserCredentials` 所需的 `WRDS_USER_CREDENTIAL`；不验证密码、不创建会话，也不代表登录成功。
-- Windows 凭据保留在 Agent 本机，设备 Token 不作为 Windows 密码。集成时只能由已验证可写远控授权的 SYSTEM 服务向受信任的协议提供程序提交凭据；不得经桌面 Worker、网关日志或浏览器回传。
-- 该传统 RDS 接口要求进程内明文用户名、域和密码。原型按 SDK 数组容量验证全部字段，拒绝嵌入空字符和超长值，失败清空全部输出；不截断原有存储允许的较长密码。临时解密缓冲退出作用域后清零。输出所有权按 RDS 接口契约处理，不能将现有 Credential Provider 的保护缓冲直接解释为 RDS 的序列化凭据。
-- 已有纯功能单元测试验证字段、Unicode、容量边界、空值及失败清零；本机存储测试验证 DPAPI、账户规范化及损坏凭据。通过这些检查不等于 Winlogon、TermService 或真实登录联调通过。
-- 独立会话的下一步需要完整 Protocol Provider 的连接、授权、注销/重连生命周期，以及远程 IDD、输入适配和对应系统版本的验证。普通控制台虚拟屏驱动不能直接替代远程 IDD。远程 IDD 必须声明 `REMOTE_SESSION_DRIVER`、`USE_SMALLEST_MODE`，由远程桌面栈创建设备并设置会话显示配置。
-- IDD 帧输出接入编码器并完成无人登录、登录、锁屏、注销、恢复和物理控制台隔离验证后，才能在该远程会话路径移除 Desktop Duplication；RDS 登录接口本身不提供视频流，也不替代图形设备及编码器所使用的 Direct3D/DXGI 基础接口。
-
-参考：[RDS 凭据接口](https://learn.microsoft.com/en-us/windows/win32/api/wtsprotocol/nf-wtsprotocol-iwrdsprotocolconnection-getusercredentials)、[微软 Protocol Provider 示例](https://github.com/Azure/Remote-Desktop-Services-Protocol-Sample)、[远程 IDD 要求](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/iddcx1.4-updates-for-remote-idds)。
+主工程不包含远程 IDD、自定义 RDS Protocol Provider 或独立会话登录原型，也不依赖虚拟显示驱动。已保存的 Windows 凭据继续通过现有 Credential Provider 完成当前控制台的登录与解锁；设备 Token 不充当 Windows 密码。
 
 ### 当前交付范围
 

@@ -610,6 +610,12 @@ function DesktopView({
       try {
         const state = await desktopState(ticket.id);
         if (cancelled) return;
+        if (state.state === "closed" && state.reason === "session_failed") {
+          setRecovering(false);
+          onError(`${name}：远程桌面运行失败，请检查后台日志后重新连接`);
+          close();
+          return;
+        }
         if (state.state === "closed" && state.reason === "preempted") {
           setRecovering(false);
           onError(`${name}：该设备已由新的连接接管`);
