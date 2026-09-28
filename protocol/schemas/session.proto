@@ -118,7 +118,16 @@ message WindowsRestartResult {
   Status status = 2;
   uint32 win32_error = 3;
 }
-message VideoFrame { bytes data = 1; bool key_frame = 2; uint64 timestamp_microseconds = 3; }
+message VideoFrame {
+  bytes data = 1;
+  bool key_frame = 2;
+  uint64 timestamp_microseconds = 3;
+  // Agent wall time for color conversion and encoding only. Excludes capture,
+  // pacing, network and browser decode. Zero means unavailable (older Agent).
+  uint32 encode_microseconds = 4;
+  // Meaningful only when encode_microseconds is nonzero.
+  bool hardware_encoding = 5;
+}
 message Rectangle { uint32 x = 1; uint32 y = 2; uint32 width = 3; uint32 height = 4; }
 message FullFrame { uint32 width = 1; uint32 height = 2; bytes rgba = 3; }
 message CopyRect { Rectangle destination = 1; uint32 source_x = 2; uint32 source_y = 3; }

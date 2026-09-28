@@ -4,7 +4,7 @@
 
 企业后台的完整功能范围、分批实施与验收要求见 [ENTERPRISE.md](ENTERPRISE.md)。其中待实现内容不代表现有线上能力。
 
-断线事件与远控诊断写入网关服务日志。桌面会话以 `session_id`、`device_id` 关联 `desktop_session_ready`、每 30 秒的 `desktop_session_health` 及单次 `desktop_session_end`；结束事件只保留首个服务端可见原因和通道方向。摘要记录累计消息/字节/画面帧/输入事件、背压次数和等待时间、待发送字节及峰值、浏览器反馈的解码耗时与队列深度。Agent 控制连接记录固定原因与原生传输故障分类，Agent 会话错误只记录受控错误码。日志不包含画面、输入内容、凭据或客户端自报的自由文本。`peer_closed` 只表示服务端读到连接结束，不能单凭它判定网络故障；当前日志不提供端到端输入延迟或浏览器 WebSocket 关闭码。
+断线事件与远控诊断写入网关服务日志。桌面会话以 `session_id`、`device_id` 关联 `desktop_session_ready`、每 30 秒的 `desktop_session_health` 及单次 `desktop_session_end`；结束事件只保留首个服务端可见原因和通道方向。摘要记录累计消息/字节/画面帧/输入事件、背压次数和等待时间、待发送字节及峰值、浏览器反馈的解码耗时与队列深度。Agent 控制连接记录固定原因与原生传输故障分类，Agent 会话错误只记录受控错误码。日志不包含画面、输入内容、凭据或客户端自报的自由文本。`peer_closed` 只表示服务端读到连接结束，不能单凭它判定网络故障；当前日志不提供端到端输入延迟或浏览器 WebSocket 关闭码。协议 v1 的 `VideoFrame` 新增可选语义的 `encode_microseconds` 与 `hardware_encoding` 字段，测量 Agent 颜色转换和编码调用的墙钟耗时，不包含采集、排队、传输或解码；零耗时表示旧 Agent 未提供数据，不能当作测量值。网关在视频配置变化时重置最近 1024 个编码耗时的固定窗口，并在会话健康/结束摘要输出样本数、均值、P95/P99、峰值、最后关键帧耗时、当前分辨率和最近编码后端。旧接收端按 Protobuf 规则忽略新增字段，不改变现有视频基准和鉴权契约。
 
 ## 1. 设计
 
@@ -21,14 +21,14 @@
 浏览器远程访问平台，支持原生桌面、VNC、SSH。每台服务器安装 Agent，主动连接平台；用户选择设备建立会话，无需输入设备 IP。
 
 ```text
-浏览器 ← HTTPS/WSS 443 → CDN / 外部反向代理 ← HTTP/WS → Web 网关
-                                            ↕
+浏览器 ← HTTPS/WSS 443（HTTP/3 优先，协商回退 HTTP/2 / HTTP/1.1） → CDN / 外部反向代理 ← HTTP/1.1 WebSocket Upgrade / HTTP → Web 网关
+                                                                                          ↕
                                          PostgreSQL
 
 Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 ```
 
-网关负责用户认证、设备权限、连接配对和会话转发。首版单网关运行，管理 API、浏览器 Web 入口和 Agent 原生入口位于同一进程；Web 入口使用 Ruvia 的 HTTP、WebSocket、TLS、路由与中间件能力。
+网关负责用户认证、设备权限、连接配对和会话转发。首版单网关运行，管理 API、浏览器 Web 入口和 Agent 原生入口位于同一进程；Web 入口使用 Ruvia 的 HTTP、WebSocket、路由与中间件能力，以 HTTP/WS 监听并由边缘代理终止 TLS。浏览器到 Cloudflare 等边缘优先使用 HTTP/3，客户端按 TLS/ALPN 协商不支持时回退 HTTP/2、HTTP/1.1；这不是 Ruvia listener 的 HTTP/3 支持或自动回退。WebSocket 回源固定使用 HTTP/1.1 Upgrade；本架构不在网关增加 TLS/HTTP/3 listener，也不宣称 HTTP/3 支持 WebSocket。
 
 ### 技术栈
 
@@ -37,7 +37,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 | Windows Agent、共享协议 | C++23、CMake、vcpkg |
 | 网关与平台 Web 框架 | C++23、Ruvia（`ruvia::web`）、CMake、vcpkg |
 | Agent 运行时与网络客户端 | Ruvia core、原生加密 UDP/TCP Transport、静态密码学依赖 |
-| 网关 HTTP / WebSocket / TLS | Ruvia 公开接口 |
+| 网关 HTTP / WebSocket | Ruvia 公开接口；HTTP/WS 回源，TLS 在外部边缘终止 |
 | 前端 | React、TypeScript、Tailwind CSS、Ant Design、Vite |
 | 原生桌面显示 | WebCodecs、Canvas |
 | 桌面采集与输入 | DXGI Desktop Duplication、Win32 |

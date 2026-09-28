@@ -75,7 +75,7 @@ npm run format:check --prefix web
 
 `gateway --migrate <config.json>` 执行版本化迁移。`gateway --bootstrap <config.json>` 从标准输入读取 `username`、`password` JSON，仅用于创建首个用户；密码至少 12 字节，不放入命令行。`gateway --serve <config.json>` 启动 Web 与原生入口。同一数据库只运行一个网关，数据库锁失效时停止服务。
 
-网关 Web 入口仅提供 HTTP/WS，由外部反向代理终止 HTTPS/WSS。浏览器仍使用 HTTPS/WSS 443，`origin` 配置外部 HTTPS 地址，登录 Cookie 保持 `Secure`、`HttpOnly` 和 `SameSite`，Origin 校验保持启用。反向代理需支持 WebSocket Upgrade、二进制消息及长连接，API 和会话响应禁止缓存。HTTP 上游只绑定回环地址或受控内网，跨主机部署时由网络规则限制为反向代理可达。
+网关 Web 入口仅提供 HTTP/WS，由 Cloudflare 或 Nginx 等外部边缘代理终止 HTTPS/WSS；不在 Ruvia 网关内启用 TLS 或 HTTP/3 listener。浏览器访问边缘的 HTTPS 优先协商 HTTP/3（QUIC），客户端或网络不支持时由边缘按 TLS/ALPN 协商回退 HTTP/2，再回退 HTTP/1.1。该协商发生在浏览器与边缘之间，不表示 Ruvia 提供 HTTP/3 或自动进行协议回退。WebSocket 回源保持 HTTP/1.1 Upgrade；HTTP/3 不承载此处使用的 WebSocket。`origin` 配置外部 HTTPS 地址，登录 Cookie 保持 `Secure`、`HttpOnly` 和 `SameSite`，Origin 校验保持启用。反向代理需支持 WebSocket Upgrade、二进制消息及长连接，API 和会话响应禁止缓存。HTTP 上游只绑定回环地址或受控内网，跨主机部署时由网络规则限制为反向代理可达。
 
 旧配置迁移：删除 `certificate_file`、`key_file`，设置 `address` 和 HTTP `port`，同时将反向代理上游改为 `http://`。旧 Web 证书字段不再接受。升级或回滚必须同时切换网关二进制、配置和代理上游协议。
 
@@ -173,6 +173,8 @@ node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-
 `agent-hardware-video-probe` 动态加载系统 Media Foundation，枚举 NV12 输入的 H.264/H.265 硬件编码器并尝试创建实例，输出启动、枚举和创建的 HRESULT。缺少媒体组件时报告不可用；该探测不加入 Agent 启动依赖。H.264 还会协商 NV12 输入、通过异步事件仅送入一张 1280×720 测试帧，不追加下一帧也不排空编码器，再由 OpenH264 独立解码并检查尺寸和亮度/色度采样点。使用 H.264 Baseline 避免 B 帧重排，记录首次送帧到独立解码耗时；此项不是稳态编码吞吐测试。异步事件通过带超时的事件等待接收，不轮询；单候选等待输出最长 5 秒，并单独验证空闲超时与关闭后的拒绝路径。`h264_frame_checks` 记录此项结果；`agent_hardware_path_implemented: false` 表示该诊断尚未接入 Agent，不能作为平台能力声明或完整硬编验收依据。
 
 `agent-software-video-benchmark` 输出 720p、1080p、2560×1600 合成窗口移动与滚动场景的 JSON 行报告，记录预热后 180 帧的编码平均/P95/P99 耗时、CPU 时间、字节量、吞吐与亮度 PSNR，每帧立即独立解码校验。运行 `build/windows-agent/tests/agent/Release/agent-software-video-benchmark.exe`，输出重定向至 `build/`。结果只衡量软件颜色转换与编码，不包含采集、网络和浏览器显示延迟，也不代表远端实测帧率；合成场景的亮度 PSNR 不替代文字、色彩和真实应用画质验收。
+
+Agent 1.0.10 起，每个成功的视频帧携带颜色转换与编码的实际墙钟耗时，不含采集、调度等待、网络和浏览器解码；硬编失败后的软件重编码耗时也计入。网关每 30 秒的 `desktop_session_health` 与结束摘要记录 `video_width`、`video_height`、`encoder`、`encode_samples`、`mean_encode_us`、`p95_encode_us`、`p99_encode_us`、`max_encode_us`、`last_keyframe_encode_us`。分位数采用当前视频配置下最近最多 1024 个已转发且具有计时的视频帧，配置/分辨率/编码基准变化时清空；静态桌面没有新帧时保留最近样本，不代表过去 30 秒的平均值。老 Agent 没有计时的帧不计入样本，`encode_samples=0`、`encoder=unknown` 表示不可用而非零延迟。统计固定内存、不逐帧写日志，不记录画面或输入内容。
 
 桌面默认高清，初始目标码率 24 Mbps，启用编码细节保护。持续拥塞允许降至 512 kbps；链路恢复后逐步回升。控制通道 RTT 用于区分传播延迟与画面排队，稳定高 RTT 不会单独触发降码率。
 

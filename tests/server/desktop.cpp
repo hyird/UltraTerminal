@@ -227,6 +227,44 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         auto config = refresh(2);
         config.set_channel_id("video");
         config.set_generation(1);
+        config.mutable_video_config()->set_width(16);
+        config.mutable_video_config()->set_height(16);
+        config.mutable_video_config()->set_codec("avc1.42C01E");
+        require(co_await session.forward(endpoints[3], config));
+        require(bool(co_await endpoints[2]->receive({})));
+        auto frame = config;
+        frame.set_sequence(3);
+        frame.set_frame_id(1);
+        frame.mutable_video_frame()->set_key_frame(true);
+        frame.mutable_video_frame()->set_data("frame");
+        frame.mutable_video_frame()->set_timestamp_microseconds(1);
+        require(co_await session.forward(endpoints[3], frame));
+        require(bool(co_await endpoints[2]->receive({})));
+        require(session.diagnostics().encoding.summary().samples == 0); // Legacy Agent.
+        frame.set_sequence(4);
+        frame.set_frame_id(2);
+        frame.mutable_video_frame()->set_timestamp_microseconds(2);
+        frame.mutable_video_frame()->set_encode_microseconds(1234);
+        frame.mutable_video_frame()->set_hardware_encoding(true);
+        require(co_await session.forward(endpoints[3], frame));
+        auto received = co_await endpoints[2]->receive({});
+        require(received && received->bytes() == *protocol::encodeMessage(frame));
+        received.reset();
+        require(session.diagnostics().encoding.summary().samples == 1 && session.diagnostics().latestHardwareEncoding);
+        config.set_sequence(5);
+        config.set_generation(2);
+        config.mutable_video_config()->set_width(32);
+        require(co_await session.forward(endpoints[3], config));
+        require(bool(co_await endpoints[2]->receive({})));
+        require(session.diagnostics().encoding.summary().samples == 0 && session.diagnostics().videoWidth == 32);
+        require(session.diagnostics().latestKeyFrameEncodeMicroseconds == 0);
+    }
+    {
+        server::DesktopSession session(worker, budget);
+        auto endpoints = co_await pair(session);
+        auto config = refresh(2);
+        config.set_channel_id("video");
+        config.set_generation(1);
         config.mutable_video_config()->set_width(1920);
         config.mutable_video_config()->set_height(1080);
         config.mutable_video_config()->set_codec("avc1.42C01E");
@@ -241,6 +279,7 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
             frame.set_sequence(i + 2);
             frame.set_frame_id(i);
             frame.mutable_video_frame()->set_timestamp_microseconds(i);
+            frame.mutable_video_frame()->set_encode_microseconds(static_cast<std::uint32_t>(i * 1000));
             require(co_await session.forward(endpoints[3], frame));
         }
         require(budget->used > 24 * 1024 * 1024);
@@ -251,6 +290,10 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(!session.ready());
         require(session.closeReason() == server::DesktopCloseReason::kSessionBudgetExceeded);
         require(session.diagnostics().videoFrames == 3);
+        const auto encoding = session.diagnostics().encoding.summary();
+        require(encoding.samples == 3 && encoding.meanMicroseconds == 2000 && encoding.p95Microseconds == 3000 && encoding.maximumMicroseconds == 3000);
+        require(session.diagnostics().videoWidth == 1920 && session.diagnostics().videoHeight == 1080);
+        require(session.diagnostics().latestKeyFrameEncodeMicroseconds == 3000 && !session.diagnostics().latestHardwareEncoding);
         require(!(co_await endpoints[2]->receive({})));
         require(budget->used == 0);
     }

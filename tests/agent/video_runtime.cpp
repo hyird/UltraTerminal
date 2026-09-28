@@ -24,6 +24,7 @@ void require(bool condition, const char* reason) {
     }
 }
 void decode(const agent::DesktopVideoUpdate& update, const wire::VideoConfig& config) {
+    require(update.frame.encode_microseconds() > 0, "Successful desktop frame omitted encoding duration");
     ISVCDecoder* decoder = nullptr;
     require(WelsCreateDecoder(&decoder) == 0 && decoder, "Cannot create video verifier");
     struct Owner {
@@ -73,6 +74,13 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     *message.mutable_video_frame() = first->frame;
     require(bool(validator.accept(message)), "Runtime first frame violates channel protocol");
     decode(*first, configuration);
+    // A real browser acknowledges displayed frames. Without this ACK a large
+    // first IDR correctly consumes the pacing window and blocks the refresh.
+    wire::QualityFeedback firstDisplayed;
+    firstDisplayed.set_displayed_generation(first->generation);
+    firstDisplayed.set_displayed_frame(first->frameId);
+    firstDisplayed.set_preference(wire::QualityFeedback::SHARP);
+    video.feedback(firstDisplayed);
 
     // No test window change is needed: refresh must also work on a static desktop.
     auto refreshed = co_await video.next(true);

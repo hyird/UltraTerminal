@@ -10,6 +10,7 @@
 
 #include <ruvia/core/Channel.h>
 
+#include "desktop_diagnostics.types.h"
 #include "modules/sessions/session.types.h"
 #include "ultraterimal/protocol/desktop.protocol.h"
 
@@ -43,20 +44,6 @@ enum class DesktopCloseOrigin { kServer,
                                 kAgentInput,
                                 kBrowserVideo,
                                 kAgentVideo };
-struct DesktopDiagnostics {
-    std::uint64_t forwardedMessages = 0;
-    std::uint64_t forwardedBytes = 0;
-    std::uint64_t videoFrames = 0;
-    std::uint64_t inputEvents = 0;
-    std::uint64_t feedbackMessages = 0;
-    std::uint64_t backpressureEvents = 0;
-    std::uint64_t backpressureMilliseconds = 0;
-    std::size_t peakPendingBytes = 0;
-    std::uint32_t maximumDecodeMicroseconds = 0;
-    std::uint32_t maximumBrowserQueueDepth = 0;
-    std::uint32_t latestBrowserQueueDepth = 0;
-    bool latestBackground = false;
-};
 // Owned and accessed on one Worker. Frame ownership includes the pending socket write.
 struct DesktopBudget {
     explicit DesktopBudget(std::size_t maximum) : limit(maximum) {}

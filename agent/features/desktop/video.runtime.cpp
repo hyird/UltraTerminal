@@ -1,5 +1,6 @@
 #include "video.runtime.h"
 
+#include <algorithm>
 #include <asio/redirect_error.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
@@ -115,8 +116,10 @@ struct VideoWorker {
         encoder->setRate(rate.framesPerSecond, rate.bitrate);
         encoder->setDetail(rate.sharp);
         encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
-        const auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - epoch).count();
+        const auto encodeStarted = std::chrono::steady_clock::now();
+        const auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(encodeStarted - epoch).count();
         auto encoded = encoder->encode(source.bgra, static_cast<std::size_t>(width) * 4, static_cast<std::uint64_t>(timestamp), refresh || configurationPending);
+        const auto encodeMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - encodeStarted).count();
         if (!encoded) {
             if (encoded.error() == VideoEncodeError::kFrameSkipped) {
                 if (update.cursor) {
@@ -159,6 +162,8 @@ struct VideoWorker {
         update.frame.set_data(encoded->annexB.data(), encoded->annexB.size());
         update.frame.set_key_frame(encoded->keyFrame);
         update.frame.set_timestamp_microseconds(encoded->timestampMicroseconds);
+        update.frame.set_encode_microseconds(static_cast<std::uint32_t>(std::clamp<std::int64_t>(encodeMicroseconds, 1, std::numeric_limits<std::uint32_t>::max())));
+        update.frame.set_hardware_encoding(encoder->hardware());
         return update;
     }
 };
