@@ -137,6 +137,9 @@
   flex-shrink: 0;
   margin: auto;
 }
+.desktop-viewport[data-scale="fit"] {
+  overflow: hidden;
+}
 .desktop-stage canvas {
   display: block;
   width: 100%;

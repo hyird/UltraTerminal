@@ -197,17 +197,16 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
     if (!EnumDisplaySettingsW(state_->displayName.c_str(), ENUM_CURRENT_SETTINGS, &current)) {
         return false;
     }
-    if (current.dmPelsWidth == width && current.dmPelsHeight == height) {
-        return true;
-    }
     // Preserve orientation, position, depth and refresh rate. The driver must
-    // validate the complete mode before applying this non-persistent change.
+    // validate the complete mode before saving it for all users. Even an
+    // unchanged current mode may still be a temporary, unsaved selection.
     current.dmPelsWidth = width;
     current.dmPelsHeight = height;
     if (ChangeDisplaySettingsExW(state_->displayName.c_str(), &current, nullptr, CDS_TEST, nullptr) != DISP_CHANGE_SUCCESSFUL) {
         return false;
     }
-    return ChangeDisplaySettingsExW(state_->displayName.c_str(), &current, nullptr, 0, nullptr) == DISP_CHANGE_SUCCESSFUL;
+    current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
+    return ChangeDisplaySettingsExW(state_->displayName.c_str(), &current, nullptr, CDS_UPDATEREGISTRY | CDS_GLOBAL, nullptr) == DISP_CHANGE_SUCCESSFUL;
 }
 std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels) {
     if (timeout.count() < 0 || timeout.count() > 5000) {

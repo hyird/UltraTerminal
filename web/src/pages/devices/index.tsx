@@ -659,6 +659,7 @@ function DesktopView({
   }, [recovering, ticket, deviceId]);
   const container = useRef<HTMLElement>(null);
   const [fullScreen, setFullScreen] = useState(false);
+  const [scaleMode, setScaleMode] = useState<"native" | "fit">("fit");
   const canvas = useRef<HTMLCanvasElement>(null);
   const overlay = useRef<HTMLCanvasElement>(null);
   const runtime = useRef<DesktopSession | null>(null);
@@ -758,6 +759,9 @@ function DesktopView({
     runtime.current?.setVisible(visible);
   }, [visible, ticket]);
   useEffect(() => {
+    runtime.current?.setScaleMode(scaleMode);
+  }, [scaleMode, ticket]);
+  useEffect(() => {
     const changed = () =>
       setFullScreen(
         document.fullscreenElement ===
@@ -800,6 +804,24 @@ function DesktopView({
                 ? `${(bitrate / 1000000).toFixed(2)} Mbps`
                 : `${(bitrate / 1000).toFixed(1)} kbps`}
           </span>
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              selectable: true,
+              selectedKeys: [scaleMode],
+              items: [
+                { key: "native", label: "原始大小" },
+                { key: "fit", label: "适应窗口" },
+              ],
+              onClick: ({ key }) => {
+                if (key === "native" || key === "fit") setScaleMode(key);
+              },
+            }}
+          >
+            <Button size="small" aria-label="画面缩放">
+              {scaleMode === "native" ? "原始大小" : "适应窗口"}
+            </Button>
+          </Dropdown>
           <Dropdown
             trigger={["click"]}
             disabled={ended || !ticket.writeControl || !displayModes.length}
@@ -860,7 +882,7 @@ function DesktopView({
           </Button>
         </div>
       </div>
-      <div className="desktop-viewport">
+      <div className="desktop-viewport" data-scale={scaleMode}>
         <div className="desktop-stage">
           <canvas ref={canvas} aria-label="桌面画面" />
           <canvas ref={overlay} className="cursor-overlay" aria-hidden="true" />

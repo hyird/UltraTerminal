@@ -48,6 +48,7 @@ export class DesktopSession {
   private visibility = new AbortController();
   private displayedFrame = 0;
   private visible = true;
+  private scaleMode: "native" | "fit" = "fit";
   private decodeMicroseconds = 0;
   private resizeSequence = 0;
   private resizePending = false;
@@ -79,6 +80,7 @@ export class DesktopSession {
     this.cursorContext = cursorContext;
     try {
       this.viewportResize = new ResizeObserver(() => {
+        this.sizeDesktop();
         this.updateLocalCursor();
       });
       this.viewportResize.observe(canvas);
@@ -578,8 +580,25 @@ export class DesktopSession {
     // CSS pixels already include OS scaling and browser zoom. Cancel that
     // scale so each decoded pixel occupies one physical display pixel.
     const ratio = window.devicePixelRatio || 1;
-    stage.style.width = `${this.overlay.width / ratio}px`;
-    stage.style.height = `${this.overlay.height / ratio}px`;
+    const viewport = stage.parentElement;
+    let width = this.overlay.width / ratio;
+    let height = this.overlay.height / ratio;
+    if (this.scaleMode === "fit" && viewport && width && height) {
+      if (!viewport.clientWidth || !viewport.clientHeight) return;
+      const scale = Math.min(
+        viewport.clientWidth / width,
+        viewport.clientHeight / height,
+      );
+      width *= scale;
+      height *= scale;
+    }
+    stage.style.width = `${width}px`;
+    stage.style.height = `${height}px`;
+  }
+  setScaleMode(mode: "native" | "fit"): void {
+    this.scaleMode = mode;
+    this.sizeDesktop();
+    this.updateLocalCursor();
   }
   private observePixelRatio(): void {
     const query = window.matchMedia(
