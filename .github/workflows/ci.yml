@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            tests/web/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci --prefix web
+          npm ci --prefix tests/web
+      - name: Format, types and production build
+        run: |
+          npm run format:check --prefix web
+          npm run build --prefix web
+      - name: Install Chromium
+        working-directory: tests/web
+        run: npx playwright install --with-deps chromium
+      - name: Browser regression tests
+        working-directory: tests/web
+        run: |
+          browser=$(node -e "process.stdout.write(require('playwright').chromium.executablePath())")
+          for test in workspace restart outbound backpressure cursor desktop_probe desktop_pixels desktop_bitrate; do
+            node "$test.cjs" "$browser"
+          done
+          node desktop_network.cjs
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: web-${{ github.sha }}
+          path: build/web/
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows Agent
+            os: windows-2022
+            preset: windows-agent-release
+            build: windows-agent
+          - name: Linux Server
+            os: ubuntu-24.04
+            preset: linux-server-release
+            build: linux-server
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Read pinned vcpkg revision
+        id: vcpkg
+        run: |
+          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          "revision=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ steps.vcpkg.outputs.revision }}
+          path: build/tools/vcpkg
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Linux compiler and build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 ninja-build pkg-config autoconf automake libtool
+          echo 'CC=gcc-14' >> "$GITHUB_ENV"
+          echo 'CXX=g++-14' >> "$GITHUB_ENV"
+      - name: Configure dependency cache
+        run: |
+          $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
+          New-Item -ItemType Directory -Force $cache | Out-Null
+          "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
+          "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/vcpkg-cache
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'ports/**') }}
+          restore-keys: vcpkg-${{ matrix.os }}-
+      - name: Bootstrap vcpkg
+        run: |
+          if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
+          else { & "$env:VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install TLS fixture dependency
+        if: runner.os == 'Windows'
+        run: python -m pip install cryptography==46.0.5
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel 4
+      - name: Test without interactive desktop
+        run: ctest --preset ${{ matrix.preset }} --no-tests=error -LE interactive-desktop --output-junit test-results.xml
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: tests-${{ matrix.build }}-${{ github.sha }}
+          path: |
+            build/${{ matrix.build }}/test-results.xml
+            test-results.xml
+            build/${{ matrix.build }}/Testing/Temporary/LastTest.log
+            build/${{ matrix.build }}/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+      - name: Upload Windows Agent
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-agent-${{ github.sha }}
+          path: |
+            build/windows-agent/agent/Release/agent.exe
+            build/windows-agent/agent/Release/ultraterimal_login.dll
+            agent/platform/windows/install_agent.ps1
+          if-no-files-found: error
+          retention-days: 14
+      - name: Archive Linux executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: tar -czf build/linux-server.tar.gz -C build/linux-server/server gateway
+      - name: Upload Linux Server
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: linux-server-${{ github.sha }}
+          path: build/linux-server.tar.gz
+          if-no-files-found: error
+          retention-days: 14

@@ -9,7 +9,7 @@ async function main() {
   const { createServer } = await import(pathToFileURL(path.join(root, 'node_modules/vite/dist/node/index.js')));
   const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
   await server.listen();
-  const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  const browser = await chromium.launch({ executablePath: process.argv[2] || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   try {
     const page = await browser.newPage();
     await page.route('**/cursor-fixture', route => route.fulfill({ contentType: 'text/html', body: '<div class="desktop-stage" style="width:640px"><canvas width="1280" height="800"></canvas><canvas class="cursor-overlay" width="1280" height="800"></canvas></div>' }));

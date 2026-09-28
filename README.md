@@ -1,5 +1,19 @@
 # Ultraterimal
 
+[![CI](https://github.com/hyird/UltraTerminal/actions/workflows/ci.yml/badge.svg)](https://github.com/hyird/UltraTerminal/actions/workflows/ci.yml)
+
+## 持续集成
+
+GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行三项检查：
+
+- Frontend：Node.js 24、`npm ci`、格式检查、类型检查、生产构建及 Chromium 交互回归测试。
+- Windows Agent：Windows Server 2022 / MSVC、`windows-agent-release` Preset、静态链接构建及非交互桌面 CTest。
+- Linux Server：Ubuntu 24.04 / GCC 14、`linux-server-release` Preset、网关与协议构建及 CTest。
+
+vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 固定提交 SHA，并缓存 vcpkg 二进制依赖。成功构建保存前端、Windows Agent 和 Linux Server 产物 14 天，测试报告保存 7 天。可在仓库 Actions 页下载对应提交的产物。
+
+托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + PostgreSQL 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
+
 浏览器远程桌面平台。Windows Agent 与网关使用 C++23，前端使用 React、TypeScript、Tailwind CSS 和 Ant Design，数据库为 PostgreSQL。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
