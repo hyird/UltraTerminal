@@ -1,4 +1,3 @@
-import { IconButton } from "../../components/icon_button";
 import { useEffect, useRef, useState } from "react";
 import { Button, Dropdown, Label, Tabs, toast } from "@heroui/react";
 import { useLocation } from "react-router";
@@ -264,10 +263,9 @@ function DesktopPanel({
           </span>
         </div>
         <div className="flex-1" />
-        <IconButton
-          label="切换全屏"
-          variant="tertiary"
-          className="desktop-tool-button"
+        <Button
+          size="sm"
+          variant="secondary"
           onPress={() => {
             const action = document.fullscreenElement
               ? document.exitFullscreen()
@@ -275,8 +273,8 @@ function DesktopPanel({
             void action?.catch(() => toast.danger("浏览器无法进入全屏"));
           }}
         >
-          <Icon name="arrows-expand" />
-        </IconButton>
+          全屏
+        </Button>
         {canRestart && (
           <Button
             size="sm"
@@ -287,11 +285,11 @@ function DesktopPanel({
               setRestart(true);
             }}
           >
-            重启 Windows
+            重启
           </Button>
         )}
         <Button size="sm" variant="secondary" onPress={onClose}>
-          关闭会话
+          关闭
         </Button>
       </div>
       <div className="desktop-viewport" data-scale={scale}>

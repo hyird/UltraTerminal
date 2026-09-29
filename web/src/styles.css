@@ -323,13 +323,6 @@ textarea {
   justify-content: space-between;
   background: var(--default);
 }
-.desktop-toolbar .desktop-tool-button {
-  width: 2rem;
-  height: 2rem;
-  min-width: 2rem;
-  min-height: 2rem;
-  border-radius: var(--field-radius);
-}
 .desktop-viewport {
   display: flex;
   position: relative;
