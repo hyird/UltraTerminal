@@ -7,7 +7,6 @@ param(
     [Parameter(Mandatory)][string]$Output,
     [Parameter(Mandatory)][string]$DependencyRoot,
     [Parameter(Mandatory)][string]$RuviaRoot,
-    [Parameter(Mandatory)][string]$SourceArchive,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayHost,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayAddress,
     [ValidateRange(1,65535)][int]$GatewayPort = 7443
@@ -16,14 +15,18 @@ $ErrorActionPreference = 'Stop'
 $product = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent.wxs') -Raw)).Wix.Product
 if ((& $AgentExe --version).Trim() -ne [string]$product.Version) { throw 'Agent binary and MSI version differ' }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-$sourceName = 'ultraterimal-agent-source-' + [string]$product.Version + '.tar.gz'
-if ([IO.Path]::GetFileName($SourceArchive) -ne $sourceName) { throw 'Unexpected corresponding-source filename' }
-$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
-if (-not (Test-Path $tar)) { throw 'Windows tar.exe is required for source verification' }
-$sourceText = (& $tar -xOf $SourceArchive ./SOURCE_MANIFEST.json) -join "`n"
-if ($LASTEXITCODE -ne 0) { throw 'Cannot read corresponding-source metadata' }
-$source = $sourceText | ConvertFrom-Json
-if ($source.version -ne [string]$product.Version -or $source.agent_sha256 -ne (Get-FileHash $AgentExe -Algorithm SHA256).Hash) { throw 'Corresponding source does not match the Agent binary' }
+& git -C $repository diff --quiet HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Refusing to package an uncommitted source revision' }
+$untracked = @(& git -C $repository ls-files --others --exclude-standard)
+if ($LASTEXITCODE -ne 0 -or $untracked.Count) { throw 'Refusing to omit untracked project sources' }
+$commit = (& git -C $repository rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[a-f0-9]{40}$') { throw 'Cannot identify project commit' }
+$ruvia = (& git -C $RuviaRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or -not (Get-Content (Join-Path $repository 'CMakeLists.txt') -Raw).Contains($ruvia)) { throw 'Ruvia source does not match the project pin' }
+& git -C $RuviaRoot diff --quiet HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Ruvia source has uncommitted changes' }
+$baseline = (Get-Content (Join-Path $repository 'vcpkg.json') -Raw | ConvertFrom-Json).'builtin-baseline'
+$sourceUrl = "https://github.com/hyird/UltraTerminal/tree/$commit"
 $toolRoot = Join-Path $repository 'build\tools'
 $archive = Join-Path $toolRoot 'wix3141-binaries.zip'
 $wix = Join-Path $toolRoot 'wix3141'
@@ -45,9 +48,14 @@ Copy-Item -LiteralPath $CaBundle -Destination (Join-Path $payload 'ca.pem') -For
 Copy-Item -LiteralPath (Join-Path $repository 'agent\COPYING') -Destination $payload -Force
 Copy-Item -LiteralPath (Join-Path $repository 'agent\LICENSE.md') -Destination (Join-Path $payload 'agent_license.md') -Force
 $notices = New-Object System.Text.StringBuilder
+$sourceResources = @()
 [void]$notices.AppendLine('Ruvia (MIT)')
 [void]$notices.AppendLine((Get-Content (Join-Path $RuviaRoot 'LICENSE') -Raw))
 foreach ($directory in Get-ChildItem (Join-Path $DependencyRoot 'share') -Directory | Sort-Object Name) {
+    $resourceFile = Join-Path $directory.FullName 'vcpkg-spdx-resources.json'
+    if (Test-Path -LiteralPath $resourceFile) {
+        $sourceResources += @{ package=$directory.Name; resources=(Get-Content -LiteralPath $resourceFile -Raw | ConvertFrom-Json).packages }
+    }
     $copyright = Join-Path $directory.FullName 'copyright'
     if (Test-Path $copyright) {
         [void]$notices.AppendLine(("`n===== " + $directory.Name + " =====`n"))
@@ -55,7 +63,9 @@ foreach ($directory in Get-ChildItem (Join-Path $DependencyRoot 'share') -Direct
     }
 }
 [IO.File]::WriteAllText((Join-Path $payload 'third_party_notices.txt'), $notices.ToString(), (New-Object System.Text.UTF8Encoding($false)))
-$sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject commit: $($source.project_commit)`nCorresponding source: https://$GatewayHost/assets/$sourceName`nSource SHA256: $((Get-FileHash $SourceArchive -Algorithm SHA256).Hash.ToLowerInvariant())`nProject history: https://github.com/hyird/UltraTerminal/tree/$($source.project_commit)`nSource archives must remain available alongside distributed MSI files.`n"
+if (-not ($sourceResources | Where-Object { $_.package -eq 'x264' -and $_.resources })) { throw 'x264 source metadata missing' }
+$sourceMetadata = @{ project_commit=$commit; ruvia_commit=$ruvia; vcpkg_baseline=$baseline; agent_sha256=(Get-FileHash $AgentExe -Algorithm SHA256).Hash.ToLowerInvariant(); dependencies=$sourceResources } | ConvertTo-Json -Depth 12
+$sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject source and build instructions: $sourceUrl`nProject download: https://github.com/hyird/UltraTerminal/archive/$commit.tar.gz`nRuvia source location and exact revision: $sourceUrl/CMakeLists.txt`nDependency recipes: https://github.com/microsoft/vcpkg/tree/$baseline`nDependency source locations and checksums (SPDX):`n$sourceMetadata`n"
 [IO.File]::WriteAllText((Join-Path $payload 'source_info.txt'), $sourceNotice, (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install_agent.ps1') -Destination (Join-Path $payload 'install_agent.ps1') -Force
 $object = Join-Path $stage 'agent.wixobj'
@@ -66,8 +76,7 @@ if ($LASTEXITCODE -ne 0) { throw 'WiX candle failed' }
 & (Join-Path $wix 'light.exe') -nologo -out $resolvedOutput $object
 if ($LASTEXITCODE -ne 0) { throw 'WiX light failed' }
 $outputDirectory = Split-Path -Parent $resolvedOutput
-if ([IO.Path]::GetFullPath((Split-Path -Parent $SourceArchive)) -ne $outputDirectory) { Copy-Item $SourceArchive (Join-Path $outputDirectory $sourceName) -Force }
-$manifest = @{ source = '/assets/' + $sourceName; source_sha256 = (Get-FileHash $SourceArchive -Algorithm SHA256).Hash.ToLowerInvariant(); version = [string]$product.Version; file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash.ToLowerInvariant(); native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
+$manifest = @{ source = $sourceUrl; source_commit = $commit; version = [string]$product.Version; file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash.ToLowerInvariant(); native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }
 [IO.File]::WriteAllText((Join-Path $outputDirectory 'windows-agent.json'), ($manifest | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
 Write-Output "MSI: $resolvedOutput"
 Write-Output "SHA256: $((Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash)"

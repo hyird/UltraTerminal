@@ -34,26 +34,20 @@ ctest --preset windows-agent-release
 
 Agent 输出到 `build/windows-agent/agent/Release/agent.exe`。
 
-Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_sources.ps1` 要求源码已提交且工作区无已跟踪修改，打包对应项目/Ruvia/vcpkg 快照及按 SPDX 校验的第三方源码。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
+Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_agent.ps1` 要求源码已提交且工作区无已跟踪修改，记录对应项目/Ruvia/vcpkg 修订及依赖的 SPDX 源码信息。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
 
 ```powershell
-./agent/platform/windows/package_sources.ps1 `
-  -AgentExe build/windows-agent/agent/Release/agent.exe `
-  -DependencyRoot build/vcpkg_installed/x64-windows-static `
-  -RuviaRoot build/windows-agent/_deps/ruvia-src -VcpkgRoot $env:VCPKG_ROOT `
-  -Output build/deployment/ultraterimal-agent-source-1.0.11.tar.gz
 ./agent/platform/windows/package_agent.ps1 `
   -AgentExe build/windows-agent/agent/Release/agent.exe `
   -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll `
   -CaBundle path/to/ca.pem `
   -DependencyRoot build/vcpkg_installed/x64-windows-static `
   -RuviaRoot build/windows-agent/_deps/ruvia-src `
-  -SourceArchive build/deployment/ultraterimal-agent-source-1.0.11.tar.gz `
   -Output build/deployment/ultraterimal-agent-1.0.11.msi `
   -GatewayHost <证书域名> -GatewayAddress <源站地址>
 ```
 
-MSI 与同版本 `ultraterimal-agent-source-*.tar.gz` 一起发布到 Web `assets/`，长期保留已分发版本的源码；`windows-agent.json` 同时记录源码位置及 SHA-256。更换下载域名时必须重新打包，确保安装目录 `source_info.txt` 的链接有效。源码归档只收集 Git 跟踪代码与依赖来源，不包含设备配置、凭据或运行日志。
+MSI 发布到 Web `assets/`，不另行下载或生成源码归档；`windows-agent.json` 的 `source` 为对应提交的公开仓库链接，`source_commit` 为完整提交 SHA，旧字段 `source_sha256` 不再生成（本项目更新器不读取该字段）。安装目录 `source_info.txt` 记录项目、Ruvia、vcpkg 修订和依赖 SPDX 来源及校验值。保持已分发版本的对应源码与依赖可获取；此前发布的源码归档仍保留原下载链接。
 
 网关可使用 `windows-server-release`，或在本机 WSL 的 Linux 文件系统内构建：
 
