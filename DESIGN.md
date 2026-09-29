@@ -195,7 +195,7 @@ Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI 
 
 ### 前端业务与导航
 
-前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。视觉与组件组合基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，保留模板侧栏、顶栏、默认主题、KPI 和 DataGrid；Next.js 路由适配为现有 Hash 路由与静态构建。参考 [Next Terminal 访问工作区](https://www.next-terminal.com/zh/docs/usage/access.html) 的职责分工，工作台和管理控制台分别展示自己的菜单。管理员通过顶部入口切换，普通用户不出现管理入口且仍受服务端鉴权约束。共享模板布局支持移动侧栏；切换区域不销毁远程会话。概览只统计当前账号实际可见的设备、实时在线状态、当前浏览器会话和连接申请。
+前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。视觉与组件组合基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，保留模板侧栏、顶栏、默认主题、KPI 和 DataGrid；Next.js 路由适配为现有 Hash 路由与静态构建。参考 [Next Terminal 访问工作区](https://www.next-terminal.com/zh/docs/usage/access.html) 的职责分工，工作台和管理控制台分别展示自己的菜单。管理员通过左侧菜单顶部的工作区域下拉切换，普通用户不出现管理入口且仍受服务端鉴权约束。共享模板布局支持移动侧栏；切换区域不销毁远程会话。概览只统计当前账号实际可见的设备、实时在线状态、当前浏览器会话和连接申请。
 
 - **工作台**：我的设备只显示本人拥有或获授权的设备；连接申请显示本人申请及审批结果。获得一次性批准后再进入桌面，客户端不自动提交新审批或接管他人会话。活动桌面独立显示，切换页面不销毁连接，离开可见区域暂停显示反馈。
 - **管理控制台**：设备清单负责添加、安装、重命名、升级和删除；设备授权负责向用户分配桌面查看、键鼠控制、系统重启和凭据管理权限，并选择直接连接或每次审批；用户管理负责创建、角色、停用与密码重置；平台设置负责 Bot 配置。管理员角色允许管理跨所有者设备，不自动授予远程控制权限。

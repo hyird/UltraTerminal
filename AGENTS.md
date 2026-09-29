@@ -23,7 +23,7 @@
 - C/C++ 依赖统一使用 vcpkg manifest 并固定 `builtin-baseline`，使用 CMake Presets；不得依赖本机临时安装的库。
 - Windows Agent 使用 `x64-windows-static` 和 `/MT`，第三方库与 CRT 静态链接；不要求额外第三方 DLL、VC++ Redistributable、.NET、SSH/VNC 服务或媒体扩展。
 - 基础系统 API 与现有驱动正常使用；可选媒体组件动态探测，缺失时不得阻止程序启动，编码回退到内嵌软件实现。
-- 前端以用户提供的 HeroUI Pro Dashboard Template 1.0.13 为视觉与布局基准，采用模板侧栏、顶栏、KPI、DataGrid 和默认主题；工作台与管理控制台使用独立菜单，通过管理员专属入口切换；普通用户只显示工作台。只提供实际已接通的能力，不创建占位页面或虚构业务数据。
+- 前端以用户提供的 HeroUI Pro Dashboard Template 1.0.13 为视觉与布局基准，采用模板侧栏、顶栏、KPI、DataGrid 和默认主题；工作台与管理控制台使用独立菜单，通过左侧菜单顶部的管理员专属下拉入口切换；普通用户只显示工作台。只提供实际已接通的能力，不创建占位页面或虚构业务数据。
 - 前端使用 Bun，提交 `bun.lock`，安装使用 `bun install --frozen-lockfile`；Bun 仅用于开发与构建。
 - Agent 只操作本机，SSH/VNC 必须内嵌；禁止连接独立 sshd/VNC Server、开放公网 SSH/VNC 端口或实现内网跳板。
 - 浏览器 ↔ Server 必须支持经 CDN 的 HTTPS/WSS 443；Agent ↔ Server 使用独立的原生 UDP/TCP 入口，不经过 CDN 的 HTTP 代理，不建立浏览器直连 Agent 的 P2P 路径。使用成熟加密传输库，不重复手写协议与密码学，不保留 Agent HTTP/WSS 入口或传输切换开关。

@@ -14,7 +14,7 @@ vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
-浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。界面基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，采用模板的侧栏、顶栏、KPI 和 DataGrid。工作台提供概览、我的设备和连接申请；管理员通过顶部入口切换到独立管理控制台，管理设备清单、设备授权、用户和平台设置。普通用户没有管理入口，个人安全位于侧栏底部。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
+浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。界面基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，采用模板的侧栏、顶栏、KPI 和 DataGrid。工作台提供概览、我的设备和连接申请；管理员通过左侧菜单顶部的工作区域下拉切换到独立管理控制台，管理设备清单、设备授权、用户和平台设置。普通用户没有管理入口，个人安全位于侧栏底部。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
