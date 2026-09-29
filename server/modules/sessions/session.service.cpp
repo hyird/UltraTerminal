@@ -10,19 +10,22 @@ namespace ultraterimal::server {
 namespace {
 bool validRequest(const SessionRequest& request) {
     if (request.userId.empty() || request.userId.size() > 128 || request.deviceId.empty() || request.deviceId.size() > 128 ||
-        request.kind < wire::DESKTOP || request.kind > wire::SSH) {
+        request.kind < wire::DESKTOP || request.kind > wire::SSH || !request.writeControl) {
         return false;
     }
     if (request.kind == wire::DESKTOP) {
-        if (request.writeControl ? request.desktopInputContract != 2 : request.desktopInputContract != 0) {
+        if (request.desktopInputContract != 2) {
             return false;
         }
     } else if (request.desktopInputContract) {
         return false;
     }
-    return request.kind != wire::SSH || request.writeControl;
+    return true;
 }
 bool permission(DatabaseTransaction& tx, const SessionRequest& request) {
+    if (!request.writeControl) {
+        return false;
+    }
     // Device, user, grant, session is the lock order for all session transactions.
     if (tx.exec("SELECT id FROM devices WHERE id=? AND revoked_at IS NULL FOR UPDATE", request.deviceId).empty() ||
         tx.exec("SELECT id FROM users WHERE id=? AND NOT disabled FOR UPDATE", request.userId).empty()) {
@@ -87,11 +90,7 @@ std::expected<IssuedSession, SessionFailure> SessionService::create(const Sessio
         auditDenied(tx, request, "desktop_input_upgrade_required");
         return std::unexpected(SessionFailure::kIncompatible);
     }
-    const auto grant = tx.exec("SELECT revision,require_approval FROM device_grants WHERE device_id=? AND user_id=?", request.deviceId, request.userId);
-    if (grant[0][1].as<bool>() && !TelegramService::consumeApproval(tx, request, grant[0][0].as<std::int64_t>())) {
-        auditDenied(tx, request, "approval_required");
-        return std::unexpected(SessionFailure::kApprovalRequired);
-    }
+    const auto grant = tx.exec("SELECT revision,verification_method FROM device_grants WHERE device_id=? AND user_id=?", request.deviceId, request.userId);
     expirePending(tx, request.deviceId);
     const auto count = tx.exec("SELECT count(*) FROM remote_sessions WHERE user_id=? AND device_id<>? AND (state='active' OR (state='pending' AND setup_expires_at>now(6)))", request.userId, request.deviceId);
     if (count[0][0].as<int>() >= 16) {
@@ -102,9 +101,19 @@ std::expected<IssuedSession, SessionFailure> SessionService::create(const Sessio
         auditDenied(tx, request, "device_busy");
         return std::unexpected(SessionFailure::kBusy);
     }
-    if (!request.writeControl && !tx.exec("SELECT 1 FROM remote_sessions s JOIN devices d ON d.id=s.device_id WHERE s.device_id=? AND s.user_id<>? AND d.owner_id<>? AND s.state<>'closed'", request.deviceId, request.userId, request.userId).empty()) {
-        auditDenied(tx, request, "device_busy");
-        return std::unexpected(SessionFailure::kBusy);
+    const auto method = grant[0][1].as<std::string>();
+    if (method == "telegram" && !TelegramService::consumeApproval(tx, request, grant[0][0].as<std::int64_t>())) {
+        auditDenied(tx, request, "approval_required");
+        return std::unexpected(SessionFailure::kApprovalRequired);
+    }
+    if (method == "totp") {
+        if (request.verificationCode.empty()) {
+            return std::unexpected(SessionFailure::kVerificationRequired);
+        }
+        if (!IdentityService(database_, key_).verifyConnectionFactor(tx, UserIdentity{request.userId, {}, "user", request.loginHash}, request.verificationCode)) {
+            auditDenied(tx, request, "verification_failed");
+            return std::unexpected(SessionFailure::kVerificationFailed);
+        }
     }
     IssuedSession result{"s-" + randomToken(), {}, {}};
     const auto preempted = endSessions(tx, tx.exec("SELECT id,user_id,device_id FROM remote_sessions WHERE device_id=? AND state<>'closed' FOR UPDATE", request.deviceId), "preempted");

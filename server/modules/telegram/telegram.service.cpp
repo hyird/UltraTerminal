@@ -10,7 +10,7 @@ bool activeUser(DatabaseTransaction& tx, const UserIdentity& user, bool admin = 
 // All approvals are tied to current bindings, owner, grant revision and login.
 constexpr std::string_view kValidApproval =
     " SELECT a.id FROM connection_approvals a JOIN devices d ON d.id=a.device_id AND d.owner_id=a.owner_id AND d.revoked_at IS NULL"
-    " JOIN device_grants g ON g.device_id=a.device_id AND g.user_id=a.user_id AND g.revision=a.grant_revision AND g.desktop AND (NOT a.write_control OR g.write_control) AND g.require_approval"
+    " JOIN device_grants g ON g.device_id=a.device_id AND g.user_id=a.user_id AND g.revision=a.grant_revision AND g.desktop AND a.write_control AND g.write_control AND g.verification_method='telegram'"
     " JOIN users u ON u.id=a.user_id AND NOT u.disabled JOIN users o ON o.id=a.owner_id AND NOT o.disabled"
     " JOIN login_sessions l ON l.token_hash=a.login_token_hash AND l.user_id=a.user_id AND l.expires_at>now(6)"
     " JOIN telegram_accounts r ON r.user_id=a.user_id AND r.telegram_id=a.requester_telegram_id"
@@ -48,6 +48,7 @@ bool TelegramService::configure(const UserIdentity& actor, const TelegramConfig&
         return false;
     }
     tx.exec("DELETE FROM telegram_bindings");
+    tx.exec("DELETE FROM identity_telegram_verifications");
     tx.exec("DELETE FROM telegram_accounts");
     tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE state IN ('pending','approved')");
     tx.exec("INSERT INTO telegram_settings(singleton,token,bot_username,webhook_secret,generation) VALUES(true,?,?,?,?) ON DUPLICATE KEY UPDATE token=?,bot_username=?,webhook_secret=?,generation=?", sealSecret(key_, "telegram:token", config.token), config.username, sealSecret(key_, "telegram:webhook", config.webhookSecret), config.generation, sealSecret(key_, "telegram:token", config.token), config.username, sealSecret(key_, "telegram:webhook", config.webhookSecret), config.generation);
@@ -64,6 +65,7 @@ bool TelegramService::disable(const UserIdentity& actor) const {
     }
     tx.exec("DELETE FROM telegram_settings");
     tx.exec("DELETE FROM telegram_bindings");
+    tx.exec("DELETE FROM identity_telegram_verifications");
     tx.exec("DELETE FROM telegram_accounts");
     tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE state IN ('pending','approved')");
     tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'telegram.disable',true)", actor.id);
@@ -118,6 +120,7 @@ void TelegramService::unbind(const UserIdentity& user) const {
     if (!activeUser(tx, user)) {
         return;
     }
+    tx.exec("DELETE FROM identity_telegram_verifications WHERE user_id=?", user.id);
     tx.exec("DELETE FROM telegram_accounts WHERE user_id=?", user.id);
     tx.exec("DELETE FROM telegram_bindings WHERE user_id=?", user.id);
     tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE (user_id=? OR owner_id=?) AND state IN ('pending','approved')", user.id, user.id);
@@ -125,12 +128,15 @@ void TelegramService::unbind(const UserIdentity& user) const {
     tx.commit();
 }
 std::optional<ApprovalDispatch> TelegramService::requestApproval(const UserIdentity& user, std::string_view deviceId, bool writeControl) const {
+    if (!writeControl) {
+        return std::nullopt;
+    }
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
     if (tx.exec("SELECT id FROM devices WHERE id=? AND revoked_at IS NULL FOR UPDATE", deviceId).empty() || !activeUser(tx, user)) {
         return std::nullopt;
     }
-    const auto rows = tx.exec("SELECT d.owner_id,d.name,g.revision,u.username,r.telegram_id,t.telegram_id,b.token,b.generation FROM devices d JOIN device_grants g ON g.device_id=d.id AND g.user_id=? JOIN users u ON u.id=g.user_id JOIN users o ON o.id=d.owner_id AND NOT o.disabled JOIN telegram_accounts r ON r.user_id=u.id JOIN telegram_accounts t ON t.user_id=d.owner_id CROSS JOIN telegram_settings b WHERE d.id=? AND g.desktop AND (NOT ? OR g.write_control) AND g.require_approval", user.id, deviceId, writeControl);
+    const auto rows = tx.exec("SELECT d.owner_id,d.name,g.revision,u.username,r.telegram_id,t.telegram_id,b.token,b.generation FROM devices d JOIN device_grants g ON g.device_id=d.id AND g.user_id=? JOIN users u ON u.id=g.user_id JOIN users o ON o.id=d.owner_id AND NOT o.disabled JOIN telegram_accounts r ON r.user_id=u.id JOIN telegram_accounts t ON t.user_id=d.owner_id CROSS JOIN telegram_settings b WHERE d.id=? AND g.desktop AND ? AND g.write_control AND g.verification_method='telegram'", user.id, deviceId, writeControl);
     if (rows.empty()) {
         return std::nullopt;
     }

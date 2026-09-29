@@ -39,13 +39,13 @@ export function Empty({
 }) {
   return (
     <div className="empty-state">
-      <div className="bg-surface-secondary text-muted mb-4 flex size-12 items-center justify-center rounded-2xl">
+      <div className="bg-surface-secondary text-muted mb-3 flex size-10 items-center justify-center rounded-2xl">
         <Icon name="display" className="size-6" />
       </div>
       <h2 className="font-medium">{title}</h2>
       <p className="text-muted mt-2 max-w-md text-sm">{description}</p>
       {action && onAction && (
-        <Button className="mt-5" onPress={onAction}>
+        <Button size="sm" className="mt-3" onPress={onAction}>
           {action}
         </Button>
       )}

@@ -22,6 +22,7 @@ interface DesktopState {
     device: Device,
     approvalId?: string,
     preempt?: boolean,
+    verificationCode?: string,
   ) => Promise<void>;
   activate: (id: string) => void;
   close: (id: string) => void;
@@ -46,7 +47,12 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
     setActive(id);
     navigate("/workbench/sessions");
   }
-  async function connect(device: Device, approvalId?: string, preempt = false) {
+  async function connect(
+    device: Device,
+    approvalId?: string,
+    preempt = false,
+    verificationCode?: string,
+  ) {
     const existing = current.current.find(
       (entry) => entry.device.id === device.id,
     );
@@ -63,6 +69,7 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
         device.writeControl,
         preempt,
         approvalId,
+        verificationCode,
       );
       if (!mounted.current) {
         await closeDesktop(ticket.id);

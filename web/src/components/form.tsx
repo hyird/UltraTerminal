@@ -124,6 +124,7 @@ export function Toggle({
         {hint && <p className="text-muted mt-1 text-xs">{hint}</p>}
       </div>
       <Switch
+        size="sm"
         aria-label={label}
         isSelected={selected}
         onChange={onChange}
@@ -159,13 +160,11 @@ export function Dialog({
   children,
   onClose,
   busy = false,
-  wide = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   busy?: boolean;
-  wide?: boolean;
 }) {
   return (
     <Modal.Backdrop
@@ -176,17 +175,13 @@ export function Dialog({
       isDismissable={!busy}
       isKeyboardDismissDisabled={busy}
     >
-      <Modal.Container
-        size={wide ? "lg" : "sm"}
-        placement="center"
-        scroll="inside"
-      >
+      <Modal.Container size="sm" placement="center" scroll="inside">
         <Modal.Dialog>
           <Modal.CloseTrigger isDisabled={busy} />
           <Modal.Header>
             <Modal.Heading>{title}</Modal.Heading>
           </Modal.Header>
-          <Modal.Body className="pb-6">{children}</Modal.Body>
+          <Modal.Body className="pb-4">{children}</Modal.Body>
         </Modal.Dialog>
       </Modal.Container>
     </Modal.Backdrop>
@@ -204,11 +199,12 @@ export function FormActions({
   danger?: boolean;
 }) {
   return (
-    <div className="flex justify-end gap-2 pt-3">
-      <Button variant="tertiary" onPress={onCancel} isDisabled={busy}>
+    <div className="flex justify-end gap-2 pt-2">
+      <Button size="sm" variant="tertiary" onPress={onCancel} isDisabled={busy}>
         取消
       </Button>
       <Button
+        size="sm"
         type="submit"
         isPending={busy}
         variant={danger ? "danger-soft" : "primary"}

@@ -12,7 +12,7 @@ namespace ultraterimal::server {
 namespace {
 boost::json::object deviceJson(const DeviceInfo& device, const ServerRuntime& runtime) {
     const auto connection = runtime.controlConnections.find(device.id);
-    return {{"id", device.id}, {"name", device.name}, {"owner_username", device.ownerUsername}, {"online", connection != runtime.controlConnections.end() && connection->second->ready}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"require_approval", device.requireApproval}, {"manage_credentials", device.manageCredentials}, {"last_seen", device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr)}};
+    return {{"id", device.id}, {"name", device.name}, {"owner_username", device.ownerUsername}, {"online", connection != runtime.controlConnections.end() && connection->second->ready}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"last_seen", device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr)}};
 }
 ruvia::Task<void> send(ruvia::Context& context, boost::json::object event) {
     const auto bytes = boost::json::serialize(event);

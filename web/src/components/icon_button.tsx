@@ -32,7 +32,7 @@ export function IconButton({
 }: IconButtonProps) {
   return (
     <Tooltip>
-      <Button isIconOnly aria-label={label} {...buttonProps}>
+      <Button size="sm" isIconOnly aria-label={label} {...buttonProps}>
         {children}
       </Button>
       <Tooltip.Content>{tooltip ?? label}</Tooltip.Content>

@@ -25,7 +25,7 @@ struct DeviceInfo {
     bool enrolled = true;
     bool desktop = false;
     bool writeControl = false;
-    bool requireApproval = false;
+    std::string verificationMethod = "direct";
     bool manageCredentials = false;
     std::string ownerUsername = {};
 };
@@ -35,7 +35,7 @@ struct DeviceGrant {
     bool writeControl = false;
     bool systemRestart = false;
     bool manageCredentials = false;
-    bool requireApproval = false;
+    std::string verificationMethod = "direct";
 };
 struct RestartOperation {
     std::string id;

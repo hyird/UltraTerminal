@@ -1,3 +1,4 @@
+import { Skeleton } from "@heroui/react";
 import { IconButton } from "../../components/icon_button";
 import { useEffect, useRef, useState } from "react";
 import { Button, Dropdown, Label, toast } from "@heroui/react";
@@ -38,6 +39,7 @@ export function DesktopWorkspace() {
             key={entry.ticket.id}
           >
             <Button
+              size="sm"
               aria-pressed={active === entry.ticket.id}
               variant="ghost"
               onPress={() => activate(entry.ticket.id)}
@@ -204,6 +206,7 @@ function DesktopPanel({
           <>
             <Dropdown>
               <Button
+                size="sm"
                 variant="secondary"
                 className="desktop-shortcuts"
                 isDisabled={ended}
@@ -292,10 +295,16 @@ function DesktopPanel({
         </div>
         {(ended || !sample?.width) && (
           <div className="desktop-message" role="status">
+            {!ended && (
+              <Skeleton
+                className="h-40 w-2/3 max-w-xl rounded-lg"
+                aria-label="正在加载远程画面"
+              />
+            )}
             <Icon name="display" className="size-8" />
             <p>{status}</p>
             {ended && (
-              <Button variant="secondary" onPress={onClose}>
+              <Button size="sm" variant="secondary" onPress={onClose}>
                 关闭会话
               </Button>
             )}

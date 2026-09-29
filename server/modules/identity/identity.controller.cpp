@@ -33,9 +33,9 @@ ruvia::Task<ruvia::HttpResponse> IdentityController::security(ruvia::Context& co
     co_return jsonResponse(context, {{"totp", result.totp}, {"recovery_codes", result.recoveryCodes}});
 }
 ruvia::Task<ruvia::HttpResponse> IdentityController::changeSecurity(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"action", "password", "code", "new_password"});
+    const auto body = requestObject(co_await context.req().text(), {"action", "password", "code", "new_password", "telegram_proof"});
     const auto user = context.requestState<UserIdentity>();
-    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, user, action = requestText(body, "action", 16), password = requestText(body, "password", 1024), code = optionalText(body, "code", 32), newPassword = optionalText(body, "new_password", 1024)] { return service.changeSecurity(user, action, password, code, newPassword); });
+    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, user, action = requestText(body, "action", 16), password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32), newPassword = optionalText(body, "new_password", 1024)] { return service.changeSecurity(user, action, password, code, newPassword, telegramProof); });
     if (!result) {
         co_return context.error({.status = ruvia::http_status::kForbidden, .code = "security_rejected", .message = "Verification failed"});
     }
@@ -58,17 +58,17 @@ ruvia::Task<ruvia::HttpResponse> IdentityController::accounts(ruvia::Context& co
     co_return jsonResponse(context, accounts);
 }
 ruvia::Task<ruvia::HttpResponse> IdentityController::createAccount(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"username", "password", "role", "current_password", "code"});
-    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, user = context.requestState<UserIdentity>(), username = requestText(body, "username", 64), password = requestText(body, "password", 1024), role = requestText(body, "role", 16), current = requestText(body, "current_password", 1024), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, current, code) && service.createAccount(user, username, password, role); });
+    const auto body = requestObject(co_await context.req().text(), {"username", "password", "role", "current_password", "code", "telegram_proof"});
+    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, user = context.requestState<UserIdentity>(), username = requestText(body, "username", 64), password = requestText(body, "password", 1024), role = requestText(body, "role", 16), current = optionalText(body, "current_password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, current, code, telegramProof) && service.createAccount(user, username, password, role); });
     if (!result) {
         co_return context.error({.status = ruvia::http_status::kForbidden, .code = "account_rejected", .message = "Account operation rejected"});
     }
     co_return jsonResponse(context, {{"ok", true}});
 }
 ruvia::Task<ruvia::HttpResponse> IdentityController::updateAccount(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"id", "password", "role", "disabled", "current_password", "code"});
+    const auto body = requestObject(co_await context.req().text(), {"id", "password", "role", "disabled", "current_password", "code", "telegram_proof"});
     const auto id = requestText(body, "id", 128);
-    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, user = context.requestState<UserIdentity>(), id, password = optionalText(body, "password", 1024), role = requestText(body, "role", 16), disabled = requestBool(body, "disabled"), current = requestText(body, "current_password", 1024), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, current, code) && service.updateAccount(user, id, role, disabled, password); });
+    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, user = context.requestState<UserIdentity>(), id, password = optionalText(body, "password", 1024), role = requestText(body, "role", 16), disabled = requestBool(body, "disabled"), current = optionalText(body, "current_password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, current, code, telegramProof) && service.updateAccount(user, id, role, disabled, password); });
     if (!result) {
         co_return context.error({.status = ruvia::http_status::kForbidden, .code = "account_rejected", .message = "Account operation rejected"});
     }

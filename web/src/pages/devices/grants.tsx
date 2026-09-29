@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "../../components/loading";
 import { useEffect, useState } from "react";
 import { Button, Chip, toast } from "@heroui/react";
 import {
@@ -17,11 +18,8 @@ import type { Device, DeviceGrant } from "./device.types";
 const emptyGrant: DeviceGrant = {
   userId: "",
   username: "",
-  desktop: true,
-  writeControl: false,
-  systemRestart: false,
-  manageCredentials: false,
-  requireApproval: false,
+  connect: true,
+  verificationMethod: "direct",
 };
 export function GrantsDialog({
   device,
@@ -91,12 +89,7 @@ export function GrantsDialog({
       ? item.username === device.ownerUsername
       : device.canManage && item.userId === user?.id;
   return (
-    <Dialog
-      title={`设备授权 · ${device.name}`}
-      wide
-      onClose={onClose}
-      busy={busy}
-    >
+    <Dialog title={`设备授权 · ${device.name}`} onClose={onClose} busy={busy}>
       <Notice>{error}</Notice>
       {grant || removing ? (
         <form onSubmit={submit} className="form-stack mt-4">
@@ -145,73 +138,45 @@ export function GrantsDialog({
                     maxLength={64}
                   />
                 )}
-                <div className="space-y-1">
-                  <Toggle
-                    label="桌面查看"
-                    hint="允许连接并查看设备桌面"
-                    selected={grant.desktop}
-                    onChange={(desktop) =>
-                      setGrant({
-                        ...grant,
-                        desktop,
-                        ...(!desktop
-                          ? {
-                              writeControl: false,
-                              systemRestart: false,
-                              manageCredentials: false,
-                            }
-                          : {}),
-                      })
-                    }
-                  />
-                  <Toggle
-                    label="键鼠控制"
-                    selected={grant.writeControl}
-                    disabled={!grant.desktop}
-                    onChange={(writeControl) =>
-                      setGrant({
-                        ...grant,
-                        writeControl,
-                        ...(!writeControl
-                          ? { systemRestart: false, manageCredentials: false }
-                          : {}),
-                      })
-                    }
-                  />
-                  <Toggle
-                    label="系统重启"
-                    selected={grant.systemRestart}
-                    disabled={!grant.writeControl}
-                    onChange={(systemRestart) =>
-                      setGrant({ ...grant, systemRestart })
-                    }
-                  />
-                  <Toggle
-                    label="Windows 凭据管理"
-                    selected={grant.manageCredentials}
-                    disabled={!grant.writeControl}
-                    onChange={(manageCredentials) =>
-                      setGrant({ ...grant, manageCredentials })
-                    }
-                  />
-                </div>
+                <Toggle
+                  label="允许连接"
+                  hint="允许远程查看并控制此设备，凭据仅所有者可配置"
+                  selected={grant.connect}
+                  disabled={isOwner(grant)}
+                  onChange={(connect) =>
+                    setGrant({
+                      ...grant,
+                      connect,
+                      verificationMethod: connect
+                        ? grant.verificationMethod
+                        : "direct",
+                    })
+                  }
+                />
                 <Choice
                   label="连接策略"
-                  value={grant.requireApproval ? "approval" : "direct"}
+                  disabled={!grant.connect}
+                  value={grant.verificationMethod}
                   onChange={(value) =>
                     setGrant({
                       ...grant,
-                      requireApproval: value === "approval",
+                      verificationMethod:
+                        value === "telegram"
+                          ? "telegram"
+                          : value === "totp"
+                            ? "totp"
+                            : "direct",
                     })
                   }
                   items={[
                     { id: "direct", label: "直接连接" },
-                    { id: "approval", label: "每次审批" },
+                    { id: "telegram", label: "Telegram 审批" },
+                    { id: "totp", label: "Google 验证器动态码" },
                   ]}
                 />
                 <p className="text-muted text-xs leading-5">
-                  每次审批需要双方绑定
-                  Telegram，申请发送给设备所有者。保存后，旧授权下的会话会重新校验。
+                  Telegram 审批需要双方绑定
+                  Telegram，申请发送给设备所有者。动态码验证使用被授权用户的验证器；所有者也可配置自己的连接策略。保存后，旧授权下的会话会重新校验。
                 </p>
               </>
             )
@@ -243,7 +208,7 @@ export function GrantsDialog({
             </Button>
           </div>
           {loading ? (
-            <p role="status">正在加载授权…</p>
+            <LoadingSkeleton label="正在加载授权" rows={3} />
           ) : grants.length ? (
             <div className="space-y-4">
               {grants.map((item) => (
@@ -260,37 +225,38 @@ export function GrantsDialog({
                       )}
                     </div>
                     <p className="text-muted mt-2 text-xs leading-6">
-                      {[
-                        item.desktop && "桌面查看",
-                        item.writeControl && "键鼠控制",
-                        item.systemRestart && "系统重启",
-                        item.manageCredentials && "凭据管理",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ") || "未授予桌面权限"}
+                      {item.connect ? "允许连接" : "未授予连接权限"}
                       <br />
-                      {item.requireApproval ? "每次审批" : "直接连接"}
+                      {
+                        {
+                          direct: "直接连接",
+                          telegram: "Telegram 审批",
+                          totp: "Google 验证器动态码",
+                        }[item.verificationMethod]
+                      }
                     </p>
                   </div>
-                  {!isOwner(item) && (
+                  {
                     <div className="flex shrink-0">
                       <Button
                         size="sm"
-                        variant="ghost"
+                        variant="secondary"
                         onPress={() => setGrant({ ...item })}
                       >
                         编辑
                       </Button>
-                      <Button
-                        size="sm"
-                        variant="danger-soft"
-                        onPress={() => setRemoving(item)}
-                        aria-label={`撤销 ${item.username} 的授权`}
-                      >
-                        撤销
-                      </Button>
+                      {!isOwner(item) && (
+                        <Button
+                          size="sm"
+                          variant="danger-soft"
+                          onPress={() => setRemoving(item)}
+                          aria-label={`撤销 ${item.username} 的授权`}
+                        >
+                          撤销
+                        </Button>
+                      )}
                     </div>
-                  )}
+                  }
                 </div>
               ))}
             </div>
@@ -298,7 +264,7 @@ export function GrantsDialog({
             <p className="text-muted py-6 text-sm">暂无共享授权。</p>
           )}
           <div className="mt-6 flex justify-end">
-            <Button variant="tertiary" onPress={onClose}>
+            <Button size="sm" variant="tertiary" onPress={onClose}>
               关闭
             </Button>
           </div>

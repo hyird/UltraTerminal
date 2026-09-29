@@ -1,5 +1,7 @@
 #include "database.service.h"
 
+#include <array>
+
 #include "migration.schema.h"
 
 namespace ultraterimal::server {
@@ -10,29 +12,33 @@ void migrateDatabase(const DatabaseConfig& settings) {
         throw std::runtime_error("Database migration is locked");
     }
     connection.exec("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,completed BOOLEAN NOT NULL DEFAULT FALSE,applied_at DATETIME(6) NOT NULL DEFAULT now(6)) ENGINE=InnoDB");
-    const auto versions = connection.exec("SELECT version,completed FROM schema_migrations");
-    if (!versions.empty()) {
-        if (versions.size() != 1 || versions[0][0].as<int>() != 1 || !versions[0][1].as<bool>()) {
+    constexpr std::array migrations{kMariaDbMigration, kControlOnlyMigration, kIdentityTelegramMigration, kGrantVerificationMigration};
+    const auto versions = connection.exec("SELECT version,completed FROM schema_migrations ORDER BY version");
+    for (std::size_t index = 0; index < versions.size(); ++index) {
+        if (index >= migrations.size() || versions[index][0].as<int>() != static_cast<int>(index + 1) || !versions[index][1].as<bool>()) {
             throw std::runtime_error("Unsupported or incomplete MariaDB migration; restore the backup before retrying");
         }
-        return;
     }
-    // MariaDB DDL commits implicitly. A durable incomplete marker prevents a
-    // partial schema from being mistaken for a successful migration on restart.
-    connection.exec("INSERT INTO schema_migrations(version) VALUES(1)");
-    std::size_t offset = 0;
-    while (offset < kMariaDbMigration.size()) {
-        const auto end = kMariaDbMigration.find(';', offset);
-        const auto statement = kMariaDbMigration.substr(offset, end == std::string_view::npos ? kMariaDbMigration.size() - offset : end - offset);
-        if (statement.find_first_not_of(" \n\r\t") != std::string_view::npos) {
-            connection.exec(statement);
+    // MariaDB DDL commits implicitly. Keep an incomplete marker until every
+    // statement succeeds so a partial migration cannot be silently retried.
+    for (std::size_t index = versions.size(); index < migrations.size(); ++index) {
+        const auto version = static_cast<int>(index + 1);
+        connection.exec("INSERT INTO schema_migrations(version) VALUES(?)", version);
+        const auto migration = migrations[index];
+        std::size_t offset = 0;
+        while (offset < migration.size()) {
+            const auto end = migration.find(';', offset);
+            const auto statement = migration.substr(offset, end == std::string_view::npos ? migration.size() - offset : end - offset);
+            if (statement.find_first_not_of(" \n\r\t") != std::string_view::npos) {
+                connection.exec(statement);
+            }
+            if (end == std::string_view::npos) {
+                break;
+            }
+            offset = end + 1;
         }
-        if (end == std::string_view::npos) {
-            break;
-        }
-        offset = end + 1;
+        connection.exec("UPDATE schema_migrations SET completed=TRUE WHERE version=?", version);
     }
-    connection.exec("UPDATE schema_migrations SET completed=TRUE WHERE version=1");
 }
 DatabaseConnection acquireGatewayLease(const DatabaseConfig& settings) {
     auto connection = openDatabase(settings);

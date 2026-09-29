@@ -14,7 +14,7 @@ vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
-浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。界面基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，采用模板的侧栏、顶栏、KPI 和 DataGrid。工作台提供概览、我的设备和连接申请；管理员通过左侧菜单顶部的工作区域下拉切换到独立管理控制台，管理设备清单、设备授权、用户和平台设置。普通用户没有管理入口，个人安全位于侧栏底部。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
+浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。界面基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，采用模板的侧栏、顶栏、KPI 和 DataGrid。工作台提供概览和我的设备，连接申请位于右上角铃铛弹窗；管理员通过左侧菜单顶部的工作区域下拉切换到独立控制台，管理设备清单、设备授权、用户和平台设置。普通用户没有管理入口，个人安全位于侧栏底部。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
@@ -174,7 +174,7 @@ Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='Ultrate
 
 ## Windows 系统重启
 
-服务端校验桌面、键鼠控制和系统重启权限；所有者默认拥有这些权限。仅在线且支持该能力的 LocalSystem Agent 接收请求。Agent 持久记录操作 ID 后，调用 Windows 普通、非强制关闭应用的重启 API。Server 返回 `requested` 表示已受理并入队，`agent_accepted` 仅表示 Windows 接受请求，**都不证明系统已重启**。断连、时钟变化及 Agent 重新上线不自动宣称完成，也不得自动产生新 ID 再试。
+服务端校验设备所有者身份和连接授权；不再提供独立系统重启权限开关。仅在线且支持该能力的 LocalSystem Agent 接收请求。Agent 持久记录操作 ID 后，调用 Windows 普通、非强制关闭应用的重启 API。Server 返回 `requested` 表示已受理并入队，`agent_accepted` 仅表示 Windows 接受请求，**都不证明系统已重启**。断连、时钟变化及 Agent 重新上线不自动宣称完成，也不得自动产生新 ID 再试。
 
 重启为单次操作，历史结果不阻止新的已授权请求。相同幂等键仍返回原记录；响应丢失后的当前页面重试沿用原键，成功提交后下一次明确点击使用新键。迁移 `006_restart_direct.sql` 移除设备级未结案唯一索引，历史审计记录保持不变。升级需备份数据库并成套部署网关和前端；旧 `/restart/current` 与 `/restart/:id/resolve` 流程接口在此版本移除，旧页面须刷新。回滚二进制无需反向修改数据库，旧版会恢复其应用层流程限制。
 
@@ -238,12 +238,14 @@ Agent 1.0.7 起，远程分辨率通过 Windows `CDS_UPDATEREGISTRY | CDS_GLOBAL
 
 ## 平台账号、设备共享与双重验证
 
-- 管理员通过身份管理 API 创建账号、修改角色、禁用账号或重置密码；这些操作要求管理员重新验证自己的密码和验证码。平台保留至少一个可用管理员，密码重置不绕过已绑定的 TOTP。
-- 设备创建者为所有者。所有者通过授权 API 按平台用户名共享设备，分别配置桌面查看、控制、系统重启、Windows 凭据管理，以及直接连接或每次审批。管理员通过管理接口查看全部有效设备并向普通用户分配或撤销授权；操作记录管理员和目标用户，撤权即时断开失效会话。管理员查看机器清单不会自动获得桌面控制权，所有者身份和审批接收人不变。
+- 管理员通过身份管理 API 创建账号、修改角色、禁用账号或重置密码；这些操作要求管理员选择密码、Google 验证器动态码或 Telegram 确认中的一种方式重新验证身份。平台保留至少一个可用管理员，密码重置不绕过已绑定的 TOTP。
+- 设备创建者为所有者。所有者通过授权 API 按平台用户名共享设备，仅区分所有者与连接权限。Windows 凭据仅所有者可配置，系统重启管理操作仅所有者可用；每位用户的设备授权独立选择直接连接、Telegram 审批或 Google 验证器动态码，所有者可编辑自己的连接策略。管理员通过管理接口查看全部有效设备并向普通用户分配或撤销授权；操作记录管理员和目标用户，撤权即时断开失效会话。管理员查看机器清单不会自动获得桌面控制权，所有者身份和审批接收人不变。
 - 身份 API 支持 Google 验证器绑定及验证码确认。密码正确且已开启双重验证时，登录接口返回 `factor_required`，只有完成第二因素验证才签发登录 Cookie。一次性恢复码可以替代动态验证码，仍需要正确密码。恢复码只显示一次；重新生成后旧码失效。修改密码、启用/关闭 TOTP、重新生成恢复码会撤销其他登录。
 - 验证码为 RFC 6238 的 SHA-1 / 6 位 / 30 秒，接受前后一个时间步并拒绝重用。服务器与手机应保持时间同步；连续 5 次验证失败后冷却 5 分钟。
 - Telegram：管理员先通过 @BotFather 创建 Bot，通过 Telegram 配置 API 录入 Token。平台验证 Bot 并设置同源 `/api/telegram/webhook` HTTPS 回调；反向代理须保留 `X-Telegram-Bot-Api-Secret-Token` 请求头，日志不得记录请求体或该请求头。无需开放 Agent HTTP 入口。
 - 每位用户通过自己的已认证会话生成有效期 10 分钟的一次性绑定链接，并在 Bot 私聊点击 Start。申请人及设备所有者都必须绑定，才能使用审批连接；审批只发给设备所有者，5 分钟有效、一次使用。解绑、停用 Bot、改授权或退出申请人的登录会使未使用的审批失效；重新连接需要重新审批。
+- Telegram 身份确认绑定当前账号、登录会话、Bot 代次及 TG 绑定，5 分钟有效、一次使用。未批准、跨账号、跨会话、过期或解绑后的请求不能作为身份凭证。此选择只用于已登录后的操作确认，登录时开启的双因素验证仍然生效。
+- 升级运行版本化迁移 002–004：撤销旧只读连接权限并关闭旧只读会话，收回非所有者的凭据管理和重启权限；将原审批标记转换为每用户连接策略。旧只读授权不会自动升级成控制权限。前后端须一同切换，回滚须恢复升级前数据库。
 - Bot Token 只写入，不向页面回显；Token、回调密钥及 TOTP 密钥以 OpenSSL AES-256-GCM 加密保存，恢复码和登录票据只保存散列。加密密钥须在数据库外备份，不能随发布轮换或丢失。
 - 设备、绑定和审批通过 `/api/events` WSS 推送状态，禁止通过定时 GET 刷新。退出登录、禁用用户和改授权会终止失效的远控，运行中的会话仍保留周期性鉴权作为兜底。
 

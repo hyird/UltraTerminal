@@ -105,7 +105,12 @@ export function LoginPage() {
               autoComplete="one-time-code"
             />
           )}
-          <Button type="submit" className="mt-2 w-full" isPending={busy}>
+          <Button
+            size="sm"
+            type="submit"
+            className="mt-2 w-full"
+            isPending={busy}
+          >
             {step === "password" ? "登录" : "验证并登录"}
           </Button>
           {step !== "password" && (

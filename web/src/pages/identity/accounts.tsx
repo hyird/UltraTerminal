@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "../../components/loading";
 import { SearchField } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useEffect, useMemo, useState } from "react";
@@ -124,7 +125,7 @@ export function AccountsPage() {
         return (
           <>
             <Button
-              variant="ghost"
+              variant="secondary"
               size="sm"
               onPress={() => setEditing(item)}
               aria-label={`管理 ${item.username}`}
@@ -141,7 +142,7 @@ export function AccountsPage() {
       title="用户管理"
       description="管理平台身份、账号状态和登录安全。设备访问权限在设备授权中配置。"
       actions={
-        <Button onPress={() => setEditing("new")}>
+        <Button size="sm" onPress={() => setEditing("new")}>
           <Icon name="plus" className="size-4" />
           创建用户
         </Button>
@@ -183,9 +184,7 @@ export function AccountsPage() {
           />
         </div>
         {loading ? (
-          <div className="loading-state" role="status">
-            正在加载用户…
-          </div>
+          <LoadingSkeleton kind="table" label="正在加载用户" />
         ) : filtered.length ? (
           <DataGrid
             aria-label="用户列表"
@@ -257,6 +256,7 @@ function AccountEditor({
   const [password, setPassword] = useState("");
   const [proof, setProof] = useState("");
   const [code, setCode] = useState("");
+  const [telegramProof, setTelegramProof] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   async function submit(event: React.FormEvent) {
@@ -269,7 +269,7 @@ function AccountEditor({
         account
           ? { id: account.id, role, disabled, password: password || undefined }
           : { username, role, password },
-        { password: proof, code },
+        { password: proof, code, telegram_proof: telegramProof },
       );
       toast.success(account ? "用户已更新" : "用户已创建");
       onSaved();
@@ -335,6 +335,8 @@ function AccountEditor({
           code={code}
           onPassword={setProof}
           onCode={setCode}
+          telegramProof={telegramProof}
+          onTelegramProof={setTelegramProof}
         />
         <FormActions
           onCancel={onClose}

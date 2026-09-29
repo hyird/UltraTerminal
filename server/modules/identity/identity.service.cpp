@@ -57,6 +57,34 @@ bool factorMatches(DatabaseTransaction& tx, const DatabaseRow& row, std::string_
     }
     return !tx.exec("DELETE FROM recovery_codes WHERE user_id=? AND code_hash=? RETURNING code_hash", id, tokenHash(code)).empty();
 }
+bool operationProofMatches(DatabaseTransaction& tx, const DatabaseRow& row, std::string_view key, std::string_view password, std::string_view code, const UserIdentity& user, std::string_view telegramProof) {
+    if (!telegramProof.empty()) {
+        if (!password.empty() || !code.empty() || telegramProof.size() != 32) {
+            return false;
+        }
+        const auto proof = tx.exec("SELECT v.id FROM identity_telegram_verifications v JOIN telegram_accounts a ON a.user_id=v.user_id AND a.telegram_id=v.telegram_id JOIN telegram_settings b ON b.generation=v.bot_generation WHERE v.id=? AND v.user_id=? AND v.login_token_hash=? AND v.state='approved' AND v.expires_at>now(6) FOR UPDATE", telegramProof, user.id, user.loginHash);
+        if (proof.empty()) {
+            return false;
+        }
+        tx.exec("UPDATE identity_telegram_verifications SET state='consumed' WHERE id=?", telegramProof);
+        return true;
+    }
+    // Exactly one proof: an empty or ambiguous request must never authenticate.
+    if (!password.empty()) {
+        return code.empty() && passwordMatches(row, password);
+    }
+    const auto encrypted = row["totp_secret"].as<std::string>();
+    if (encrypted.empty() || code.size() != 6 || code.find_first_not_of("0123456789") != std::string_view::npos) {
+        return false;
+    }
+    const auto id = row["id"].as<std::string>();
+    const auto step = verifyTotp(openSecret(key, "totp:" + id, encrypted), code, row["unix_time"].as<std::int64_t>(), row["totp_last_step"].as<std::int64_t>());
+    if (!step) {
+        return false;
+    }
+    tx.exec("UPDATE users SET totp_last_step=? WHERE id=?", *step, id);
+    return true;
+}
 DatabaseResult actorRows(DatabaseTransaction& tx, const UserIdentity& user) {
     return tx.exec("SELECT u.*,FLOOR(UNIX_TIMESTAMP(now(6))) AS unix_time,coalesce(login_blocked_until>now(6),false) AS blocked FROM users u WHERE u.id=? AND NOT u.disabled AND EXISTS(SELECT 1 FROM login_sessions s WHERE s.user_id=u.id AND s.token_hash=? AND s.expires_at>now(6)) FOR UPDATE", user.id, user.loginHash);
 }
@@ -167,14 +195,66 @@ SecurityInfo IdentityService::security(std::string_view userId) const {
     }
     return {rows[0][0].as<bool>(), rows[0][1].as<int>()};
 }
-bool IdentityService::reauthenticate(const UserIdentity& user, std::string_view password, std::string_view code) const {
+
+std::optional<TelegramVerification> IdentityService::requestTelegramVerification(const UserIdentity& user, std::string_view generation) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    const auto actor = actorRows(tx, user);
+    if (actor.empty() || actor[0]["blocked"].as<bool>()) {
+        return std::nullopt;
+    }
+    const auto binding = tx.exec("SELECT a.telegram_id FROM telegram_accounts a JOIN telegram_settings b ON b.generation=? WHERE a.user_id=?", generation, user.id);
+    if (binding.empty() || !tx.exec("SELECT id FROM identity_telegram_verifications WHERE user_id=? AND created_at>now(6)-INTERVAL 60 SECOND", user.id).empty()) {
+        return std::nullopt;
+    }
+    tx.exec("DELETE FROM identity_telegram_verifications WHERE expires_at<=now(6)");
+    tx.exec("UPDATE identity_telegram_verifications SET state='failed' WHERE user_id=? AND state IN ('pending','approved')", user.id);
+    TelegramVerification result{randomToken().substr(0, 32), binding[0][0].as<std::int64_t>()};
+    tx.exec("INSERT INTO identity_telegram_verifications(id,user_id,login_token_hash,telegram_id,bot_generation,expires_at) VALUES(?,?,?,?,?,now(6)+INTERVAL 5 MINUTE)", result.id, user.id, user.loginHash, result.telegramId, generation);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.telegram.request',true)", user.id);
+    tx.commit();
+    return result;
+}
+std::optional<std::string> IdentityService::decideTelegramVerification(std::string_view generation, std::string_view id, std::int64_t telegramId, bool accept) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT v.user_id FROM identity_telegram_verifications v JOIN users u ON u.id=v.user_id AND NOT u.disabled JOIN login_sessions s ON s.token_hash=v.login_token_hash AND s.user_id=v.user_id AND s.expires_at>now(6) JOIN telegram_accounts a ON a.user_id=v.user_id AND a.telegram_id=v.telegram_id JOIN telegram_settings b ON b.generation=v.bot_generation WHERE v.id=? AND v.bot_generation=? AND v.telegram_id=? AND v.state='pending' AND v.expires_at>now(6) FOR UPDATE", id, generation, telegramId);
+    if (rows.empty()) {
+        return std::nullopt;
+    }
+    const auto user = rows[0][0].as<std::string>();
+    tx.exec("UPDATE identity_telegram_verifications SET state=? WHERE id=?", accept ? "approved" : "denied", id);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.telegram.decide',?)", user, accept);
+    tx.commit();
+    return user;
+}
+void IdentityService::failTelegramVerification(std::string_view id) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    tx.exec("UPDATE identity_telegram_verifications SET state='failed' WHERE id=? AND state IN ('pending','approved')", id);
+    tx.commit();
+}
+bool IdentityService::verifyConnectionFactor(DatabaseTransaction& tx, const UserIdentity& user, std::string_view code) const {
+    const auto rows = actorRows(tx, user);
+    if (rows.empty() || rows[0]["blocked"].as<bool>()) {
+        return false;
+    }
+    const bool ok = operationProofMatches(tx, rows[0], key_, {}, code, user, {});
+    if (!ok) {
+        failedAttempt(tx, user.id);
+    } else {
+        tx.exec("UPDATE users SET failed_logins=0,login_blocked_until=NULL WHERE id=?", user.id);
+    }
+    return ok;
+}
+bool IdentityService::reauthenticate(const UserIdentity& user, std::string_view password, std::string_view code, std::string_view telegramProof) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
     const auto rows = actorRows(tx, user);
     if (rows.empty() || rows[0]["blocked"].as<bool>()) {
         return false;
     }
-    const bool ok = passwordMatches(rows[0], password) && factorMatches(tx, rows[0], key_, code);
+    const bool ok = operationProofMatches(tx, rows[0], key_, password, code, user, telegramProof);
     if (!ok) {
         failedAttempt(tx, user.id);
     } else {
@@ -183,7 +263,7 @@ bool IdentityService::reauthenticate(const UserIdentity& user, std::string_view 
     tx.commit();
     return ok;
 }
-std::optional<SecurityChange> IdentityService::changeSecurity(const UserIdentity& user, std::string_view action, std::string_view password, std::string_view code, std::string_view newPassword) const {
+std::optional<SecurityChange> IdentityService::changeSecurity(const UserIdentity& user, std::string_view action, std::string_view password, std::string_view code, std::string_view newPassword, std::string_view telegramProof) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
     const auto rows = actorRows(tx, user);
@@ -193,7 +273,7 @@ std::optional<SecurityChange> IdentityService::changeSecurity(const UserIdentity
     const bool enabled = !rows[0]["totp_secret"].as<std::string>().empty();
     const bool validAction = (action == "begin" || action == "confirm") ? !enabled : action == "disable" || action == "recovery" ? enabled
                                                                                                                                  : action == "password" && newPassword.size() >= 12 && newPassword.size() <= 1024;
-    if (!validAction || !passwordMatches(rows[0], password) || (action != "confirm" && !factorMatches(tx, rows[0], key_, code))) {
+    if (!validAction || (action == "confirm" ? (!password.empty() || !telegramProof.empty()) : !operationProofMatches(tx, rows[0], key_, password, code, user, telegramProof))) {
         failedAttempt(tx, user.id);
         tx.commit();
         return std::nullopt;

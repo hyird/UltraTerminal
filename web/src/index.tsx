@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "./components/loading";
 import { OverviewPage } from "./pages/overview";
 import { createRoot } from "react-dom/client";
 import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router";
@@ -9,23 +10,20 @@ import { AppShell } from "./layout/app_shell";
 import { LoginPage } from "./pages/login";
 import { DevicesPage, AssetsPage } from "./pages/devices";
 import { AccountsPage } from "./pages/identity/accounts";
-import { RequestsPage } from "./pages/identity/requests";
 import { SecurityPage } from "./pages/identity";
 import { SettingsPage } from "./pages/identity/telegram";
 import "./styles.css";
 function Protected() {
   const auth = useAuth();
   if (auth.loading)
-    return (
-      <div className="app-loading" role="status">
-        正在连接平台…
-      </div>
-    );
+    return <LoadingSkeleton kind="shell" label="正在连接平台" />;
   if (auth.error)
     return (
       <div className="app-loading">
         <p role="alert">{auth.error}</p>
-        <Button onPress={() => void auth.refresh()}>重试</Button>
+        <Button size="sm" onPress={() => void auth.refresh()}>
+          重试
+        </Button>
       </div>
     );
   if (!auth.user) return <Navigate to="/login" replace />;
@@ -52,11 +50,7 @@ function SessionRoute() {
 function LoginRoute() {
   const auth = useAuth();
   if (auth.loading)
-    return (
-      <div className="app-loading" role="status">
-        正在连接平台…
-      </div>
-    );
+    return <LoadingSkeleton kind="shell" label="正在连接平台" />;
   return auth.user ? <Navigate to="/overview" replace /> : <LoginPage />;
 }
 const root = document.getElementById("root");
@@ -70,7 +64,6 @@ createRoot(root).render(
         <Route element={<Protected />}>
           <Route path="/overview" element={<OverviewPage />} />
           <Route path="/workbench/devices" element={<DevicesPage />} />
-          <Route path="/workbench/requests" element={<RequestsPage />} />
           <Route path="/workbench/sessions" element={<SessionRoute />} />
           <Route path="/account/security" element={<SecurityPage />} />
           <Route element={<AdminOnly />}>

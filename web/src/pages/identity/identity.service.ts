@@ -141,6 +141,7 @@ export async function saveAccount(
   const body = {
     ...account,
     current_password: proof.password,
+    telegram_proof: proof.telegram_proof,
     code: proof.code,
   };
 

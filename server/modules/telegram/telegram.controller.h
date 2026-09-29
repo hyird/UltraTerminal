@@ -12,6 +12,7 @@ class TelegramController final : public ruvia::Controller<TelegramController> {
     RUVIA_POST("/telegram/configure", configure, BrowserOrigin, UserAuthentication, ruvia::RateLimit<5, 60000>);
     RUVIA_POST("/telegram/bind", bind, BrowserOrigin, UserAuthentication, ruvia::RateLimit<5, 60000>);
     RUVIA_POST("/telegram/unbind", unbind, BrowserOrigin, UserAuthentication, ruvia::RateLimit<5, 60000>);
+    RUVIA_POST("/telegram/verify", verify, BrowserOrigin, UserAuthentication, ruvia::RateLimit<5, 60000>);
     RUVIA_POST("/telegram/webhook", webhook);
     RUVIA_POST("/approvals", request, BrowserOrigin, UserAuthentication, ruvia::RateLimit<10, 60000>);
     RUVIA_GET("/approvals", approvals, UserAuthentication);
@@ -22,6 +23,7 @@ class TelegramController final : public ruvia::Controller<TelegramController> {
     ruvia::Task<ruvia::HttpResponse> configure(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> bind(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> unbind(ruvia::Context& context);
+    ruvia::Task<ruvia::HttpResponse> verify(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> webhook(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> request(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> approvals(ruvia::Context& context);

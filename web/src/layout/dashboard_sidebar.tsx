@@ -42,7 +42,7 @@ function SidebarContents({
     <>
       <Sidebar.Header>
         <div className="flex items-center gap-3 px-1 py-1">
-          <Avatar className="size-9">
+          <Avatar size="sm">
             <Avatar.Fallback>
               {user?.username.slice(0, 1).toUpperCase()}
             </Avatar.Fallback>
@@ -56,51 +56,55 @@ function SidebarContents({
             </span>
           </div>
         </div>
-        {user?.role === "admin" ? (
-          <Dropdown>
-            <Button
-              variant="tertiary"
-              className="mt-3 w-full justify-between"
-              aria-label="切换工作区域"
-            >
-              <span className="flex items-center gap-2">
-                {administration ? (
-                  <Gear className="size-4" />
-                ) : (
-                  <Display className="size-4" />
-                )}
-                {administration ? "管理控制台" : "工作台"}
-              </span>
-              <ChevronDown className="size-4" />
-            </Button>
-            <Dropdown.Popover>
-              <Dropdown.Menu
-                aria-label="工作区域"
-                selectionMode="single"
-                selectedKeys={[administration ? "console" : "workbench"]}
-                onAction={(key) =>
-                  navigate(key === "console" ? "/console/assets" : "/overview")
-                }
-              >
-                <Dropdown.Item id="workbench" textValue="工作台">
-                  <Display className="size-4" />
-                  <Label>工作台</Label>
-                  <Dropdown.ItemIndicator />
-                </Dropdown.Item>
-                <Dropdown.Item id="console" textValue="管理控制台">
-                  <Gear className="size-4" />
-                  <Label>管理控制台</Label>
-                  <Dropdown.ItemIndicator />
-                </Dropdown.Item>
-              </Dropdown.Menu>
-            </Dropdown.Popover>
-          </Dropdown>
-        ) : (
-          <p className="px-2 pt-3 text-xs font-medium text-muted">工作台</p>
-        )}
       </Sidebar.Header>
       <Sidebar.Content>
         <Sidebar.Group>
+          {user?.role === "admin" ? (
+            <Dropdown>
+              <Button
+                size="sm"
+                variant="tertiary"
+                className="workspace-selector mb-2 w-full justify-between"
+                aria-label="切换工作区域"
+              >
+                <span className="flex items-center gap-2">
+                  {administration ? (
+                    <Gear className="size-4" />
+                  ) : (
+                    <Display className="size-4" />
+                  )}
+                  {administration ? "控制台" : "工作台"}
+                </span>
+                <ChevronDown className="size-4" />
+              </Button>
+              <Dropdown.Popover>
+                <Dropdown.Menu
+                  aria-label="工作区域"
+                  selectionMode="single"
+                  selectedKeys={[administration ? "console" : "workbench"]}
+                  onAction={(key) =>
+                    navigate(
+                      key === "console" ? "/console/assets" : "/overview",
+                    )
+                  }
+                >
+                  <Dropdown.Item id="workbench" textValue="工作台">
+                    <Display className="size-4" />
+                    <Label>工作台</Label>
+                    <Dropdown.ItemIndicator />
+                  </Dropdown.Item>
+                  <Dropdown.Item id="console" textValue="控制台">
+                    <Gear className="size-4" />
+                    <Label>控制台</Label>
+                    <Dropdown.ItemIndicator />
+                  </Dropdown.Item>
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
+          ) : (
+            <p className="px-2 pt-3 text-xs font-medium text-muted">工作台</p>
+          )}
+
           <Sidebar.Menu aria-label={administration ? "管理导航" : "工作台导航"}>
             {navigation
               .filter((item) => item.admin === administration)

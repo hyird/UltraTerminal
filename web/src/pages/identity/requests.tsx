@@ -1,7 +1,8 @@
-import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
+import { LoadingSkeleton } from "../../components/loading";
+import { useConnectionRequests } from "../../store/connection_requests";
 import { useEffect, useState } from "react";
 import { Button, Chip, toast } from "@heroui/react";
-import { Page, Empty } from "../../layout/page";
+import { Empty } from "../../layout/page";
 import { Dialog, Notice, failureText } from "../../components/form";
 import { useDevices } from "../devices/device_state";
 import { useDesktops } from "../../store/desktops";
@@ -16,9 +17,10 @@ const labels: Record<string, string> = {
   failed: "发送失败",
   expired: "已过期",
 };
-export function RequestsPage() {
-  const { approvals, devices, error: feedError } = useDevices();
+export function RequestsPanel() {
+  const { approvals, devices, loading, error: feedError } = useDevices();
   const desktops = useDesktops();
+  const requests = useConnectionRequests();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
@@ -56,6 +58,7 @@ export function RequestsPage() {
           true,
         );
         setConnecting(null);
+        requests.setOpen(false);
       }
     } catch (error) {
       setError(failureText(error));
@@ -63,124 +66,78 @@ export function RequestsPage() {
       setBusy("");
     }
   }
-  const columns: DataGridColumn<Approval>[] = [
-    {
-      id: "column0",
-      header: "设备",
-      isRowHeader: true,
-      minWidth: 220,
-      cell: (item) => {
-        const device = devices.find((device) => device.id === item.deviceId);
-        return <>{device?.name ?? "设备已不可访问"}</>;
-      },
-    },
-    {
-      id: "column1",
-      header: "申请权限",
-      minWidth: 120,
-      cell: (item) => {
-        return <>{item.writeControl ? "远程控制" : "只读桌面"}</>;
-      },
-    },
-    {
-      id: "column2",
-      header: "状态",
-      minWidth: 120,
-      cell: (item) => {
-        const state =
-          (item.state === "pending" || item.state === "approved") &&
-          item.expiresAt * 1000 <= now
-            ? "expired"
-            : item.state;
-        return (
-          <>
-            <Chip
-              size="sm"
-              variant="soft"
-              color={
-                state === "approved"
-                  ? "success"
-                  : state === "pending"
-                    ? "warning"
-                    : "default"
-              }
-            >
-              {labels[state] ?? "未知状态"}
-            </Chip>
-          </>
-        );
-      },
-    },
-    {
-      id: "column3",
-      header: "有效期至",
-      minWidth: 120,
-      cell: (item) => {
-        return <>{new Date(item.expiresAt * 1000).toLocaleString()}</>;
-      },
-    },
-    {
-      id: "column4",
-      header: "操作",
-      minWidth: 120,
-      cell: (item) => {
-        const state =
-          (item.state === "pending" || item.state === "approved") &&
-          item.expiresAt * 1000 <= now
-            ? "expired"
-            : item.state;
-        const device = devices.find((device) => device.id === item.deviceId);
-        return (
-          <>
-            {state === "approved" ? (
-              <Button
-                size="sm"
-                isDisabled={!device?.online || !!busy}
-                isPending={busy === item.id}
-                onPress={() => setConnecting(item)}
-              >
-                进入桌面
-              </Button>
-            ) : state === "pending" ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                isPending={busy === item.id}
-                isDisabled={!!busy}
-                onPress={() => void act(item, true)}
-              >
-                取消申请
-              </Button>
-            ) : (
-              "—"
-            )}
-          </>
-        );
-      },
-    },
-  ];
   return (
-    <Page
-      title="连接申请"
-      description="查看自己的审批进度。设备所有者在 Telegram 中处理申请，批准仅适用于一次连接。"
-    >
+    <div className="space-y-3">
       <Notice>{error || feedError}</Notice>
-      <div className="content-surface">
-        {approvals.length ? (
-          <DataGrid
-            aria-label="我的连接申请"
-            columns={columns}
-            data={approvals}
-            getRowId={(item) => item.id}
-            contentClassName="min-w-[740px]"
-          />
-        ) : (
-          <Empty
-            title="暂无连接申请"
-            description="在我的设备中，向设置了每次审批的设备发起连接申请。"
-          />
-        )}
-      </div>
+      {loading ? (
+        <LoadingSkeleton rows={3} />
+      ) : approvals.length ? (
+        <div className="max-h-96 space-y-3 overflow-y-auto">
+          {approvals.map((item) => {
+            const device = devices.find(
+              (device) => device.id === item.deviceId,
+            );
+            const state =
+              (item.state === "pending" || item.state === "approved") &&
+              item.expiresAt * 1000 <= now
+                ? "expired"
+                : item.state;
+            return (
+              <div
+                key={item.id}
+                className="border-border flex items-center justify-between gap-3 border-b pb-3"
+              >
+                <div className="min-w-0 space-y-1">
+                  <p className="break-words text-sm font-medium">
+                    {device?.name ?? "设备已不可访问"}
+                  </p>
+                  <Chip
+                    size="sm"
+                    variant="soft"
+                    color={
+                      state === "approved"
+                        ? "success"
+                        : state === "pending"
+                          ? "warning"
+                          : "default"
+                    }
+                  >
+                    {labels[state] ?? "未知状态"}
+                  </Chip>
+                  <p className="text-muted text-xs">
+                    有效期至{" "}
+                    {new Date(item.expiresAt * 1000).toLocaleTimeString()}
+                  </p>
+                </div>
+                {state === "approved" ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={!device?.online || !!busy}
+                    onPress={() => setConnecting(item)}
+                  >
+                    进入桌面
+                  </Button>
+                ) : state === "pending" ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={!!busy}
+                    onPress={() => void act(item, true)}
+                  >
+                    取消申请
+                  </Button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <Empty
+          title="暂无连接申请"
+          description="设备连接申请的审批进度会在这里更新。"
+        />
+      )}
       {connecting && (
         <Dialog
           title="确认进入桌面"
@@ -194,19 +151,24 @@ export function RequestsPage() {
             </p>
             <div className="flex justify-end gap-2">
               <Button
+                size="sm"
                 variant="tertiary"
                 isDisabled={!!busy}
                 onPress={() => setConnecting(null)}
               >
                 取消
               </Button>
-              <Button isPending={!!busy} onPress={() => void act(connecting)}>
+              <Button
+                size="sm"
+                isPending={!!busy}
+                onPress={() => void act(connecting)}
+              >
                 确认连接
               </Button>
             </div>
           </div>
         </Dialog>
       )}
-    </Page>
+    </div>
   );
 }

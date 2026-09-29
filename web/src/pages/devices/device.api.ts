@@ -27,6 +27,7 @@ export const deviceApi = {
     writeControl: boolean,
     preempt: boolean,
     approvalId?: string,
+    verificationCode?: string,
   ) =>
     jsonRequest("/api/sessions", {
       device_id: id,
@@ -35,6 +36,7 @@ export const deviceApi = {
       ...(writeControl ? { desktop_input_contract: 2 } : {}),
       preempt,
       approval_id: approvalId,
+      verification_code: verificationCode,
     }),
   session: (id: string) =>
     jsonRequest(`/api/sessions/${encodeURIComponent(id)}`),

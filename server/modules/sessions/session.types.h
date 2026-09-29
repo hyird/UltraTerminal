@@ -9,6 +9,8 @@ namespace ultraterimal::server {
 enum class SessionFailure { kInvalid,
                             kDenied,
                             kApprovalRequired,
+                            kVerificationRequired,
+                            kVerificationFailed,
                             kBusy,
                             kLimit,
                             kIncompatible };
@@ -28,6 +30,7 @@ struct SessionRequest {
     std::string loginHash;
     std::int64_t grantRevision = 0;
     std::string approvalId;
+    std::string verificationCode;
 };
 struct IssuedChannel {
     std::string id;

@@ -14,7 +14,7 @@
 namespace ultraterimal::server {
 class SessionService {
   public:
-    explicit SessionService(DatabaseConfig database) : database_(std::move(database)) {}
+    explicit SessionService(DatabaseConfig database, std::string key = {}) : database_(std::move(database)), key_(std::move(key)) {}
     std::expected<IssuedSession, SessionFailure> create(const SessionRequest& request) const;
     std::optional<ChannelAuthorization> consumeBrowser(const UserIdentity& user, std::string_view sessionId, std::string_view channelId, wire::ChannelPurpose purpose, std::string_view ticket) const;
     std::optional<ChannelAuthorization> consumeAgent(const DeviceIdentity& device, std::string_view sessionId, std::string_view channelId, wire::ChannelPurpose purpose, std::string_view ticket) const;
@@ -32,5 +32,6 @@ class SessionService {
   private:
     std::optional<ChannelAuthorization> consume(const UserIdentity* user, const DeviceIdentity* device, std::string_view sessionId, std::string_view channelId, wire::ChannelPurpose purpose, std::string_view ticket) const;
     DatabaseConfig database_;
+    std::string key_;
 };
 } // namespace ultraterimal::server

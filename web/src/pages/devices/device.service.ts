@@ -70,6 +70,11 @@ export async function listDevices(): Promise<Device[]> {
   if (!Array.isArray(value)) throw new Error("设备列表格式错误");
   return value.map(parseDevice);
 }
+function verificationMethod(value: unknown): "direct" | "telegram" | "totp" {
+  if (value !== "direct" && value !== "telegram" && value !== "totp")
+    throw new Error("连接验证方式错误");
+  return value;
+}
 function parseDevice(entry: unknown): Device {
   const item = record(entry);
   for (const key of [
@@ -78,7 +83,6 @@ function parseDevice(entry: unknown): Device {
     "enrolled",
     "desktop",
     "write_control",
-    "require_approval",
     "manage_credentials",
   ]) {
     if (typeof item[key] !== "boolean") throw new Error("设备状态格式错误");
@@ -91,7 +95,7 @@ function parseDevice(entry: unknown): Device {
     enrolled: item.enrolled === true,
     desktop: item.desktop === true,
     writeControl: item.write_control === true,
-    requireApproval: item.require_approval === true,
+    verificationMethod: verificationMethod(item.verification_method),
     manageCredentials: item.manage_credentials === true,
     ownerUsername:
       item.owner_username === undefined ? undefined : text(item.owner_username),
@@ -144,22 +148,20 @@ export async function createEnrollment(
 }
 export async function openDesktop(
   id: string,
-  writeControl?: boolean,
+  writeControl: boolean,
   preempt = true,
   approvalId?: string,
+  verificationCode?: string,
 ): Promise<DesktopTicket> {
-  if (writeControl === undefined) {
-    try {
-      return await openDesktop(id, true, preempt, approvalId);
-    } catch (error) {
-      // Only an authorization denial may fall back to a read-only request.
-      // Busy devices, expired logins, and network failures must remain errors.
-      if (!(error instanceof ApiError) || error.status !== 403) throw error;
-      return openDesktop(id, false, preempt, approvalId);
-    }
-  }
+  if (!writeControl) throw new Error("此设备未授予连接权限");
   const item = record(
-    await deviceApi.desktop(id, writeControl, preempt, approvalId),
+    await deviceApi.desktop(
+      id,
+      writeControl,
+      preempt,
+      approvalId,
+      verificationCode,
+    ),
   );
   if (!Array.isArray(item.channels) || item.channels.length !== 2)
     throw new Error("会话通道格式错误");
@@ -224,22 +226,13 @@ export async function listGrants(id: string): Promise<DeviceGrant[]> {
   if (!Array.isArray(items)) throw new Error("授权列表格式错误");
   return items.map((entry: unknown) => {
     const item = record(entry);
-    for (const key of [
-      "desktop",
-      "write_control",
-      "system_restart",
-      "manage_credentials",
-      "require_approval",
-    ])
+    for (const key of ["connect"])
       if (typeof item[key] !== "boolean") throw new Error("授权字段格式错误");
     return {
       userId: text(item.user_id),
       username: text(item.username),
-      desktop: item.desktop === true,
-      writeControl: item.write_control === true,
-      systemRestart: item.system_restart === true,
-      manageCredentials: item.manage_credentials === true,
-      requireApproval: item.require_approval === true,
+      connect: item.connect === true,
+      verificationMethod: verificationMethod(item.verification_method),
     };
   });
 }
@@ -250,11 +243,8 @@ export async function saveGrant(
 ): Promise<void> {
   await deviceApi.saveGrant(id, {
     username: grant.username,
-    desktop: grant.desktop,
-    write_control: grant.writeControl,
-    system_restart: grant.systemRestart,
-    manage_credentials: grant.manageCredentials,
-    require_approval: grant.requireApproval,
+    connect: grant.connect,
+    verification_method: grant.verificationMethod,
     remove,
   });
 }

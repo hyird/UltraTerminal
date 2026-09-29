@@ -30,10 +30,10 @@ ruvia::Task<ruvia::HttpResponse> TelegramController::state(ruvia::Context& conte
     co_return jsonResponse(context, {{"bot_username", result.botUsername}, {"telegram_id", result.telegramId}});
 }
 ruvia::Task<ruvia::HttpResponse> TelegramController::configure(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"token", "password", "code", "disable"});
+    const auto body = requestObject(co_await context.req().text(), {"token", "password", "code", "disable", "telegram_proof"});
     const auto user = context.requestState<UserIdentity>();
     auto& runtime = context.workerState<ServerRuntime>();
-    const bool allowed = co_await context.runBlocking([service = runtime.identities, user, password = requestText(body, "password", 1024), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, password, code); });
+    const bool allowed = co_await context.runBlocking([service = runtime.identities, user, password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, password, code, telegramProof); });
     if (!allowed || runtime.telegramConfiguring) {
         co_return rejected(context);
     }
@@ -84,25 +84,45 @@ ruvia::Task<ruvia::HttpResponse> TelegramController::configure(ruvia::Context& c
     co_return jsonResponse(context, {{"ok", true}});
 }
 ruvia::Task<ruvia::HttpResponse> TelegramController::bind(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"password", "code"});
+    const auto body = requestObject(co_await context.req().text(), {"password", "code", "telegram_proof"});
     const auto user = context.requestState<UserIdentity>();
     auto& runtime = context.workerState<ServerRuntime>();
-    const auto link = co_await context.runBlocking([identities = runtime.identities, service = runtime.telegram, user, password = requestText(body, "password", 1024), code = optionalText(body, "code", 32)]() -> std::optional<std::string> { if(!identities.reauthenticate(user,password,code)) { return std::nullopt; } return service.beginBinding(user); });
+    const auto link = co_await context.runBlocking([identities = runtime.identities, service = runtime.telegram, user, password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)]() -> std::optional<std::string> { if(!identities.reauthenticate(user,password,code,telegramProof)) { return std::nullopt; } return service.beginBinding(user); });
     if (!link) {
         co_return rejected(context);
     }
     co_return jsonResponse(context, {{"url", *link}, {"expires_in", 600}});
 }
 ruvia::Task<ruvia::HttpResponse> TelegramController::unbind(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"password", "code"});
+    const auto body = requestObject(co_await context.req().text(), {"password", "code", "telegram_proof"});
     auto& runtime = context.workerState<ServerRuntime>();
     const auto user = context.requestState<UserIdentity>();
-    const bool ok = co_await context.runBlocking([identities = runtime.identities, service = runtime.telegram, user, password = requestText(body, "password", 1024), code = optionalText(body, "code", 32)] { if(!identities.reauthenticate(user,password,code)) { return false; } service.unbind(user); return true; });
+    const bool ok = co_await context.runBlocking([identities = runtime.identities, service = runtime.telegram, user, password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)] { if(!identities.reauthenticate(user,password,code,telegramProof)) { return false; } service.unbind(user); return true; });
     if (!ok) {
         co_return rejected(context);
     }
     runtime.status.publish("u:*");
     co_return jsonResponse(context, {{"ok", true}});
+}
+ruvia::Task<ruvia::HttpResponse> TelegramController::verify(ruvia::Context& context) {
+    (void)requestObject(co_await context.req().text(), {});
+    auto& runtime = context.workerState<ServerRuntime>();
+    const auto user = context.requestState<UserIdentity>();
+    const auto config = co_await context.runBlocking([service = runtime.telegram] { return service.configuration(); });
+    if (!config) {
+        co_return rejected(context);
+    }
+    const auto proof = co_await context.runBlocking([service = runtime.identities, user, generation = config->generation] { return service.requestTelegramVerification(user, generation); });
+    if (!proof) {
+        co_return rejected(context);
+    }
+    const boost::json::array buttons{boost::json::array{boost::json::object{{"text", "确认本人操作"}, {"callback_data", "v:" + proof->id}}, boost::json::object{{"text", "拒绝"}, {"callback_data", "x:" + proof->id}}}};
+    const auto sent = co_await telegramCall(context, config->token, "sendMessage", {{"chat_id", proof->telegramId}, {"text", "身份确认\n账号：" + user.username + "\n浏览器正在请求验证身份。仅在您本人正在操作时确认；确认仅限当前登录会话使用一次，5 分钟后失效。"}, {"reply_markup", boost::json::object{{"inline_keyboard", buttons}}}});
+    if (!sent) {
+        co_await context.runBlocking([service = runtime.identities, id = proof->id] { service.failTelegramVerification(id); });
+        co_return rejected(context);
+    }
+    co_return jsonResponse(context, {{"id", proof->id}});
 }
 ruvia::Task<ruvia::HttpResponse> TelegramController::webhook(ruvia::Context& context) {
     const auto bytes = co_await context.req().text();
@@ -152,8 +172,12 @@ ruvia::Task<ruvia::HttpResponse> TelegramController::webhook(ruvia::Context& con
                 co_return jsonResponse(context, {{"ok", true}});
             }
             const auto data = requestText(callback, "data", 64);
-            if (data.size() != 34 || data[1] != ':' || (data[0] != 'y' && data[0] != 'n') || data.substr(2).find_first_not_of("0123456789abcdef") != std::string::npos) {
+            if (data.size() != 34 || data[1] != ':' || (data[0] != 'y' && data[0] != 'n' && data[0] != 'v' && data[0] != 'x') || data.substr(2).find_first_not_of("0123456789abcdef") != std::string::npos) {
                 co_return jsonResponse(context, {{"ok", true}});
+            }
+            if (data[0] == 'v' || data[0] == 'x') {
+                const auto verified = co_await context.runBlocking([service = runtime.identities, generation = config->generation, proof = data.substr(2), id, accept = data[0] == 'v'] { return service.decideTelegramVerification(generation, proof, id, accept); });
+                co_return jsonResponse(context, {{"method", "answerCallbackQuery"}, {"callback_query_id", requestText(callback, "id", 256)}, {"text", verified ? (data[0] == 'v' ? "已确认，请返回浏览器继续" : "已拒绝身份确认") : "验证已失效或已处理"}});
             }
             const auto user = co_await context.runBlocking([service = runtime.telegram, generation = config->generation, approval = data.substr(2), id, accept = data[0] == 'y'] { return service.decide(generation, approval, id, accept); });
             if (user) {
@@ -175,7 +199,7 @@ ruvia::Task<ruvia::HttpResponse> TelegramController::request(ruvia::Context& con
         co_return rejected(context);
     }
     if (!dispatch->botToken.empty()) {
-        const auto text = "连接申请\n账号：" + dispatch->username + "\n设备：" + dispatch->deviceName + "\n权限：" + (dispatch->approval.writeControl ? "控制" : "只读") + "\n申请在 5 分钟后失效。";
+        const auto text = "连接申请\n账号：" + dispatch->username + "\n设备：" + dispatch->deviceName + "\n权限：" + std::string("控制") + "\n申请在 5 分钟后失效。";
         const boost::json::array buttons{boost::json::array{boost::json::object{{"text", "允许"}, {"callback_data", "y:" + dispatch->approval.id}}, boost::json::object{{"text", "拒绝"}, {"callback_data", "n:" + dispatch->approval.id}}}};
         const auto sent = co_await telegramCall(context, dispatch->botToken, "sendMessage", {{"chat_id", dispatch->ownerTelegramId}, {"text", text}, {"reply_markup", boost::json::object{{"inline_keyboard", buttons}}}});
         if (!sent) {

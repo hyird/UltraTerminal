@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "../../components/loading";
 import { Button, Card, Chip } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { KPI } from "@heroui-pro/react/kpi";
@@ -37,13 +38,15 @@ export function OverviewPage() {
     {
       id: "policy",
       header: "连接策略",
-      cell: (d) => (d.requireApproval ? "每次审批" : "直接连接"),
+      cell: (d) =>
+        ({ direct: "直接连接", telegram: "Telegram 审批", totp: "动态码验证" })[
+          d.verificationMethod
+        ],
     },
     {
       id: "permission",
       header: "访问权限",
-      cell: (d) =>
-        d.writeControl ? "远程控制" : d.desktop ? "只读桌面" : "设备管理",
+      cell: (d) => (d.desktop && d.writeControl ? "允许连接" : "设备管理"),
     },
   ];
   return (
@@ -54,9 +57,7 @@ export function OverviewPage() {
       </div>
       <Notice>{error}</Notice>
       {loading ? (
-        <div className="loading-state" role="status">
-          正在加载概览…
-        </div>
+        <LoadingSkeleton kind="overview" label="正在加载概览" />
       ) : (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -75,7 +76,7 @@ export function OverviewPage() {
               </KPI>
             ))}
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-2">
             <Card>
               <Card.Header>
                 <Card.Title>远程访问</Card.Title>

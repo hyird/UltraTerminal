@@ -14,8 +14,9 @@ bool boolean(const boost::json::object& object, std::string_view name) {
 }
 } // namespace
 ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id"});
+    const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id", "verification_code"});
     SessionRequest request;
+    request.verificationCode = optionalText(body, "verification_code", 6);
     request.userId = context.requestState<UserIdentity>().id;
     request.loginHash = context.requestState<UserIdentity>().loginHash;
     if (body.contains("approval_id")) {
@@ -51,6 +52,9 @@ ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& conte
     // Authorize before exposing online/capability state or dispatching to the device.
     const auto issued = co_await context.runBlocking([service = runtime.sessions, request] { return service.create(request); });
     if (!issued) {
+        if (issued.error() == SessionFailure::kVerificationRequired || issued.error() == SessionFailure::kVerificationFailed) {
+            co_return context.error({.status = ruvia::http_status::kForbidden, .code = issued.error() == SessionFailure::kVerificationRequired ? "connection_verification_required" : "connection_verification_failed", .message = "Authenticator verification required"});
+        }
         if (issued.error() == SessionFailure::kApprovalRequired) {
             co_return context.error({.status = ruvia::http_status::kConflict, .code = "approval_required", .message = "Device owner approval required"});
         }

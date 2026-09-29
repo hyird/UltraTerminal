@@ -126,7 +126,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 长期控制连接承载注册、心跳、能力和调度；桌面控制、画面、VNC、SSH 使用独立数据通道。
 - 自定义消息使用 Protobuf，二进制数据使用 `bytes`，不做 Base64。
 - 消息包含版本、会话、通道、类型、序号和载荷；画面消息携带 `generation`、`frame_id`，差分另带 `base_frame_id`。
-- 原生桌面通道以序号 1 的 `CHANNEL_OPEN` 绑定票据，后续消息序号严格递增；输入、反馈与刷新请求由浏览器发送，光标和画面由 Agent 发送。只读会话禁止所有输入事件。
+- 原生桌面通道以序号 1 的 `CHANNEL_OPEN` 绑定票据，后续消息序号严格递增；输入、反馈与刷新请求由浏览器发送，光标和画面由 Agent 发送。平台仅创建控制会话；旧只读票据被拒绝。协议中的 write_control 字段保留防御性校验。
 - 浏览器桌面控制入口为 `/api/desktop/control`，画面入口为 `/api/desktop/video`，首消息用途必须与路由一致（登录 Cookie 与同源校验），Agent 桌面使用原生连接的 `DESKTOP_CHANNEL` 用途（设备凭据鉴权）；票据在 `CHANNEL_OPEN` 中提交，不进入 URL。首消息限时 10 秒，配对受 60 秒票据期限约束；配齐后各端点收到序号 1 的 `CHANNEL_READY`，随后才发送数据。活动会话按 5 秒周期复核权限，撤权或会话关闭后终止全部通道。
 - 浏览器和 Agent 的输入、画面四个端点全部配对后才允许转发；任一端点断开或协议校验失败即结束整会话。每端点发送队列最多 8 条，单会话待发送数据上限 32 MiB，单 Worker 合计上限 256 MiB；正在写出的数据仍计入额度，超限关闭会话，不静默丢弃画面。
 - 浏览器 VNC 通道提供标准 RFB 字节流，由网关剥离内部封装；SSH 隧道提供可靠有序字节流，WebSocket 消息边界不作为协议包边界。
@@ -195,10 +195,10 @@ Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI 
 
 ### 前端业务与导航
 
-前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。视觉与组件组合基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，保留模板侧栏、顶栏、默认主题、KPI 和 DataGrid；Next.js 路由适配为现有 Hash 路由与静态构建。参考 [Next Terminal 访问工作区](https://www.next-terminal.com/zh/docs/usage/access.html) 的职责分工，工作台和管理控制台分别展示自己的菜单。管理员通过左侧菜单顶部的工作区域下拉切换，普通用户不出现管理入口且仍受服务端鉴权约束。共享模板布局支持移动侧栏；切换区域不销毁远程会话。概览只统计当前账号实际可见的设备、实时在线状态、当前浏览器会话和连接申请。
+前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。视觉与组件组合基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，保留模板侧栏、顶栏、默认主题、KPI 和 DataGrid；Next.js 路由适配为现有 Hash 路由与静态构建。参考 [Next Terminal 访问工作区](https://www.next-terminal.com/zh/docs/usage/access.html) 的职责分工，工作台和控制台分别展示自己的菜单。管理员通过左侧菜单顶部的工作区域下拉切换，普通用户不出现管理入口且仍受服务端鉴权约束。共享模板布局支持移动侧栏；切换区域不销毁远程会话。概览只统计当前账号实际可见的设备、实时在线状态、当前浏览器会话和连接申请。
 
-- **工作台**：我的设备只显示本人拥有或获授权的设备；连接申请显示本人申请及审批结果。获得一次性批准后再进入桌面，客户端不自动提交新审批或接管他人会话。活动桌面独立显示，切换页面不销毁连接，离开可见区域暂停显示反馈。
-- **管理控制台**：设备清单负责添加、安装、重命名、升级和删除；设备授权负责向用户分配桌面查看、键鼠控制、系统重启和凭据管理权限，并选择直接连接或每次审批；用户管理负责创建、角色、停用与密码重置；平台设置负责 Bot 配置。管理员角色允许管理跨所有者设备，不自动授予远程控制权限。
+- **工作台**：我的设备只显示本人拥有或获授权的设备；右上角铃铛弹窗显示本人连接申请及审批结果。获得一次性批准后再进入桌面，客户端不自动提交新审批或接管他人会话。活动桌面独立显示，切换页面不销毁连接，离开可见区域暂停显示反馈。
+- **控制台**：设备清单负责添加、安装、重命名、升级和删除；设备授权负责向用户分配连接权限，并按设备和用户选择直接连接、Telegram 审批或 Google 验证器动态码；Windows 凭据仅所有者可配置；用户管理负责创建、角色、停用与密码重置；平台设置负责 Bot 配置。管理员角色允许管理跨所有者设备，不自动授予远程控制权限。
 - **个人安全**：从底部账户菜单进入，提供修改密码、TOTP 绑定、一次性恢复码和 Telegram 绑定。账号身份与设备权限分别建模，用户与设备所有者的 TG 绑定均由登录态签发的短期链接完成。
 - **登录**：首屏只输入用户名和密码。密码有效且启用了 TOTP 时进入独立验证步骤，恢复码通过备用入口输入；验证完成前不产生登录 Cookie。错误反馈不透露账号存在性。
 - **生命周期**：创建平台账号 → 创建设备并安装 → 设备所有者或管理员分配最小权限 → 用户直接连接或提交审批 → 设备所有者在 Telegram 批准 → 一次性进入远控。撤权、停用、解绑、过期和会话结束均由服务端独立校验与执行，页面仅显示真实返回结果。

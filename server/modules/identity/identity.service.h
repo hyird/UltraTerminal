@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
@@ -8,6 +9,7 @@
 
 #include "modules/database/database.config.h"
 namespace ultraterimal::server {
+class DatabaseTransaction;
 struct UserIdentity {
     std::string id;
     std::string username;
@@ -32,6 +34,10 @@ struct SecurityInfo {
     bool totp = false;
     int recoveryCodes = 0;
 };
+struct TelegramVerification {
+    std::string id;
+    std::int64_t telegramId = 0;
+};
 struct SecurityChange {
     std::string secret;
     std::vector<std::string> recoveryCodes;
@@ -44,8 +50,12 @@ class IdentityService {
     std::optional<UserIdentity> authenticate(std::string_view token) const;
     void logout(std::string_view token) const;
     SecurityInfo security(std::string_view userId) const;
-    std::optional<SecurityChange> changeSecurity(const UserIdentity& user, std::string_view action, std::string_view password, std::string_view code, std::string_view newPassword = {}) const;
-    bool reauthenticate(const UserIdentity& user, std::string_view password, std::string_view code) const;
+    std::optional<SecurityChange> changeSecurity(const UserIdentity& user, std::string_view action, std::string_view password, std::string_view code, std::string_view newPassword = {}, std::string_view telegramProof = {}) const;
+    std::optional<TelegramVerification> requestTelegramVerification(const UserIdentity& user, std::string_view generation) const;
+    std::optional<std::string> decideTelegramVerification(std::string_view generation, std::string_view id, std::int64_t telegramId, bool accept) const;
+    void failTelegramVerification(std::string_view id) const;
+    bool verifyConnectionFactor(DatabaseTransaction& tx, const UserIdentity& user, std::string_view code) const;
+    bool reauthenticate(const UserIdentity& user, std::string_view password, std::string_view code, std::string_view telegramProof = {}) const;
     std::optional<std::vector<AccountInfo>> accounts(const UserIdentity& actor) const;
     bool createAccount(const UserIdentity& actor, std::string_view username, std::string_view password, std::string_view role) const;
     bool updateAccount(const UserIdentity& actor, std::string_view id, std::string_view role, bool disabled, std::string_view password) const;

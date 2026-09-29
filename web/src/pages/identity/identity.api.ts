@@ -1,5 +1,6 @@
 import { jsonRequest } from "../../lib/http";
 export const identityApi = {
+  verifyTelegram: () => jsonRequest("/api/telegram/verify", {}),
   me: () => jsonRequest("/api/me"),
   login: (username: string, password: string, code?: string) =>
     jsonRequest("/api/login", { username, password, code }),

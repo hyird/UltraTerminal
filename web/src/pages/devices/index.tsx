@@ -1,3 +1,5 @@
+import { useConnectionRequests } from "../../store/connection_requests";
+import { LoadingSkeleton } from "../../components/loading";
 import { SearchField } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useMemo, useState } from "react";
@@ -41,6 +43,7 @@ function DeviceList({
 }) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const requests = useConnectionRequests();
   const desktops = useDesktops();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -51,6 +54,11 @@ function DeviceList({
   } | null>(null);
   const [grant, setGrant] = useState<Device | null>(null);
   const [approval, setApproval] = useState<Device | null>(null);
+  const [verification, setVerification] = useState<{
+    device: Device;
+    preempt: boolean;
+  } | null>(null);
+  const [verificationCode, setVerificationCode] = useState("");
   const [takeover, setTakeover] = useState<Device | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -69,13 +77,24 @@ function DeviceList({
   );
   const pages = Math.max(1, Math.ceil(filtered.length / 12));
   const currentPage = Math.min(page, pages);
-  async function connect(device: Device, preempt = false) {
+  async function connect(device: Device, preempt = false, code?: string) {
     setError("");
     try {
-      await desktops.connect(device, undefined, preempt);
+      await desktops.connect(device, undefined, preempt, code);
+      setVerification(null);
+      setVerificationCode("");
       setTakeover(null);
     } catch (error) {
       if (
+        error instanceof ApiError &&
+        (error.code === "connection_verification_required" ||
+          error.code === "connection_verification_failed")
+      ) {
+        setTakeover(null);
+        setVerification({ device, preempt });
+        if (error.code === "connection_verification_failed")
+          setError("动态码不正确、已使用，或账号尚未绑定验证器，请重试。");
+      } else if (
         error instanceof ApiError &&
         error.code === "session_rejected" &&
         !preempt
@@ -95,7 +114,7 @@ function DeviceList({
       await requestApproval(approval.id, approval.writeControl);
       setApproval(null);
       toast.success("连接申请已发送给设备所有者");
-      navigate("/workbench/requests");
+      requests.setOpen(true);
     } catch (error) {
       setError(failureText(error));
     } finally {
@@ -155,10 +174,8 @@ function DeviceList({
         return (
           <>
             {personal ? (
-              device.writeControl ? (
-                "远程控制"
-              ) : device.desktop ? (
-                "只读桌面"
+              device.desktop && device.writeControl ? (
+                "允许连接"
               ) : (
                 "设备管理"
               )
@@ -177,9 +194,11 @@ function DeviceList({
         return (
           <>
             {personal
-              ? device.requireApproval
-                ? "每次审批"
-                : "直接连接"
+              ? {
+                  direct: "直接连接",
+                  telegram: "Telegram 审批",
+                  totp: "动态码验证",
+                }[device.verificationMethod]
               : device.online
                 ? "当前在线"
                 : device.lastSeen
@@ -204,11 +223,14 @@ function DeviceList({
                   isPending={desktops.connecting === device.id}
                   isDisabled={!device.online || !!desktops.connecting}
                   onPress={() => {
-                    if (device.requireApproval) setApproval(device);
+                    if (device.verificationMethod === "telegram")
+                      setApproval(device);
                     else void connect(device);
                   }}
                 >
-                  {device.requireApproval ? "申请连接" : "连接"}
+                  {device.verificationMethod === "telegram"
+                    ? "申请连接"
+                    : "连接"}
                 </Button>
               )}
               {mode === "grants" ? (
@@ -304,7 +326,7 @@ function DeviceList({
       }
       actions={
         !personal && mode !== "grants" ? (
-          <Button onPress={() => setDialog({ action: "create" })}>
+          <Button size="sm" onPress={() => setDialog({ action: "create" })}>
             <Icon name="plus" className="size-4" />
             添加设备
           </Button>
@@ -313,7 +335,7 @@ function DeviceList({
     >
       <Notice>{error || feed.error}</Notice>
       {feed.error && (
-        <Button variant="tertiary" onPress={feed.reconnect}>
+        <Button size="sm" variant="tertiary" onPress={feed.reconnect}>
           重新连接状态服务
         </Button>
       )}
@@ -354,9 +376,7 @@ function DeviceList({
           </span>
         </div>
         {feed.loading ? (
-          <div role="status" className="loading-state">
-            正在加载设备…
-          </div>
+          <LoadingSkeleton kind="table" label="正在加载设备" />
         ) : filtered.length ? (
           <DataGrid
             aria-label="设备列表"
@@ -378,14 +398,14 @@ function DeviceList({
               search || filter !== "all"
                 ? "调整搜索词或设备状态筛选。"
                 : personal
-                  ? "请联系管理员分配设备，获得授权后会自动显示在这里。"
+                  ? "请联系管理员分配设备，获得连接权限后会自动显示在这里。"
                   : "添加 Windows 设备并安装 Agent 后，即可向用户分配访问权限。"
             }
             action={
               !personal && mode !== "grants"
                 ? "添加设备"
                 : user?.role === "admin" && personal
-                  ? "进入管理控制台"
+                  ? "进入控制台"
                   : undefined
             }
             onAction={() =>
@@ -438,7 +458,7 @@ function DeviceList({
           <form className="form-stack" onSubmit={submitApproval}>
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
-              本次申请{approval.writeControl ? "远程控制" : "只读访问"}
+              本次申请远程控制
               权限。审批会发送给设备所有者，批准后可在连接申请页面进入桌面。双方需先在个人安全中绑定
               Telegram。
             </p>
@@ -446,6 +466,50 @@ function DeviceList({
               busy={busy}
               onCancel={() => setApproval(null)}
               label="提交连接申请"
+            />
+          </form>
+        </Dialog>
+      )}
+      {verification && (
+        <Dialog
+          title="连接验证"
+          onClose={() => {
+            setVerification(null);
+            setVerificationCode("");
+          }}
+          busy={busy}
+        >
+          <form
+            className="form-stack"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (busy) return;
+              setBusy(true);
+              void connect(
+                verification.device,
+                verification.preempt,
+                verificationCode,
+              ).finally(() => setBusy(false));
+            }}
+          >
+            <Notice>{error}</Notice>
+            <p className="text-muted text-sm">
+              输入您当前账号 Google 验证器中的动态码。
+            </p>
+            <Field
+              label="动态验证码"
+              value={verificationCode}
+              onChange={setVerificationCode}
+              required
+              minLength={6}
+              maxLength={6}
+              pattern="[0-9]{6}"
+              autoComplete="one-time-code"
+            />
+            <FormActions
+              busy={busy}
+              onCancel={() => setVerification(null)}
+              label="验证并连接"
             />
           </form>
         </Dialog>
@@ -462,10 +526,15 @@ function DeviceList({
               继续连接 {takeover.name} 将接管设备并结束原有会话。
             </p>
             <div className="flex justify-end gap-2">
-              <Button variant="tertiary" onPress={() => setTakeover(null)}>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => setTakeover(null)}
+              >
                 取消
               </Button>
               <Button
+                size="sm"
                 isPending={!!desktops.connecting}
                 onPress={() => void connect(takeover, true)}
               >

@@ -23,6 +23,7 @@ export interface Approval {
   expiresAt: number;
 }
 export interface SecurityProof {
+  telegram_proof?: string;
   password: string;
   code?: string;
 }

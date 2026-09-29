@@ -1,3 +1,4 @@
+import { ConnectionRequestsProvider } from "../store/connection_requests";
 import { AppLayout } from "@heroui-pro/react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { useAuth } from "../store/auth";
@@ -17,14 +18,16 @@ export function AppShell() {
         ? "个人安全"
         : (routeLabels.get(pathname) ?? "远程会话");
   return (
-    <AppLayout
-      navbar={<DashboardNavbar title={title} />}
-      navigate={navigate}
-      sidebar={<DashboardSidebar pathname={pathname} />}
-      sidebarCollapsible="offcanvas"
-    >
-      <Outlet />
-      <DesktopWorkspace />
-    </AppLayout>
+    <ConnectionRequestsProvider>
+      <AppLayout
+        navbar={<DashboardNavbar title={title} />}
+        navigate={navigate}
+        sidebar={<DashboardSidebar pathname={pathname} />}
+        sidebarCollapsible="offcanvas"
+      >
+        <Outlet />
+        <DesktopWorkspace />
+      </AppLayout>
+    </ConnectionRequestsProvider>
   );
 }

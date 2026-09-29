@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "../../components/loading";
 import { useEffect, useState } from "react";
 import { Button, toast } from "@heroui/react";
 import {
@@ -170,6 +171,7 @@ export function DeviceActionDialog({
                   rows={5}
                 />
                 <Button
+                  size="sm"
                   variant="outline"
                   onPress={() =>
                     void navigator.clipboard
@@ -187,7 +189,7 @@ export function DeviceActionDialog({
         {action === "credentials" && (
           <>
             {loading ? (
-              <p role="status">正在读取凭据状态…</p>
+              <LoadingSkeleton kind="form" label="正在读取凭据状态" rows={3} />
             ) : (
               <>
                 <p className="text-muted text-sm leading-6">

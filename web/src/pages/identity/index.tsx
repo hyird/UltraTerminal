@@ -1,3 +1,4 @@
+import { LoadingSkeleton } from "../../components/loading";
 import { useEffect, useState } from "react";
 import { Button, Chip, toast } from "@heroui/react";
 import QRCode from "qrcode";
@@ -37,6 +38,7 @@ export function SecurityPage() {
   const [security, setSecurity] = useState<SecurityInfo | null>(null);
   const [telegram, setTelegram] = useState<TelegramInfo | null>(null);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<Action | null>(null);
   const [recovery, setRecovery] = useState<string[]>([]);
   const [binding, setBinding] = useState("");
@@ -51,6 +53,9 @@ export function SecurityPage() {
       })
       .catch((error) => {
         if (live) setError(failureText(error));
+      })
+      .finally(() => {
+        if (live) setLoading(false);
       });
     const stop = observeAccount((state) => {
       if (live) {
@@ -78,85 +83,101 @@ export function SecurityPage() {
       description="保护您的平台账号，并绑定用于设备连接审批的 Telegram。"
     >
       <Notice>{error}</Notice>
-      <div className="content-surface settings-surface">
-        <div className="settings-intro">
-          <span className="identity-initial large">
-            {user?.username.slice(0, 1).toUpperCase()}
-          </span>
-          <div>
-            <h2 className="text-lg font-semibold">{user?.username}</h2>
-            <p className="text-muted mt-1 text-sm">
-              {user?.role === "admin" ? "平台管理员" : "普通用户"}
-            </p>
+      {loading ? (
+        <LoadingSkeleton kind="settings" label="正在加载安全设置" />
+      ) : (
+        <div className="content-surface settings-surface">
+          <div className="settings-intro">
+            <span className="identity-initial large">
+              {user?.username.slice(0, 1).toUpperCase()}
+            </span>
+            <div>
+              <h2 className="text-lg font-semibold">{user?.username}</h2>
+              <p className="text-muted mt-1 text-sm">
+                {user?.role === "admin" ? "平台管理员" : "普通用户"}
+              </p>
+            </div>
           </div>
-        </div>
-        <SecurityRow
-          icon="key"
-          title="登录密码"
-          description="定期更换密码，避免在不同平台重复使用。"
-        >
-          <Button variant="outline" onPress={() => setAction("password")}>
-            修改密码
-          </Button>
-        </SecurityRow>
-        <SecurityRow
-          icon="shield-check"
-          title="双重验证"
-          description="使用 Google 验证器，在密码之外增加一道验证。"
-        >
-          <Chip
-            size="sm"
-            variant="soft"
-            color={security?.totp ? "success" : "default"}
-          >
-            {security ? (security.totp ? "已开启" : "未开启") : "加载中"}
-          </Chip>
-          <Button
-            variant="outline"
-            isDisabled={!security}
-            onPress={() => setAction(security?.totp ? "disable" : "begin")}
-          >
-            {security?.totp ? "关闭验证" : "绑定验证器"}
-          </Button>
-        </SecurityRow>
-        {security?.totp && (
           <SecurityRow
-            icon="file-text"
-            title="恢复码"
-            description={`剩余 ${security.recoveryCodes} 个一次性恢复码。重新生成会使旧码全部失效。`}
+            icon="key"
+            title="登录密码"
+            description="定期更换密码，避免在不同平台重复使用。"
           >
-            <Button variant="outline" onPress={() => setAction("recovery")}>
-              重新生成
+            <Button
+              size="sm"
+              variant="outline"
+              onPress={() => setAction("password")}
+            >
+              修改密码
             </Button>
           </SecurityRow>
-        )}
-        <SecurityRow
-          icon="paper-plane"
-          title="Telegram"
-          description={
-            telegram?.telegramId
-              ? `已绑定账号 ${telegram.telegramId}，设备审批将通过 Bot 通知。`
-              : telegram?.botUsername
-                ? `连接 @${telegram.botUsername}，接收并处理设备审批。`
-                : "管理员配置平台 Bot 后，即可绑定 Telegram。"
-          }
-        >
-          <Chip
-            size="sm"
-            variant="soft"
-            color={telegram?.telegramId ? "success" : "default"}
+          <SecurityRow
+            icon="shield-check"
+            title="双重验证"
+            description="使用 Google 验证器，在密码之外增加一道验证。"
           >
-            {telegram?.telegramId ? "已绑定" : "未绑定"}
-          </Chip>
-          <Button
-            variant="outline"
-            isDisabled={!telegram?.botUsername}
-            onPress={() => setAction(telegram?.telegramId ? "unbind" : "bind")}
+            <Chip
+              size="sm"
+              variant="soft"
+              color={security?.totp ? "success" : "default"}
+            >
+              {security ? (security.totp ? "已开启" : "未开启") : "加载中"}
+            </Chip>
+            <Button
+              size="sm"
+              variant="outline"
+              isDisabled={!security}
+              onPress={() => setAction(security?.totp ? "disable" : "begin")}
+            >
+              {security?.totp ? "关闭验证" : "绑定验证器"}
+            </Button>
+          </SecurityRow>
+          {security?.totp && (
+            <SecurityRow
+              icon="file-text"
+              title="恢复码"
+              description={`剩余 ${security.recoveryCodes} 个一次性恢复码。重新生成会使旧码全部失效。`}
+            >
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={() => setAction("recovery")}
+              >
+                重新生成
+              </Button>
+            </SecurityRow>
+          )}
+          <SecurityRow
+            icon="paper-plane"
+            title="Telegram"
+            description={
+              telegram?.telegramId
+                ? `已绑定账号 ${telegram.telegramId}，设备审批将通过 Bot 通知。`
+                : telegram?.botUsername
+                  ? `连接 @${telegram.botUsername}，接收并处理设备审批。`
+                  : "管理员配置平台 Bot 后，即可绑定 Telegram。"
+            }
           >
-            {telegram?.telegramId ? "解绑" : "绑定 Telegram"}
-          </Button>
-        </SecurityRow>
-      </div>
+            <Chip
+              size="sm"
+              variant="soft"
+              color={telegram?.telegramId ? "success" : "default"}
+            >
+              {telegram?.telegramId ? "已绑定" : "未绑定"}
+            </Chip>
+            <Button
+              size="sm"
+              variant="outline"
+              isDisabled={!telegram?.botUsername}
+              onPress={() =>
+                setAction(telegram?.telegramId ? "unbind" : "bind")
+              }
+            >
+              {telegram?.telegramId ? "解绑" : "绑定 Telegram"}
+            </Button>
+          </SecurityRow>
+        </div>
+      )}
       {binding && (
         <div className="content-surface p-6">
           <h2 className="font-medium">完成 Telegram 绑定</h2>
@@ -199,6 +220,7 @@ export function SecurityPage() {
           </div>
           <div className="mt-5 flex flex-wrap justify-end gap-2">
             <Button
+              size="sm"
               variant="outline"
               onPress={() =>
                 void navigator.clipboard
@@ -209,7 +231,9 @@ export function SecurityPage() {
             >
               复制恢复码
             </Button>
-            <Button onPress={() => setRecovery([])}>我已保存</Button>
+            <Button size="sm" onPress={() => setRecovery([])}>
+              我已保存
+            </Button>
           </div>
         </Dialog>
       )}
@@ -260,6 +284,7 @@ function SecurityAction({
   const [action, setAction] = useState(initial);
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [telegramProof, setTelegramProof] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [secret, setSecret] = useState("");
@@ -293,7 +318,7 @@ function SecurityAction({
     setBusy(true);
     setError("");
     try {
-      const proof = { password, code };
+      const proof = { password, code, telegram_proof: telegramProof };
       if (action === "bind") {
         onSaved([], await bindTelegram(proof));
       } else if (action === "unbind") {
@@ -308,6 +333,8 @@ function SecurityAction({
         if (action === "begin") {
           setSecret(result.secret);
           setAction("confirm");
+          setPassword("");
+          setTelegramProof("");
           setCode("");
           return;
         }
@@ -376,7 +403,10 @@ function SecurityAction({
           code={code}
           onPassword={setPassword}
           onCode={setCode}
-          requireCode={totp || action === "confirm"}
+          telegramProof={telegramProof}
+          onTelegramProof={setTelegramProof}
+          requireCode={totp}
+          confirmBinding={action === "confirm"}
         />
         <FormActions
           onCancel={onClose}

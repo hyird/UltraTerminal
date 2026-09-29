@@ -1,9 +1,10 @@
 import { Bell } from "@gravity-ui/icons";
 import { AppLayout, Navbar, Sidebar } from "@heroui-pro/react";
-import { useNavigate } from "react-router";
-import { IconButton } from "../components/icon_button";
+import { Button, Popover } from "@heroui/react";
+import { useConnectionRequests } from "../store/connection_requests";
+import { RequestsPanel } from "../pages/identity/requests";
 export function DashboardNavbar({ title }: { title: string }) {
-  const navigate = useNavigate();
+  const requests = useConnectionRequests();
   return (
     <Navbar maxWidth="full">
       <Navbar.Header>
@@ -13,16 +14,25 @@ export function DashboardNavbar({ title }: { title: string }) {
           {title}
         </h1>
         <Navbar.Spacer />
-        <div className="flex items-center gap-2">
-          <IconButton
-            label="查看连接申请"
+        <Popover isOpen={requests.open} onOpenChange={requests.setOpen}>
+          <Button
+            isIconOnly
             size="sm"
             variant="tertiary"
-            onPress={() => navigate("/workbench/requests")}
+            aria-label="查看连接申请"
           >
             <Bell className="size-4" />
-          </IconButton>
-        </div>
+          </Button>
+          <Popover.Content
+            placement="bottom end"
+            className="w-[min(26rem,calc(100vw-2rem))] max-w-none"
+          >
+            <Popover.Dialog>
+              <Popover.Heading>连接申请</Popover.Heading>
+              <RequestsPanel />
+            </Popover.Dialog>
+          </Popover.Content>
+        </Popover>
       </Navbar.Header>
     </Navbar>
   );

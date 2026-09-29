@@ -236,7 +236,7 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::create(ruvia::Context& contex
     const auto device = co_await context.runBlocking([service = context.workerState<ServerRuntime>().devices, userId = context.requestState<UserIdentity>().id, name] { return service.createDevice(userId, name); });
     context.status(ruvia::http_status::kCreated);
     context.workerState<ServerRuntime>().status.publish("d:" + device.id);
-    co_return jsonResponse(context, {{"id", device.id}, {"name", device.name}, {"enrolled", false}, {"can_manage", true}, {"desktop", true}, {"write_control", true}, {"require_approval", false}, {"manage_credentials", true}, {"online", false}, {"last_seen", nullptr}});
+    co_return jsonResponse(context, {{"id", device.id}, {"name", device.name}, {"enrolled", false}, {"can_manage", true}, {"desktop", true}, {"write_control", true}, {"verification_method", "direct"}, {"manage_credentials", true}, {"online", false}, {"last_seen", nullptr}});
 }
 ruvia::Task<ruvia::HttpResponse> DeviceController::devices(ruvia::Context& context) {
     const auto devices = co_await context.runBlocking([service = context.workerState<ServerRuntime>().devices, userId = context.requestState<UserIdentity>().id] { return service.list(userId); });
@@ -244,7 +244,7 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::devices(ruvia::Context& conte
     for (const auto& device : devices) {
         const auto& connections = context.workerState<ServerRuntime>().controlConnections;
         const auto connection = connections.find(device.id);
-        boost::json::object item{{"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"require_approval", device.requireApproval}, {"manage_credentials", device.manageCredentials}, {"online", connection != connections.end() && connection->second->ready}};
+        boost::json::object item{{"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"online", connection != connections.end() && connection->second->ready}};
         item["last_seen"] = device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr);
         response.push_back(std::move(item));
     }
@@ -257,14 +257,14 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::grants(ruvia::Context& contex
     }
     boost::json::array grants;
     for (const auto& g : *result) {
-        grants.push_back(boost::json::object{{"user_id", g.userId}, {"username", g.username}, {"desktop", g.desktop}, {"write_control", g.writeControl}, {"system_restart", g.systemRestart}, {"manage_credentials", g.manageCredentials}, {"require_approval", g.requireApproval}});
+        grants.push_back(boost::json::object{{"user_id", g.userId}, {"username", g.username}, {"connect", g.desktop && g.writeControl}, {"verification_method", g.verificationMethod}});
     }
     co_return jsonResponse(context, grants);
 }
 ruvia::Task<ruvia::HttpResponse> DeviceController::saveGrant(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"username", "desktop", "write_control", "system_restart", "manage_credentials", "require_approval", "remove"});
+    const auto body = requestObject(co_await context.req().text(), {"username", "connect", "verification_method", "remove"});
     const auto device = std::string(context.req().param("id").value_or(""));
-    const DeviceGrant grant{{}, requestText(body, "username", 64), requestBool(body, "desktop"), requestBool(body, "write_control"), requestBool(body, "system_restart"), requestBool(body, "manage_credentials"), requestBool(body, "require_approval")};
+    const DeviceGrant grant{{}, requestText(body, "username", 64), requestBool(body, "connect"), requestBool(body, "connect"), false, false, requestText(body, "verification_method", 16)};
     auto& runtime = context.workerState<ServerRuntime>();
     const bool ok = co_await context.runBlocking([service = runtime.devices, user = context.requestState<UserIdentity>().id, device, grant, remove = requestBool(body, "remove")] { return service.setGrant(user, device, grant, remove); });
     if (!ok) {
