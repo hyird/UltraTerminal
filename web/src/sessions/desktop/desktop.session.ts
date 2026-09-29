@@ -442,25 +442,23 @@ export class DesktopSession {
         !/^avc1\.[0-9a-f]{6}$/i.test(video.codec)
       )
         throw new Error("Invalid video configuration");
-      // Old-coordinate clicks must never cross a new video/input binding.
-      // Closing the session also releases input already held by the Agent.
-      const hasPendingInput = () =>
-        [...this.writers.values()].some((writer) =>
-          writer.hasPending((body) => !!body.inputEvent),
-        );
-      if (hasPendingInput()) {
-        this.fail("画面已切换且输入仍在积压，请重新连接");
-        return;
-      }
+      // A new configuration confirms that the Agent retired the old input
+      // adapter (and released its held state). Drop only unsent old-generation
+      // input; already submitted bytes are filtered by the Agent's binding.
+      const discardRetiredInput = () => {
+        for (const writer of this.writers.values()) {
+          writer.discardObsolete(
+            (body) =>
+              !!body.inputEvent && integer(body.generation ?? 0) < generationId,
+          );
+        }
+      };
+      discardRetiredInput();
       if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
       this.input?.dispose();
       if (this.stopped) return;
-      // Disposing a held key may itself enqueue RELEASE_ALL on a congested
-      // socket. Do not create a new input binding ahead of that release.
-      if (hasPendingInput()) {
-        this.fail("画面已切换且输入仍在积压，请重新连接");
-        return;
-      }
+      // dispose() may enqueue a release tagged with that same retired binding.
+      discardRetiredInput();
       this.input = null;
       this.decoder = null;
       this.pending.clear();

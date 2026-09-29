@@ -1,11 +1,12 @@
 // One bounded writer per socket. Only adjacent replaceable state may coalesce;
-// key/button/wheel/release messages remain ordered and are never discarded.
+// key/button/wheel/release messages remain ordered. Only input whose binding
+// has explicitly been retired by a new video configuration may be discarded.
 export class DesktopOutbound<T> {
   private pending: { body: T; key: string; since: number }[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   constructor(
-    private socket: WebSocket,
+    private socket: Pick<WebSocket, "readyState" | "bufferedAmount" | "send">,
     private encode: (body: T) => Uint8Array<ArrayBuffer>,
     private failed: (reason: string) => void,
   ) {}
@@ -21,8 +22,12 @@ export class DesktopOutbound<T> {
     this.flush();
   }
 
-  hasPending(predicate: (body: T) => boolean): boolean {
-    return this.pending.some((entry) => predicate(entry.body));
+  discardObsolete(predicate: (body: T) => boolean): void {
+    this.pending = this.pending.filter((entry) => !predicate(entry.body));
+    if (!this.pending.length) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
   }
 
   private flush(): void {
