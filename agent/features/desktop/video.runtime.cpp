@@ -315,7 +315,8 @@ void DesktopVideoRuntime::observeRoundTrip(std::chrono::microseconds elapsed) {
 void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
     const bool wasBackground = state_->pacing.background();
     if (!state_->pacing.acknowledge(feedback.displayed_generation(), feedback.displayed_frame(),
-                                    feedback.decode_microseconds(), feedback.queue_depth(), std::chrono::steady_clock::now(), feedback.background())) {
+                                    feedback.decode_microseconds(), feedback.queue_depth(), std::chrono::steady_clock::now(), feedback.background(),
+                                    feedback.maximum_pending_video_frames())) {
         return;
     }
     if (wasBackground && !state_->pacing.background()) {

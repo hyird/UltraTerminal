@@ -4,9 +4,16 @@ import { DesktopQualityPolicy, type DesktopQuality } from "./quality.session";
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
+import {
+  DesktopVideoDecodeLease,
+  DesktopVideoDecodeTimeoutError,
+  DesktopVideoMessageReservation,
+  DesktopVideoReceiveChannel,
+  maximumPendingVideoFrames,
+  videoDecodeSlotTimeoutMilliseconds,
+} from "./video-queue.session";
 
 const wire = ultraterimal.wire;
-const maximumPendingVideoFrames = 16;
 type Message = ultraterimal.wire.Envelope;
 type Outbound = ultraterimal.wire.IEnvelope;
 interface Channel {
@@ -16,9 +23,7 @@ interface Channel {
   ready: boolean;
   received: number;
   sent: number;
-  queued: number;
-  bytes: number;
-  work: Promise<void>;
+  receive: DesktopVideoReceiveChannel;
 }
 function integer(raw: number | { toString(): string }, minimum = 0): number {
   const value = typeof raw === "number" ? raw : Number(raw.toString());
@@ -37,7 +42,11 @@ export class DesktopSession {
   private generation = 0;
   private frame = 0;
   private timestamp = -1;
-  private pending = new Map<number, { id: number; started: number }>();
+  private pending = new Map<
+    number,
+    { id: number; started: number; lease: DesktopVideoDecodeLease }
+  >();
+  private videoChannel: DesktopVideoReceiveChannel | null = null;
   private deadline: ReturnType<typeof setTimeout> | undefined;
   private livenessDeadline: ReturnType<typeof setTimeout> | undefined;
   private cursorShape: ImageData | null = null;
@@ -117,10 +126,9 @@ export class DesktopSession {
           ready: false,
           received: 0,
           sent: 0,
-          queued: 0,
-          bytes: 0,
-          work: Promise.resolve(),
+          receive: new DesktopVideoReceiveChannel(grant.purpose === 3),
         };
+        if (grant.purpose === 3) this.videoChannel = channel.receive;
         this.channels.push(channel);
         socket.binaryType = "arraybuffer";
         socket.onopen = () =>
@@ -132,29 +140,52 @@ export class DesktopSession {
           });
         socket.onmessage = (event: MessageEvent<unknown>) => {
           const data = event.data;
-          if (
-            !(data instanceof ArrayBuffer) ||
-            data.byteLength > 16 * 1024 * 1024 ||
-            ++channel.queued >
-              (channel.purpose === 3 ? maximumPendingVideoFrames + 2 : 8) ||
-            (channel.bytes += data.byteLength) > 32 * 1024 * 1024
-          ) {
+          if (!(data instanceof ArrayBuffer)) {
             this.fail("桌面接收队列超出限制");
             return;
           }
-          channel.work = channel.work
-            .then(async () => {
-              if (!this.stopped)
+          let probedConfiguration: Message | undefined;
+          if (
+            !channel.receive.enqueue(
+              data,
+              async (reservation) => {
+                if (this.stopped) return;
                 await this.receive(
                   channel,
-                  wire.Envelope.decode(new Uint8Array(data)),
+                  probedConfiguration ??
+                    wire.Envelope.decode(new Uint8Array(data)),
+                  reservation,
                 );
-            })
-            .catch(() => this.fail("桌面数据或解码异常，会话已结束"))
-            .finally(() => {
-              channel.queued--;
-              channel.bytes -= data.byteLength;
-            });
+              },
+              (error) =>
+                this.fail(
+                  error instanceof DesktopVideoDecodeTimeoutError
+                    ? "视频解码等待超时，会话已结束"
+                    : "桌面数据或解码异常，会话已结束",
+                ),
+              () => {
+                if (
+                  channel.purpose !== 3 ||
+                  channel.receive.decodeWaiterCount === 0
+                )
+                  return;
+                try {
+                  const candidate = wire.Envelope.decode(new Uint8Array(data));
+                  if (candidate.body !== "videoConfig") return;
+                  const candidateGeneration = integer(candidate.generation, 1);
+                  if (candidateGeneration <= this.generation) return;
+                  probedConfiguration = candidate;
+                  channel.receive.announceVideoGeneration(
+                    candidateGeneration,
+                    this.generation,
+                  );
+                } catch {
+                  // The serialized receive path reports malformed messages.
+                }
+              },
+            )
+          )
+            this.fail("桌面接收队列超出限制");
         };
         socket.onerror = () => this.fail("桌面连接失败", true);
         socket.onclose = (event) =>
@@ -263,6 +294,7 @@ export class DesktopSession {
           decodeMicroseconds: this.decodeMicroseconds,
           queueDepth: this.pending.size,
           background: document.hidden || !this.visible,
+          maximumPendingVideoFrames,
           preference:
             this.quality.preference === "sharp"
               ? wire.QualityFeedback.Preference.SHARP
@@ -272,7 +304,11 @@ export class DesktopSession {
         },
       });
   }
-  private async receive(channel: Channel, message: Message): Promise<void> {
+  private async receive(
+    channel: Channel,
+    message: Message,
+    reservation: DesktopVideoMessageReservation,
+  ): Promise<void> {
     const sequence = integer(message.sequence);
     const generationId = integer(message.generation);
     const frameId = integer(message.frameId);
@@ -311,6 +347,12 @@ export class DesktopSession {
       }
       return;
     }
+    if (
+      channel.purpose === 3 &&
+      message.body === "videoFrame" &&
+      channel.receive.isRetiredGeneration(generationId, this.generation)
+    )
+      return;
     if (channel.purpose === 2) {
       if (message.body === "desktopProbe" && message.desktopProbe) {
         const probe = wire.DesktopProbe.create(message.desktopProbe);
@@ -454,6 +496,7 @@ export class DesktopSession {
         }
       };
       discardRetiredInput();
+      channel.receive.beginVideoGeneration(generationId);
       if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
       this.input?.dispose();
       if (this.stopped) return;
@@ -494,7 +537,8 @@ export class DesktopSession {
             if (
               !pending ||
               frame.displayWidth !== this.overlay.width ||
-              frame.displayHeight !== this.overlay.height
+              frame.displayHeight !== this.overlay.height ||
+              !this.videoChannel?.finishFrame(frame.timestamp, pending.lease)
             )
               throw new Error("Unexpected decoded frame");
             this.pending.delete(frame.timestamp);
@@ -530,6 +574,10 @@ export class DesktopSession {
           } catch {
             this.fail("桌面显示异常");
           } finally {
+            // A retired decoder may reuse a timestamp from the new generation.
+            // Its callback must never release the new decoder's slot.
+            if (generation === this.generation)
+              this.pending.get(frame.timestamp)?.lease.release();
             frame.close();
           }
         },
@@ -537,6 +585,7 @@ export class DesktopSession {
       this.codec = video.codec;
       this.status("已收到视频配置，等待解码首帧…");
       this.decoder.configure(configuration);
+      channel.receive.completeVideoGeneration(generationId);
       return;
     }
     const image = message.videoFrame
@@ -551,26 +600,50 @@ export class DesktopSession {
       baseFrameId ||
       (!this.frame && !image.keyFrame) ||
       integer(image.timestampMicroseconds) <= this.timestamp ||
-      !image.data.length ||
-      // Match the Agent's 16-frame display acknowledgement window. A decoder
-      // stall must not reject frames that were already admitted by its sender.
-      this.pending.size >= maximumPendingVideoFrames
+      !image.data.length
     )
       throw new Error("Invalid video frame");
+    const timestamp = integer(image.timestampMicroseconds);
+    const decoder = this.decoder;
+    const generation = this.generation;
     this.recordVideoBytes(image.data.length);
-    this.frame = frameId;
-    this.timestamp = integer(image.timestampMicroseconds);
-    this.pending.set(this.timestamp, {
-      id: this.frame,
-      started: performance.now(),
-    });
-    this.decoder.decode(
-      new EncodedVideoChunk({
-        type: image.keyFrame ? "key" : "delta",
-        timestamp: this.timestamp,
-        data: new Uint8Array(image.data),
-      }),
+    const submitted = await channel.receive.submitFrame(
+      reservation,
+      timestamp,
+      image.data.length,
+      videoDecodeSlotTimeoutMilliseconds,
+      () =>
+        !this.stopped &&
+        this.generation === generation &&
+        this.decoder === decoder &&
+        !channel.receive.isReconfiguring &&
+        decoder.state === "configured",
+      (lease) => {
+        this.frame = frameId;
+        this.timestamp = timestamp;
+        this.pending.set(timestamp, {
+          id: frameId,
+          started: performance.now(),
+          lease,
+        });
+        decoder.decode(
+          new EncodedVideoChunk({
+            type: image.keyFrame ? "key" : "delta",
+            timestamp,
+            data: new Uint8Array(image.data),
+          }),
+        );
+      },
     );
+    if (submitted === "cancelled") {
+      if (
+        this.stopped ||
+        channel.receive.isRetiredGeneration(generationId, generation) ||
+        generation !== this.generation
+      )
+        return;
+      throw new Error("Video decode admission was cancelled unexpectedly");
+    }
   }
   private drawCursor(): void {
     this.cursorContext.clearRect(0, 0, this.overlay.width, this.overlay.height);
@@ -609,7 +682,7 @@ export class DesktopSession {
         0,
       ),
       receivedQueueBytes: this.channels.reduce(
-        (sum, channel) => sum + channel.bytes,
+        (sum, channel) => sum + channel.receive.budget.queuedMessageBytes,
         0,
       ),
       firstFrameMilliseconds: this.firstFrameMilliseconds,
@@ -748,8 +821,10 @@ export class DesktopSession {
         purpose: channel.purpose,
         ready: channel.ready,
         bufferedBytes: channel.socket.bufferedAmount,
-        queuedMessages: channel.queued,
-        queuedBytes: channel.bytes,
+        queuedMessages: channel.receive.budget.queuedMessageCount,
+        queuedBytes: channel.receive.budget.queuedMessageBytes,
+        pendingVideoFrames: channel.receive.budget.pendingFrameCount,
+        pendingVideoBytes: channel.receive.budget.pendingFrameBytes,
       })),
     });
     const hadFrame = this.firstFrameMilliseconds !== null;
@@ -782,7 +857,8 @@ export class DesktopSession {
     clearTimeout(this.bitrateTimer);
     this.bitrateTimer = undefined;
     this.videoBytes = 0;
-    for (const { socket } of this.channels) {
+    for (const { socket, receive } of this.channels) {
+      receive.close();
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
       socket.close();
     }

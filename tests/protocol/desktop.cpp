@@ -52,6 +52,16 @@ void verifyPermissions() {
     feedback.mutable_quality_feedback()->set_preference(wire::QualityFeedback::SHARP);
     DesktopChannelValidator qualityViewer({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, false});
     require(qualityViewer.accept(feedback).has_value());
+    for (const auto capacity : {0u, 128u}) {
+        auto capable = envelope(2, "input");
+        capable.mutable_quality_feedback()->set_maximum_pending_video_frames(capacity);
+        DesktopChannelValidator validator({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, false});
+        require(validator.accept(capable).has_value());
+    }
+    auto unsupportedCapacity = envelope(2, "input");
+    unsupportedCapacity.mutable_quality_feedback()->set_maximum_pending_video_frames(129);
+    DesktopChannelValidator unsupportedValidator({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, false});
+    require(rejected(unsupportedValidator.accept(unsupportedCapacity), DesktopMessageError::kMalformed));
     auto refresh = envelope(3, "input");
     refresh.mutable_request_refresh();
     require(viewer.accept(refresh).has_value());

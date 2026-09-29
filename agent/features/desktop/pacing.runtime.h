@@ -30,6 +30,7 @@ class DesktopPacing {
     // Keep the pacing floor aligned with VideoEncoder and SoftwareVideoEncoder.
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000;
     static constexpr std::uint32_t kMaximumVideoBitrate = 100000000;
+    static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
     static constexpr std::size_t kMaximumInFlightFrames = 128;
 
     Rate rate() const { return rate_; }
@@ -87,6 +88,7 @@ class DesktopPacing {
         pendingBytes_ = 0;
         lastAcknowledgedAt_ = {};
         acknowledged_ = 0;
+        clientFrameLimit_ = kLegacyMaximumInFlightFrames;
         congestionSamples_ = 0;
     }
     std::size_t frameWindow() const {
@@ -97,7 +99,8 @@ class DesktopPacing {
         const auto latency = std::max(roundTrip_.value_or(std::chrono::microseconds::zero()), baseline_);
         const auto microseconds = static_cast<std::uint64_t>(std::clamp(latency, std::chrono::microseconds::zero(), std::chrono::microseconds(std::chrono::seconds(2))).count());
         const auto frames = (microseconds * kMaximumFramesPerSecond + 999999) / 1000000 + kFrameWindowMargin;
-        return static_cast<std::size_t>(std::clamp<std::uint64_t>(frames, kFrameWindowMargin + 1, kMaximumInFlightFrames));
+        const auto rttWindow = std::clamp<std::uint64_t>(frames, kFrameWindowMargin + 1, kMaximumInFlightFrames);
+        return std::min({static_cast<std::size_t>(rttWindow), static_cast<std::size_t>(clientFrameLimit_), kMaximumInFlightFrames});
     }
     bool canEncode(Clock::time_point now) const {
         if (background_) {
@@ -142,13 +145,15 @@ class DesktopPacing {
         pendingBytes_ += bytes;
     }
     bool acknowledge(std::uint64_t generation, std::uint64_t frame, std::uint32_t decodeMicroseconds,
-                     std::uint32_t queueDepth, Clock::time_point now, bool background = false) {
-        if (!frame || generation != generation_ || frame < acknowledged_) {
+                     std::uint32_t queueDepth, Clock::time_point now, bool background = false,
+                     std::uint32_t advertisedMaximumPendingFrames = 0) {
+        if (advertisedMaximumPendingFrames > kMaximumInFlightFrames || !frame || generation != generation_ || frame < acknowledged_) {
             return false;
         }
         // Visibility can change while a static desktop produces no new frames.
         // Repeated ACKs may update visibility, but never adjust the rate again.
         if (frame == acknowledged_) {
+            clientFrameLimit_ = advertisedMaximumPendingFrames ? advertisedMaximumPendingFrames : kLegacyMaximumInFlightFrames;
             if (background != background_) {
                 congestionSamples_ = 0;
             }
@@ -159,6 +164,7 @@ class DesktopPacing {
         if (found == pending_.end() || now < found->sent) {
             return false;
         }
+        clientFrameLimit_ = advertisedMaximumPendingFrames ? advertisedMaximumPendingFrames : kLegacyMaximumInFlightFrames;
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - found->sent);
         if (!hasBaseline_ || now >= baselineExpiresAt_) {
             baseline_ = elapsed;
@@ -265,6 +271,7 @@ class DesktopPacing {
     std::uint32_t width_ = 1920, height_ = 1080;
     Rate rate_;
     Quality quality_ = Quality::kSharp;
+    std::uint32_t clientFrameLimit_ = kLegacyMaximumInFlightFrames;
     std::deque<Pending> pending_;
     std::uint64_t generation_ = 0, acknowledged_ = 0;
     std::size_t pendingBytes_ = 0;

@@ -239,13 +239,59 @@ int main() {
         }
         require(hardLimit, "Hard 128-frame safety limit was exceeded");
 
+        DesktopPacing negotiatedCapacity;
+        negotiatedCapacity.observeRoundTrip(600ms, now);
+        require(negotiatedCapacity.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
+                "Unnegotiated old-client capacity should retain the 16-frame window");
+        negotiatedCapacity.sent(1, 1, now, 512);
+        require(!negotiatedCapacity.acknowledge(1, 2, 1000, 0, now + 600ms, false, 128) &&
+                    !negotiatedCapacity.acknowledge(2, 1, 1000, 0, now + 600ms, false, 128) &&
+                    negotiatedCapacity.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
+                "Unknown-frame or old-generation feedback changed the negotiated capacity");
+        require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 600ms) &&
+                    negotiatedCapacity.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
+                "Missing capability must retain legacy 16-frame behavior");
+        const auto acknowledgedRate = negotiatedCapacity.rate();
+        require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 601ms, false, 128) &&
+                    negotiatedCapacity.frameWindow() == 40 &&
+                    negotiatedCapacity.rate().framesPerSecond == acknowledgedRate.framesPerSecond &&
+                    negotiatedCapacity.rate().bitrate == acknowledgedRate.bitrate,
+                "Valid repeated ACK did not update capacity independently of rate adaptation");
+        require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 602ms, false, 8) &&
+                    negotiatedCapacity.frameWindow() == 8 &&
+                    negotiatedCapacity.rate().framesPerSecond == acknowledgedRate.framesPerSecond &&
+                    negotiatedCapacity.rate().bitrate == acknowledgedRate.bitrate,
+                "Repeated ACK capacity shrink did not gate new frame admission cleanly");
+        require(!negotiatedCapacity.acknowledge(1, 2, 1000, 0, now + 603ms, false, 128) &&
+                    !negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 603ms, false, 129) &&
+                    negotiatedCapacity.frameWindow() == 8,
+                "Invalid feedback changed the active client frame capacity");
+        require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 604ms, false, 128),
+                "Could not restore the advertised client frame capacity");
+        for (std::uint64_t id = 2; id <= 20; ++id) {
+            const auto sentAt = now + 604ms + 16667us * (id - 2);
+            require(negotiatedCapacity.canEncode(sentAt), "Expanded client window did not admit the simulated flight");
+            negotiatedCapacity.sent(1, id, sentAt, 512);
+        }
+        require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 1000ms, false, 8) &&
+                    negotiatedCapacity.frameWindow() == 8 && !negotiatedCapacity.canEncode(now + 1001ms),
+                "Capability shrink did not stop new admission while frames remained in flight");
+        negotiatedCapacity.sent(1, 21, now + 1001ms, 512);
+        require(negotiatedCapacity.pendingFrames() == 20,
+                "A frame already encoding failed when the negotiated admission window shrank");
+        negotiatedCapacity.reset(2);
+        require(negotiatedCapacity.pendingFrames() == 0 &&
+                    negotiatedCapacity.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
+                "New generation did not return to the legacy window until it receives valid client feedback");
+
         // Event-driven 600 ms RTT simulation. Sends occur every 16,667 us and
         // each display ACK is queued for send+600 ms. The scheduler always
         // processes the earliest event, with ACKs winning timestamp ties.
         // This is a pacing unit simulation, not a network measurement.
         DesktopPacing highLatency;
         highLatency.observeRoundTrip(600ms, now);
-        require(highLatency.frameWindow() == 40, "600 ms RTT did not expand the ACK window to the required flight size");
+        require(highLatency.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
+                "High-RTT session must use the legacy window until client capability is acknowledged");
         struct ScheduledAck {
             DesktopPacing::Clock::time_point due;
             std::uint64_t frame;
@@ -253,17 +299,21 @@ int main() {
         constexpr auto frameInterval = 16667us;
         constexpr std::size_t frameBytes = 512;
         const auto simulationStart = now;
-        const auto simulationEnd = simulationStart + 6s;
+        const auto simulationEnd = simulationStart + 6600ms;
         auto currentTime = simulationStart;
         auto nextSendAt = simulationStart;
         std::uint64_t nextFrame = 1;
         std::uint64_t lastAcknowledgedFrame = 0;
         std::size_t sentFrames = 0;
+        std::size_t postNegotiationFrames = 0;
         std::size_t acknowledgedFrames = 0;
         std::size_t maximumInFlight = 0;
+        bool sendBlocked = false;
+        bool negotiated = false;
         std::deque<ScheduledAck> acknowledgements;
-        while (nextSendAt <= simulationEnd || (!acknowledgements.empty() && acknowledgements.front().due <= simulationEnd)) {
-            const bool acknowledgeFirst = !acknowledgements.empty() && acknowledgements.front().due <= nextSendAt;
+        while ((!sendBlocked && nextSendAt <= simulationEnd) || (!acknowledgements.empty() && acknowledgements.front().due <= simulationEnd)) {
+            const bool acknowledgeFirst = !acknowledgements.empty() &&
+                                          (sendBlocked || acknowledgements.front().due <= nextSendAt);
             const auto eventAt = acknowledgeFirst ? acknowledgements.front().due : nextSendAt;
             if (eventAt > simulationEnd) {
                 break;
@@ -273,16 +323,25 @@ int main() {
             if (acknowledgeFirst) {
                 const auto ack = acknowledgements.front();
                 require(ack.frame == lastAcknowledgedFrame + 1, "High-RTT simulation skipped or reordered an ACK");
-                require(highLatency.acknowledge(1, ack.frame, 1000, 0, currentTime), "High-RTT display ACK rejected");
+                require(highLatency.acknowledge(1, ack.frame, 1000, 0, currentTime, false, 128), "High-RTT display ACK rejected");
                 lastAcknowledgedFrame = ack.frame;
                 ++acknowledgedFrames;
                 acknowledgements.pop_front();
+                negotiated = negotiated || highLatency.frameWindow() > DesktopPacing::kLegacyMaximumInFlightFrames;
+                if (sendBlocked && highLatency.canEncode(currentTime)) {
+                    sendBlocked = false;
+                    nextSendAt = currentTime;
+                }
+            } else if (!highLatency.canEncode(currentTime)) {
+                sendBlocked = true;
             } else {
-                require(highLatency.canEncode(currentTime), "High-RTT path stalled before sustaining 60 FPS");
                 highLatency.sent(1, nextFrame, currentTime, frameBytes);
                 acknowledgements.push_back({currentTime + 600ms, nextFrame});
                 ++nextFrame;
                 ++sentFrames;
+                if (negotiated) {
+                    ++postNegotiationFrames;
+                }
                 nextSendAt += frameInterval;
                 maximumInFlight = std::max(maximumInFlight, highLatency.pendingFrames());
             }
@@ -295,9 +354,9 @@ int main() {
                         acknowledgements.size() == highLatency.pendingFrames(),
                     "High-RTT simulation exceeded a bound or lost an in-flight frame");
         }
-        require(sentFrames == 360 && acknowledgedFrames > 300 && maximumInFlight > 16 &&
+        require(sentFrames == 376 && postNegotiationFrames == 360 && acknowledgedFrames > 300 && maximumInFlight > 16 &&
                     maximumInFlight <= DesktopPacing::kMaximumInFlightFrames && highLatency.rate().framesPerSecond == 60,
-                "Several-second high-RTT simulation did not sustain 60 FPS beyond the old 16-frame window");
+                "Several-second high-RTT simulation did not sustain 60 FPS after capability negotiation");
 
         DesktopPacing ageBound;
         ageBound.sent(1, 1, now, 1024);

@@ -209,6 +209,9 @@ message QualityFeedback {
   uint64 displayed_generation = 5;
   // Optional preference; zero preserves the current policy for older clients.
   Preference preference = 6;
+  // Maximum received, not-yet-displayed video frames the client can accept.
+  // Zero/omitted means the legacy limit of 16; valid explicit values are 1..128.
+  uint32 maximum_pending_video_frames = 7;
 }
 message RequestRefresh {}
 // Agent issues monotonically increasing nonces on the input channel and retains
