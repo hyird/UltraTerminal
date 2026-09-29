@@ -278,18 +278,17 @@ function DesktopPanel({
           <Icon name="arrows-expand" />
         </IconButton>
         {canRestart && (
-          <IconButton
-            label="重启 Windows"
-            variant="tertiary"
-            className="desktop-tool-button"
+          <Button
+            size="sm"
+            variant="secondary"
             isDisabled={ended}
             onPress={() => {
               restartKey.current = "";
               setRestart(true);
             }}
           >
-            <Icon name="arrow-rotate-right" />
-          </IconButton>
+            重启 Windows
+          </Button>
         )}
         <Button size="sm" variant="secondary" onPress={onClose}>
           关闭会话
