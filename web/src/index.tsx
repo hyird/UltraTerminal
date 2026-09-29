@@ -19,7 +19,7 @@ function Protected() {
     return <LoadingSkeleton kind="shell" label="正在连接平台" />;
   if (auth.error)
     return (
-      <div className="app-loading">
+      <div className="text-muted flex min-h-dvh flex-col items-center justify-center gap-6">
         <p role="alert">{auth.error}</p>
         <Button size="sm" onPress={() => void auth.refresh()}>
           重试

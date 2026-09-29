@@ -136,6 +136,30 @@ bool DeviceService::rename(std::string_view userId, std::string_view deviceId, s
     tx.commit();
     return true;
 }
+bool DeviceService::transferOwner(std::string_view actorId, std::string_view deviceId, std::string_view targetUserId) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    const auto device = tx.exec("SELECT owner_id FROM devices WHERE id=? AND revoked_at IS NULL FOR UPDATE", deviceId);
+    if (device.empty()) {
+        return false;
+    }
+    if (tx.exec("SELECT id FROM users WHERE id=? AND role='admin' AND NOT disabled FOR UPDATE", actorId).empty()) {
+        return false;
+    }
+    const auto oldOwnerId = device[0][0].as<std::string>();
+    if (oldOwnerId == targetUserId || tx.exec("SELECT id FROM users WHERE id=? AND NOT disabled FOR UPDATE", targetUserId).empty()) {
+        return false;
+    }
+    tx.exec("UPDATE devices SET owner_id=? WHERE id=?", targetUserId, deviceId);
+    tx.exec("DELETE FROM device_grants WHERE device_id=? AND user_id=?", deviceId, oldOwnerId);
+    tx.exec("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials) VALUES(?,?,true,false,false,true,true,true) ON DUPLICATE KEY UPDATE desktop=true,vnc=false,ssh=false,write_control=true,system_restart=true,manage_credentials=true,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, targetUserId);
+    tx.exec("UPDATE enrollment_codes SET expires_at=now(6) WHERE device_id=? AND consumed_at IS NULL", deviceId);
+    tx.exec("UPDATE connection_verifications SET state='cancelled' WHERE device_id=? AND user_id IN (?,?) AND state IN ('pending','approved')", deviceId, oldOwnerId, targetUserId);
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.owner.transfer_from',true,?)", actorId, deviceId, oldOwnerId);
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.owner.transfer_to',true,?)", actorId, deviceId, targetUserId);
+    tx.commit();
+    return true;
+}
 bool DeviceService::remove(std::string_view userId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);

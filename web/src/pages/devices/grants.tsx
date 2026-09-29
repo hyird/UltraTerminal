@@ -92,7 +92,7 @@ export function GrantsDialog({
     <Dialog title={`设备授权 · ${device.name}`} onClose={onClose} busy={busy}>
       <Notice>{error}</Notice>
       {grant || removing ? (
-        <form onSubmit={submit} className="form-stack mt-4">
+        <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
           {removing ? (
             <p className="text-sm leading-7">
               撤销 <strong>{removing.username}</strong>{" "}
@@ -212,7 +212,10 @@ export function GrantsDialog({
           ) : grants.length ? (
             <div className="space-y-4">
               {grants.map((item) => (
-                <div key={item.userId} className="grant-row">
+                <div
+                  key={item.userId}
+                  className="flex items-center justify-between gap-3 border-b border-border pb-3 last:border-b-0"
+                >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <strong className="break-all text-sm font-medium">

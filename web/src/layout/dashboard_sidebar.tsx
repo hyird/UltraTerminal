@@ -64,7 +64,7 @@ function SidebarContents({
               <Button
                 size="sm"
                 variant="tertiary"
-                className="workspace-selector mb-2 w-full justify-between"
+                className="mb-2 h-8 min-h-8 w-full justify-between rounded-[calc(var(--radius)*2)] px-2 text-sm [&>span]:gap-3 [&_.sidebar__menu-icon>svg]:size-4 [&_.sidebar__menu-icon>svg]:shrink-0"
                 aria-label="切换工作区域"
               >
                 <span className="flex items-center gap-2">

@@ -10,6 +10,20 @@ export const deviceApi = {
     jsonRequest("/api/enrollments", { device_id: id, platform }),
   rename: (id: string, name: string) =>
     jsonRequest("/api/devices/rename", { device_id: id, name }),
+  transferOwner: (
+    id: string,
+    ownerId: string,
+    proof: {
+      current_password?: string;
+      code?: string;
+      telegram_proof?: string;
+    },
+  ) =>
+    jsonRequest("/api/devices/transfer-owner", {
+      device_id: id,
+      owner_id: ownerId,
+      ...proof,
+    }),
   remove: (id: string) => jsonRequest("/api/devices/delete", { device_id: id }),
   update: (id: string) => jsonRequest("/api/devices/update", { device_id: id }),
   windowsLogin: (

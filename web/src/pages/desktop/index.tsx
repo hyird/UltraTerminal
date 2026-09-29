@@ -35,7 +35,7 @@ export function DesktopWorkspace() {
   return (
     <section
       hidden={!visible}
-      className="desktop-workspace"
+      className="flex h-[calc(100dvh-var(--workspace-navbar-height))] min-h-0 min-w-0 max-w-full flex-col overflow-hidden"
       aria-label="远程桌面工作区"
     >
       <Tabs
@@ -43,9 +43,9 @@ export function DesktopWorkspace() {
         onSelectionChange={(key) => {
           if (typeof key === "string") activate(key);
         }}
-        className="desktop-session-tabs"
+        className="min-h-0 min-w-0 max-w-full flex-1 gap-0"
       >
-        <div className="session-tabs">
+        <div className="flex shrink-0 gap-1 overflow-auto border-b border-border px-4 py-2">
           <Tabs.ListContainer className="max-w-full">
             <Tabs.List aria-label="远程会话">
               {entries.map((entry) => (
@@ -53,7 +53,7 @@ export function DesktopWorkspace() {
                   key={entry.ticket.id}
                   id={entry.ticket.id}
                   aria-label={entry.device.name}
-                  className="session-tab"
+                  className="h-8 min-h-8 min-w-16 w-auto flex-none gap-2 whitespace-nowrap px-2 text-sm"
                 >
                   <span>{entry.device.name}</span>
                   <Tabs.Indicator />
@@ -67,7 +67,7 @@ export function DesktopWorkspace() {
             key={entry.ticket.id}
             id={entry.ticket.id}
             shouldForceMount
-            className="session-tab-panel"
+            className="m-0 flex min-h-0 min-w-0 max-w-full flex-1 p-0 data-[inert]:hidden"
           >
             <DesktopPanel
               entry={entry}
@@ -273,8 +273,15 @@ function DesktopPanel({
     }
   }
   return (
-    <div ref={root} className="desktop-panel" hidden={!visible}>
-      <div className="desktop-toolbar" hidden={fullscreen}>
+    <div
+      ref={root}
+      className="bg-surface flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden fullscreen:h-dvh"
+      hidden={!visible}
+    >
+      <div
+        className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2 max-md:px-2 [&>.select]:w-fit! [&>.select]:min-w-0! [&>.select]:max-w-full! [&_.select__indicator]:hidden [&_.select__value]:flex-none [&_button]:flex [&_button]:h-8! [&_button]:min-h-8! [&_button]:items-center [&_button]:justify-center [&_button]:rounded-(--field-radius) [&_button]:px-8! [&_button]:py-0! [&_button]:text-center [&_button]:text-sm [&_button]:font-normal"
+        hidden={fullscreen}
+      >
         <Choice
           compact
           label="显示比例"
@@ -315,7 +322,7 @@ function DesktopPanel({
               <Button
                 size="sm"
                 variant="secondary"
-                className="desktop-shortcuts"
+                className="bg-default w-fit min-w-0 max-w-full"
                 isDisabled={ended}
               >
                 快捷键
@@ -345,7 +352,6 @@ function DesktopPanel({
               <Choice
                 compact
                 label="Windows 分辨率"
-                triggerClassName="px-8!"
                 disabled={ended}
                 value={sample ? `${sample.width}x${sample.height}` : ""}
                 onChange={(value) => {
@@ -366,7 +372,7 @@ function DesktopPanel({
             )}
           </>
         )}
-        <div className="desktop-status">
+        <div className="text-muted flex shrink-0 flex-wrap items-center gap-2 p-0 text-xs max-md:gap-1">
           <span>
             {`${(sample?.framesPerSecond ?? 0).toFixed(0)} FPS · ${(bitrate / 1000000).toFixed(1)} Mbps`}
           </span>
@@ -401,17 +407,28 @@ function DesktopPanel({
           关闭
         </Button>
       </div>
-      <div className="desktop-viewport" data-scale={scale}>
-        <div className="desktop-stage">
+      <div
+        className="relative flex min-h-0 min-w-0 w-full max-w-full flex-1 overflow-hidden bg-[#111317] data-[scale=native]:overflow-auto"
+        data-desktop-viewport
+        data-scale={scale}
+      >
+        <div className="relative m-auto h-full w-full flex-none [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full [&>canvas]:outline-none">
           <canvas
             ref={canvas}
             tabIndex={entry.ticket.writeControl ? 0 : -1}
             aria-label={`${entry.device.name} 远程画面`}
           />
-          <canvas ref={cursor} className="cursor-overlay" aria-hidden="true" />
+          <canvas
+            ref={cursor}
+            className="pointer-events-none absolute inset-0"
+            aria-hidden="true"
+          />
         </div>
         {(ended || !sample?.width) && (
-          <div className="desktop-message" role="status">
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#111317] text-sm text-zinc-300"
+            role="status"
+          >
             <Icon name="display" className="size-8" />
             <p>{status}</p>
           </div>
@@ -428,7 +445,7 @@ function DesktopPanel({
           }}
           busy={busy}
         >
-          <form className="form-stack" onSubmit={verifyReconnect}>
+          <form className="flex flex-col gap-3" onSubmit={verifyReconnect}>
             <Notice>{error}</Notice>
             <p className="text-sm">{status}</p>
             {verification === "totp" && (
@@ -467,7 +484,7 @@ function DesktopPanel({
           onClose={() => setRestart(false)}
           busy={busy}
         >
-          <form className="form-stack" onSubmit={reboot}>
+          <form className="flex flex-col gap-3" onSubmit={reboot}>
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
               此操作将重启 Windows

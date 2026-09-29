@@ -7,7 +7,7 @@ import { useDevices } from "../devices/device_state";
 import type { Device } from "../devices/device.types";
 import { useDesktops } from "../../store/desktops";
 import { Notice } from "../../components/form";
-import { Empty } from "../../layout/page";
+import { Empty, pageLayout } from "../../layout/page";
 export function OverviewPage() {
   const { devices, approvals, loading, error } = useDevices();
   const { entries } = useDesktops();
@@ -50,7 +50,7 @@ export function OverviewPage() {
     },
   ];
   return (
-    <section aria-label="概览" className="page-workspace">
+    <section aria-label="概览" className={pageLayout}>
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">工作概览</span>
         <span className="text-xs text-muted">设备状态实时同步</span>

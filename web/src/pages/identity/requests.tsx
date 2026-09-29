@@ -144,7 +144,7 @@ export function RequestsPanel() {
           onClose={() => setConnecting(null)}
           busy={!!busy}
         >
-          <div className="form-stack">
+          <div className="flex flex-col gap-3">
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
               此次连接将使用一次性确认。如果设备已有活动会话，继续连接将结束原有会话。

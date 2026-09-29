@@ -86,9 +86,9 @@ export function SecurityPage() {
       {loading ? (
         <LoadingSkeleton kind="settings" label="正在加载安全设置" />
       ) : (
-        <div className="content-surface settings-surface">
-          <div className="settings-intro">
-            <span className="identity-initial large">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-3">
+          <div className="flex items-center gap-3 border-b border-border py-3 wrap-anywhere">
+            <span className="bg-accent-soft text-accent-soft-foreground inline-flex size-12 shrink-0 items-center justify-center rounded-full text-xl">
               {user?.username.slice(0, 1).toUpperCase()}
             </span>
             <div>
@@ -179,7 +179,7 @@ export function SecurityPage() {
         </div>
       )}
       {binding && (
-        <div className="content-surface p-6">
+        <div className="flex flex-col gap-3 p-6">
           <h2 className="font-medium">完成 Telegram 绑定</h2>
           <p className="text-muted my-3 text-sm">
             在 Telegram 私聊中点击 Start 完成绑定，链接十分钟内有效。
@@ -213,7 +213,7 @@ export function SecurityPage() {
           <p className="text-muted mb-4 text-sm">
             恢复码只显示这一次，请保存在安全的位置。每个码只能使用一次。
           </p>
-          <div className="recovery-codes">
+          <div className="bg-surface-secondary grid gap-2 rounded-lg p-4 text-[0.8125rem] wrap-anywhere">
             {recovery.map((code) => (
               <code key={code}>{code}</code>
             ))}
@@ -252,7 +252,7 @@ function SecurityRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="settings-row">
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] items-center gap-6 border-b border-border py-3 last:border-b-0 max-md:grid-cols-1 max-md:gap-4">
       <div className="flex items-start gap-4">
         <span className="text-muted mt-1">
           <Icon name={icon} />
@@ -264,7 +264,9 @@ function SecurityRow({
           </p>
         </div>
       </div>
-      <div className="settings-actions">{children}</div>
+      <div className="grid grid-cols-[8.5rem_4.5rem] items-center gap-3 [&>.button]:col-start-1 [&>.button]:w-full [&>.chip]:col-start-2 [&>.chip]:row-start-1 [&>.chip]:justify-self-start">
+        {children}
+      </div>
     </div>
   );
 }
@@ -349,7 +351,7 @@ function SecurityAction({
   }
   return (
     <Dialog title={titles[action]} onClose={onClose} busy={busy}>
-      <form onSubmit={submit} className="form-stack">
+      <form onSubmit={submit} className="flex flex-col gap-3">
         <Notice>{error}</Notice>
         {secret && (
           <>

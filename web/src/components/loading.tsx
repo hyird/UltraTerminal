@@ -1,4 +1,5 @@
 import { Skeleton } from "@heroui/react";
+import { pageLayout } from "../layout/page";
 export function LoadingSkeleton({
   kind = "table",
   label = "正在加载",
@@ -13,7 +14,7 @@ export function LoadingSkeleton({
       role="status"
       aria-label={label}
       aria-busy="true"
-      className={kind === "shell" ? "page-workspace pt-10" : "w-full space-y-3"}
+      className={kind === "shell" ? `${pageLayout} pt-10` : "w-full space-y-3"}
     >
       <span className="sr-only">{label}</span>
       <div aria-hidden="true" className="space-y-3">

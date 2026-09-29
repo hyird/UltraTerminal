@@ -94,7 +94,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 ### Windows 系统重启操作
 
-- 重启要求桌面、键鼠控制及独立的 `system_restart` 授权；所有者默认拥有这些权限，并可按用户授予。前端仅保留一次立即重启确认，结果通过 toast 提示，按钮不显示操作进度或结果状态。旧 POST restart-permission 入口已移除；`system_restart` 列参与服务端鉴权。浏览器经原有 HTTPS 请求操作，网关独立鉴权与审计，再通过已鉴权的 Agent 原生控制连接发送 `WindowsRestartRequest`；不建立 Agent HTTP/WSS 入口。
+- 重启要求桌面控制权限与设备所有者身份。前端仅保留一次立即重启确认，结果通过 toast 提示，按钮不显示操作进度或结果状态。浏览器经原有 HTTPS 请求操作，网关独立鉴权与审计，再通过已鉴权的 Agent 原生控制连接发送 `WindowsRestartRequest`；不建立 Agent HTTP/WSS 入口。
 - 网关先持久化设备、用户、单次幂等键和操作 ID，并在所属 Worker 同步入队；HTTP 返回 `202 requested` 不等待 Agent 回执。控制连接按已入队历史和当前设备凭据核验迟到回执，将结果独立写入数据库。ACK `ACCEPTED` 只代表 Windows 接受计划重启请求，不代表开机完成；断连或超时状态为 `UNKNOWN`，不得因 Agent 重连、时钟或 uptime 估值自动标记完成、自动生成新 ID 或重发。
 - Agent 仅 Session 0 LocalSystem 可执行。调用 Windows 零倒计时、非强制关闭应用的重启 API 前，在受 SYSTEM/Administrators 写 ACL 保护的 HKLM 注册表持久记录 ID 并刷盘；重复 ID 永不再次调用 API。调用失败保留诊断元数据，凭据和终端/桌面内容不入审计。
 - 重启不设置人工结案或冷却流程。历史 `PENDING`、`ACCEPTED`、`UNKNOWN` 保留用于审计，不占用设备操作槽；相同幂等键仍只执行一次。迁移 006 移除旧设备互斥索引，删除当前操作及人工结案接口，前后端必须同步发布，旧页面刷新后采用直接操作。独立可靠证据缺失时仍不宣称已完成系统重启。

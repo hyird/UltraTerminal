@@ -61,6 +61,18 @@ int main() {
         auto guest = identities.login("guest", password).value();
         check(!identities.accounts(guest.user) && !identities.createAccount(guest.user, "evil", password, "admin"), "Admin isolation");
         check(!identities.updateAccount(owner.user, owner.user.id, "user", false, {}), "Last admin protection");
+        phase = "administrator device ownership transfer";
+        const auto transferredDevice = devices.createDevice(owner.user.id, "transfer target");
+        const auto obsoleteEnrollment = devices.createEnrollment(owner.user.id, transferredDevice.id).value();
+        check(!devices.transferOwner(guest.user.id, transferredDevice.id, guest.user.id), "Non-admin ownership transfer rejected");
+        check(!devices.transferOwner(owner.user.id, transferredDevice.id, "missing-user"), "Unknown owner rejected");
+        check(devices.transferOwner(owner.user.id, transferredDevice.id, guest.user.id), "Admin transfers ownership");
+        check(!devices.transferOwner(owner.user.id, transferredDevice.id, guest.user.id), "Unchanged owner rejected");
+        check(!devices.enrollmentDevice(obsoleteEnrollment) && !devices.createEnrollment(owner.user.id, transferredDevice.id), "Former owner enrollment revoked");
+        check(devices.find(guest.user.id, transferredDevice.id)->canManage && devices.rename(guest.user.id, transferredDevice.id, "new owner device"), "New owner can manage device");
+        check(!devices.find(owner.user.id, transferredDevice.id) && !devices.rename(owner.user.id, transferredDevice.id, "former owner"), "Former owner loses device access");
+        check(devices.transferOwner(owner.user.id, transferredDevice.id, owner.user.id), "Admin can transfer device back");
+        check(!devices.find(guest.user.id, transferredDevice.id), "Former target grant revoked");
         phase = "device grants and session binding";
         const auto device = devices.createDevice(owner.user.id, "test device");
         check(devices.list(guest.user.id).empty() && !devices.rename(guest.user.id, device.id, "stolen") && !devices.createEnrollment(guest.user.id, device.id), "Ownership isolation");

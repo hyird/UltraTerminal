@@ -47,14 +47,14 @@ export function LoginPage() {
     }
   }
   return (
-    <main className="login-page">
-      <div className="login-brand">
-        <span className="brand-mark">
+    <main className="bg-surface-secondary flex min-h-dvh flex-col items-center justify-center px-6 py-12">
+      <div className="mb-5 flex items-center gap-3 text-lg font-[650]">
+        <span className="bg-accent text-accent-foreground flex size-8 items-center justify-center rounded-lg">
           <Icon name="terminal" />
         </span>
         <span>Ultraterimal</span>
       </div>
-      <section className="login-panel">
+      <section className="bg-surface w-full max-w-[26rem] rounded-3xl border border-border p-6 max-md:p-7">
         <div className="mb-7">
           <p className="text-muted mb-2 text-sm">远程访问平台</p>
           <h1 className="text-2xl font-semibold tracking-tight">
@@ -72,7 +72,7 @@ export function LoginPage() {
                 : "输入绑定验证器时保存的一次性恢复码。"}
           </p>
         </div>
-        <form className="form-stack" onSubmit={submit}>
+        <form className="flex flex-col gap-3" onSubmit={submit}>
           <Notice>{error}</Notice>
           {step === "password" ? (
             <>

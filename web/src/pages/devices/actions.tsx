@@ -2,6 +2,7 @@ import { LoadingSkeleton } from "../../components/loading";
 import { useEffect, useState } from "react";
 import { Button, toast } from "@heroui/react";
 import {
+  Choice,
   Dialog,
   Field,
   FormActions,
@@ -13,13 +14,23 @@ import {
   createEnrollment,
   deleteDevice,
   renameDevice,
+  transferDeviceOwner,
   updateAgent,
   windowsLogin,
 } from "./device.service";
 import { onboardingCommand } from "./device.install";
+import { listAccounts } from "../identity/identity.service";
+import { ProofFields } from "../identity/proof";
+import type { Account } from "../identity/identity.types";
 import type { Device } from "./device.types";
 export type DeviceAction =
-  "create" | "rename" | "remove" | "install" | "credentials" | "update";
+  | "create"
+  | "rename"
+  | "transfer"
+  | "remove"
+  | "install"
+  | "credentials"
+  | "update";
 export function DeviceActionDialog({
   action,
   device,
@@ -37,9 +48,16 @@ export function DeviceActionDialog({
   const [username, setUsername] = useState("");
   const [domain, setDomain] = useState("");
   const [password, setPassword] = useState("");
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [ownerId, setOwnerId] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [telegramProof, setTelegramProof] = useState("");
   const [saved, setSaved] = useState(false);
   const [command, setCommand] = useState("");
-  const [loading, setLoading] = useState(action === "credentials");
+  const [loading, setLoading] = useState(
+    action === "credentials" || action === "transfer",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -63,9 +81,33 @@ export function DeviceActionDialog({
       live = false;
     };
   }, [action, device]);
+  useEffect(() => {
+    if (action !== "transfer") return;
+    let live = true;
+    listAccounts()
+      .then((items) => {
+        if (live)
+          setAccounts(
+            items.filter(
+              (item) =>
+                !item.disabled && item.username !== device?.ownerUsername,
+            ),
+          );
+      })
+      .catch((error) => {
+        if (live) setError(failureText(error));
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [action, device]);
   const titles: Record<DeviceAction, string> = {
     create: "添加 Windows 设备",
     rename: "重命名设备",
+    transfer: "修改所有者",
     remove: "删除设备",
     install: "安装与接入",
     credentials: "Windows 登录凭据",
@@ -74,6 +116,10 @@ export function DeviceActionDialog({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (busy || loading) return;
+    if (action === "transfer" && !ownerId) {
+      setError("请选择新所有者");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -91,7 +137,16 @@ export function DeviceActionDialog({
         return;
       }
       if (action === "rename") await renameDevice(device.id, name.trim());
-      else if (action === "remove") await deleteDevice(device.id);
+      else if (action === "transfer") {
+        await transferDeviceOwner(device.id, ownerId, {
+          password: currentPassword,
+          code,
+          telegram_proof: telegramProof,
+        });
+        toast.success("设备所有者已修改");
+        onClose();
+        return;
+      } else if (action === "remove") await deleteDevice(device.id);
       else if (action === "credentials")
         await windowsLogin(device.id, "save", {
           username,
@@ -122,7 +177,7 @@ export function DeviceActionDialog({
       onClose={onClose}
       busy={busy}
     >
-      <form className="form-stack" onSubmit={submit}>
+      <form className="flex flex-col gap-3" onSubmit={submit}>
         <Notice>{error}</Notice>
         {(action === "create" || action === "rename") && (
           <Field
@@ -144,6 +199,37 @@ export function DeviceActionDialog({
             电脑执行一次性安装命令。接入成功后可向普通用户分配权限。
           </p>
         )}
+        {action === "transfer" &&
+          (loading ? (
+            <LoadingSkeleton kind="form" label="正在加载账号" rows={3} />
+          ) : (
+            <>
+              <p className="text-muted text-sm leading-6">
+                当前所有者：{device?.ownerUsername ?? "—"}
+                。修改后，原所有者的设备授权和未使用安装码将失效；新所有者获得连接与设备管理权限。
+              </p>
+              <Choice
+                label="新所有者"
+                value={ownerId}
+                onChange={setOwnerId}
+                items={accounts.map((item) => ({
+                  id: item.id,
+                  label: item.username,
+                }))}
+              />
+              {accounts.length === 0 && (
+                <p className="text-muted text-sm">没有可用的其他账号</p>
+              )}
+              <ProofFields
+                password={currentPassword}
+                code={code}
+                onPassword={setCurrentPassword}
+                onCode={setCode}
+                telegramProof={telegramProof}
+                onTelegramProof={setTelegramProof}
+              />
+            </>
+          ))}
         {action === "remove" && (
           <p className="text-sm leading-7">
             删除后会撤销此设备凭据及用户授权，并关闭正在运行的远控会话。历史审计记录保留。重新接入需要重新注册。
@@ -165,7 +251,7 @@ export function DeviceActionDialog({
               <>
                 <textarea
                   aria-label="安装命令"
-                  className="command-output"
+                  className="bg-surface-secondary w-full resize-y rounded-lg border border-border p-4 font-mono text-xs leading-7"
                   readOnly
                   value={command}
                   rows={5}
@@ -239,7 +325,9 @@ export function DeviceActionDialog({
                     : "生成安装命令"
                   : action === "update"
                     ? "确认更新"
-                    : "保存"
+                    : action === "transfer"
+                      ? "确认修改"
+                      : "保存"
           }
         />
       </form>

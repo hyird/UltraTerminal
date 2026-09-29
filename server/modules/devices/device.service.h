@@ -57,6 +57,7 @@ class DeviceService {
     bool capabilities(const DeviceIdentity& device, std::string_view protobuf) const;
     std::vector<DeviceInfo> list(std::string_view userId, bool administration = false) const;
     bool rename(std::string_view userId, std::string_view deviceId, std::string_view name) const;
+    bool transferOwner(std::string_view actorId, std::string_view deviceId, std::string_view targetUserId) const;
     bool remove(std::string_view userId, std::string_view deviceId) const;
     std::optional<std::vector<DeviceGrant>> grants(std::string_view actorId, std::string_view deviceId) const;
     bool setGrant(std::string_view actorId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const;

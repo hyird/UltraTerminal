@@ -22,6 +22,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_GET("/devices", devices, UserAuthentication);
     RUVIA_POST("/devices/create", create, BrowserOrigin, UserAuthentication, ruvia::RateLimit<20, 60000>);
     RUVIA_POST("/devices/rename", rename, BrowserOrigin, UserAuthentication);
+    RUVIA_POST("/devices/transfer-owner", transferOwner, BrowserOrigin, UserAuthentication, ruvia::RateLimit<10, 60000>);
     RUVIA_POST("/devices/delete", remove, BrowserOrigin, UserAuthentication);
     RUVIA_POST("/devices/update", update, BrowserOrigin, UserAuthentication, ruvia::RateLimit<5, 60000>);
     RUVIA_POST("/devices/windows-login", windowsLogin, BrowserOrigin, UserAuthentication, ruvia::RateLimit<20, 60000>);
@@ -39,6 +40,7 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     ruvia::Task<ruvia::HttpResponse> devices(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> create(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> rename(ruvia::Context& context);
+    ruvia::Task<ruvia::HttpResponse> transferOwner(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> remove(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> update(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> windowsLogin(ruvia::Context& context);

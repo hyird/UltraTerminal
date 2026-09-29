@@ -37,7 +37,7 @@ export function SettingsPage() {
       {loading ? (
         <LoadingSkeleton kind="settings" label="正在加载平台设置" rows={2} />
       ) : (
-        <div className="content-surface p-6 sm:p-8">
+        <div className="flex flex-col gap-3 p-6 sm:p-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">Telegram 验证服务</h2>
@@ -139,7 +139,7 @@ function BotEditor({
       onClose={onClose}
       busy={busy}
     >
-      <form className="form-stack" onSubmit={submit}>
+      <form className="flex flex-col gap-3" onSubmit={submit}>
         <Notice>{error}</Notice>
         {disable ? (
           <p className="text-warning text-sm">

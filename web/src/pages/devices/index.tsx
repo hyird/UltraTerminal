@@ -135,13 +135,15 @@ function DeviceList({
       cell: (device) => {
         return (
           <>
-            <div className="device-name">
-              <span className="device-icon">
+            <div className="flex min-w-40 items-center gap-2">
+              <span className="bg-surface-secondary text-muted flex size-8 shrink-0 items-center justify-center rounded-lg">
                 <Icon name="display" />
               </span>
               <div>
-                <strong>{device.name}</strong>
-                <small>
+                <strong className="block max-w-[26rem] text-sm font-[550] wrap-anywhere">
+                  {device.name}
+                </strong>
+                <small className="text-muted mt-0.5 block text-xs">
                   Windows · {device.enrolled ? "已接入" : "待安装"}
                   {device.agentVersion
                     ? ` · Agent ${device.agentVersion}`
@@ -265,6 +267,7 @@ function DeviceList({
                           if (key === "grants") setGrant(device);
                           else if (
                             key === "rename" ||
+                            key === "transfer" ||
                             key === "remove" ||
                             key === "install" ||
                             key === "credentials" ||
@@ -273,11 +276,20 @@ function DeviceList({
                             setDialog({ action: key, device });
                         }}
                       >
+                        {!personal && (
+                          <Dropdown.Item id="transfer" textValue="修改所有者">
+                            <Label>修改所有者</Label>
+                          </Dropdown.Item>
+                        )}
                         {(device.canManage || !personal) && (
                           <>
                             <Dropdown.Item id="grants" textValue="分配权限">
                               <Label>分配权限</Label>
                             </Dropdown.Item>
+                          </>
+                        )}
+                        {device.canManage && (
+                          <>
                             <Dropdown.Item id="rename" textValue="重命名">
                               <Label>重命名</Label>
                             </Dropdown.Item>
@@ -301,7 +313,7 @@ function DeviceList({
                             <Label>Windows 凭据</Label>
                           </Dropdown.Item>
                         )}
-                        {(device.canManage || !personal) && (
+                        {device.canManage && (
                           <Dropdown.Item
                             id="remove"
                             textValue="删除设备"
@@ -346,9 +358,9 @@ function DeviceList({
           重新连接状态服务
         </Button>
       )}
-      <div className="content-surface">
-        <div className="list-toolbar">
-          <div className="search-control">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="order-2 ml-auto w-[220px] max-w-full">
             <SearchField
               aria-label="搜索设备"
               value={search}
@@ -378,7 +390,7 @@ function DeviceList({
               { id: "offline", label: "离线" },
             ]}
           />
-          <span className="toolbar-note">
+          <span className="text-muted text-[0.8125rem]">
             {feed.devices.filter((item) => item.online).length} 台在线
           </span>
         </div>
@@ -422,7 +434,7 @@ function DeviceList({
             }
           />
         )}
-        <div className="list-footer">
+        <div className="text-muted flex flex-wrap items-center justify-between gap-4 text-xs">
           <span>共 {filtered.length} 台设备</span>
           <div className="flex items-center gap-2">
             <Button
@@ -462,7 +474,7 @@ function DeviceList({
           onClose={() => setApproval(null)}
           busy={busy}
         >
-          <form className="form-stack" onSubmit={submitApproval}>
+          <form className="flex flex-col gap-3" onSubmit={submitApproval}>
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
               验证消息将发送到你在个人安全中绑定的
@@ -486,7 +498,7 @@ function DeviceList({
           busy={busy}
         >
           <form
-            className="form-stack"
+            className="flex flex-col gap-3"
             onSubmit={(event) => {
               event.preventDefault();
               if (busy) return;
@@ -526,7 +538,7 @@ function DeviceList({
           onClose={() => setTakeover(null)}
           busy={!!desktops.connecting}
         >
-          <div className="form-stack">
+          <div className="flex flex-col gap-3">
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
               继续连接 {takeover.name} 将接管设备并结束原有会话。

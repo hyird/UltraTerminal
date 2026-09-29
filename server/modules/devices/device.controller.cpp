@@ -82,6 +82,23 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::rename(ruvia::Context& contex
     context.workerState<ServerRuntime>().status.publish("d:" + device);
     co_return jsonResponse(context, {{"id", device}, {"name", name}});
 }
+ruvia::Task<ruvia::HttpResponse> DeviceController::transferOwner(ruvia::Context& context) {
+    const auto body = requestObject(co_await context.req().text(), {"device_id", "owner_id", "current_password", "code", "telegram_proof"});
+    const auto device = requestText(body, "device_id", 128);
+    const auto owner = requestText(body, "owner_id", 128);
+    auto& runtime = context.workerState<ServerRuntime>();
+    const auto user = context.requestState<UserIdentity>();
+    const bool transferred = co_await context.runBlocking([identities = runtime.identities, devices = runtime.devices, user, device, owner, password = optionalText(body, "current_password", 1024), code = optionalText(body, "code", 32), telegramProof = optionalText(body, "telegram_proof", 32)] {
+        return user.role == "admin" && identities.reauthenticate(user, password, code, telegramProof) && devices.transferOwner(user.id, device, owner);
+    });
+    if (!transferred) {
+        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "owner_transfer_rejected", .message = "Owner transfer rejected"});
+    }
+    co_await revalidateAccess(context);
+    runtime.status.publish("d:" + device);
+    runtime.status.publish("u:*");
+    co_return jsonResponse(context, {{"id", device}, {"owner_id", owner}});
+}
 ruvia::Task<ruvia::HttpResponse> DeviceController::remove(ruvia::Context& context) {
     const auto body = requestObject(co_await context.req().text(), {"device_id"});
     const auto device = requestText(body, "device_id", 128);

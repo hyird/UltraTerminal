@@ -74,7 +74,7 @@ export function AccountsPage() {
         return (
           <>
             <div className="flex items-center gap-3">
-              <span className="identity-initial">
+              <span className="bg-accent-soft text-accent-soft-foreground inline-flex size-8 shrink-0 items-center justify-center rounded-full text-sm">
                 {item.username.slice(0, 1).toUpperCase()}
               </span>
               <strong className="break-all font-medium">{item.username}</strong>
@@ -149,9 +149,9 @@ export function AccountsPage() {
       }
     >
       <Notice>{error}</Notice>
-      <div className="content-surface">
-        <div className="list-toolbar">
-          <div className="search-control">
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="order-2 ml-auto w-[220px] max-w-full">
             <SearchField
               aria-label="搜索用户"
               value={search}
@@ -203,7 +203,7 @@ export function AccountsPage() {
             }
           />
         )}
-        <div className="list-footer">
+        <div className="text-muted flex flex-wrap items-center justify-between gap-4 text-xs">
           <span>共 {filtered.length} 个用户</span>
           <div className="flex items-center gap-2">
             <Button
@@ -285,7 +285,7 @@ function AccountEditor({
       onClose={onClose}
       busy={busy}
     >
-      <form onSubmit={submit} className="form-stack">
+      <form onSubmit={submit} className="flex flex-col gap-3">
         <Notice>{error}</Notice>
         <Field
           label="用户名"

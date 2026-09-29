@@ -1,6 +1,6 @@
 import { StatusSession } from "../../sessions/status/status.session";
 import { approvalList } from "../identity/identity.service";
-import type { Approval } from "../identity/identity.types";
+import type { Approval, SecurityProof } from "../identity/identity.types";
 import { ApiError, record, text } from "../../lib/http";
 import { deviceApi } from "./device.api";
 import type { Device, DeviceGrant } from "./device.types";
@@ -195,6 +195,21 @@ export async function desktopState(
 export async function renameDevice(id: string, name: string): Promise<string> {
   const result = record(await deviceApi.rename(id, name));
   return text(result.name);
+}
+export async function transferDeviceOwner(
+  id: string,
+  ownerId: string,
+  proof: SecurityProof,
+): Promise<void> {
+  const result = record(
+    await deviceApi.transferOwner(id, ownerId, {
+      current_password: proof.password,
+      code: proof.code,
+      telegram_proof: proof.telegram_proof,
+    }),
+  );
+  if (text(result.id) !== id || text(result.owner_id) !== ownerId)
+    throw new Error("所有者修改响应格式错误");
 }
 export async function deleteDevice(id: string): Promise<void> {
   const result = record(await deviceApi.remove(id));

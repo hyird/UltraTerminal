@@ -93,7 +93,7 @@ export class DesktopSession {
       });
       this.viewportResize.observe(canvas);
       this.observePixelRatio();
-      const viewport = canvas.closest(".desktop-viewport");
+      const viewport = canvas.closest("[data-desktop-viewport]");
       if (viewport) this.viewportResize.observe(viewport);
       this.deadline = setTimeout(() => this.fail("桌面首帧超时", true), 60000);
       document.addEventListener(

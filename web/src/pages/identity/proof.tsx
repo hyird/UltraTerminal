@@ -73,13 +73,13 @@ export function ProofFields({
     return <LoadingSkeleton kind="form" label="正在加载身份验证" rows={2} />;
   const useCode = confirmBinding || (totp === true && method === "totp");
   return (
-    <div className="verification-fields">
-      <p className="text-muted mb-4 text-xs">
+    <div>
+      <p className="text-muted mb-2 text-xs">
         {confirmBinding
           ? "输入新绑定验证器的动态码"
           : "验证当前账号以确认此项操作"}
       </p>
-      <div className="form-stack">
+      <div className="flex flex-col gap-3">
         <Notice>{error}</Notice>
         {!confirmBinding && (
           <Choice
