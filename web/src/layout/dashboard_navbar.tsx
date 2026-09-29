@@ -1,12 +1,14 @@
-import { Bell, Display } from "@gravity-ui/icons";
+import { Bell, Display, Gear } from "@gravity-ui/icons";
 import { Button } from "@heroui/react";
 import { AppLayout, Navbar, Sidebar } from "@heroui-pro/react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { IconButton } from "../components/icon_button";
 import { useAuth } from "../store/auth";
 export function DashboardNavbar({ title }: { title: string }) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { pathname } = useLocation();
+  const administration = pathname.startsWith("/console/");
   return (
     <Navbar maxWidth="full">
       <Navbar.Header>
@@ -25,22 +27,23 @@ export function DashboardNavbar({ title }: { title: string }) {
           >
             <Bell className="size-4" />
           </IconButton>
-          <Button
-            aria-label={user?.role === "admin" ? "管理设备" : "访问设备"}
-            size="sm"
-            onPress={() =>
-              navigate(
-                user?.role === "admin"
-                  ? "/console/assets"
-                  : "/workbench/devices",
-              )
-            }
-          >
-            <Display className="size-4" />
-            <span className="hidden sm:inline">
-              {user?.role === "admin" ? "管理设备" : "访问设备"}
-            </span>
-          </Button>
+          {user?.role === "admin" && (
+            <Button
+              aria-label={administration ? "返回工作台" : "管理控制台"}
+              size="sm"
+              variant="secondary"
+              onPress={() =>
+                navigate(administration ? "/overview" : "/console/assets")
+              }
+            >
+              {administration ? (
+                <Display className="size-4" />
+              ) : (
+                <Gear className="size-4" />
+              )}
+              <span>{administration ? "工作台" : "管理控制台"}</span>
+            </Button>
+          )}
         </div>
       </Navbar.Header>
     </Navbar>

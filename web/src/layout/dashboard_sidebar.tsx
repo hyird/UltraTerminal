@@ -28,6 +28,8 @@ function SidebarContents({
 }) {
   const { user, signOut } = useAuth();
   const { entries } = useDesktops();
+  const administration =
+    user?.role === "admin" && pathname.startsWith("/console/");
   return (
     <>
       <Sidebar.Header>
@@ -49,9 +51,12 @@ function SidebarContents({
       </Sidebar.Header>
       <Sidebar.Content>
         <Sidebar.Group>
-          <Sidebar.Menu aria-label="平台导航">
+          <p className="px-2 pb-2 text-xs font-medium text-muted">
+            {administration ? "管理控制台" : "工作台"}
+          </p>
+          <Sidebar.Menu aria-label={administration ? "管理导航" : "工作台导航"}>
             {navigation
-              .filter((item) => !item.admin || user?.role === "admin")
+              .filter((item) => item.admin === administration)
               .map((item) => (
                 <Sidebar.MenuItem
                   key={item.href}
@@ -66,7 +71,7 @@ function SidebarContents({
                   <Sidebar.MenuLabel>{item.label}</Sidebar.MenuLabel>
                 </Sidebar.MenuItem>
               ))}
-            {entries.length > 0 && (
+            {!administration && entries.length > 0 && (
               <Sidebar.MenuItem
                 href="/workbench/sessions"
                 id={`${idPrefix}sessions`}
