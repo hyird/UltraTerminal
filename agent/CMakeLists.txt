@@ -61,6 +61,7 @@ add_library(ultraterimal-agent-core STATIC
     features/desktop/video.runtime.cpp
     features/desktop/worker.runtime.cpp
     features/desktop/bridge.runtime.cpp
+    features/desktop/relay.runtime.cpp
     features/desktop/session.runtime.cpp
     features/enrollment/enrollment.runtime.cpp
     features/enrollment/enrollment.transport.cpp
@@ -82,6 +83,7 @@ add_library(ultraterimal-agent-core STATIC
     platform/windows/media_events.transport.cpp
     platform/windows/media_encoder.transport.cpp
     platform/windows/service.runtime.cpp
+    platform/windows/console_session.transport.cpp
     platform/windows/terminal.transport.cpp
 )
 # Only this out-of-line kernel may contain AVX2 instructions. Keep startup,

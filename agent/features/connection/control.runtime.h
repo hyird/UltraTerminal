@@ -25,10 +25,11 @@ struct ControlStatistics {
 };
 // Run on the owning Ruvia event loop. Call run() once and await its
 // completion before destroying the event loop.
+class ConsoleSessionEvents;
 class ControlRuntime {
   public:
     // Empty executable disables desktop dispatch for connection-only probes.
-    ControlRuntime(ruvia::EventLoop loop, ConnectionConfig config, std::filesystem::path desktopExecutable = {});
+    ControlRuntime(ruvia::EventLoop loop, ConnectionConfig config, std::filesystem::path desktopExecutable = {}, ConsoleSessionEvents* consoleEvents = nullptr);
     ~ControlRuntime();
     ControlRuntime(const ControlRuntime&) = delete;
     ControlRuntime& operator=(const ControlRuntime&) = delete;

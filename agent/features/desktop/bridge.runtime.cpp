@@ -14,21 +14,20 @@
 #include <ruvia/core/AsioTask.h>
 #include <ruvia/core/BlockingPool.h>
 
-#include "desktop.transport.h"
 #include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/pipe.transport.h"
-#include "send_queue.runtime.h"
+#include "relay.runtime.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
 
 namespace ultraterimal::agent {
 namespace {
 class Bridge {
   public:
-    Bridge(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopTransport& remote, NamedPipeTransport& pipe,
+    Bridge(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopWorkerChannel& remote, NamedPipeTransport& pipe,
            std::string session, std::uint32_t windowsSession, bool writeControl)
-        : loop_(loop), windowsSession_(windowsSession), systemPool_(systemPool), remote_(remote), pipe_(pipe), deadline_(loop.executor()), control_(loop.handle(), 32, 2 * 1024 * 1024), video_(loop.handle(), 32, 32 * 1024 * 1024), session_(std::move(session)),
+        : loop_(loop), windowsSession_(windowsSession), systemPool_(systemPool), remote_(remote), pipe_(pipe), deadline_(loop.executor()), session_(std::move(session)),
           incoming_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kDesktop}),
           outgoing_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kService}) {}
     ~Bridge() {
@@ -38,8 +37,6 @@ class Bridge {
     void stop() {
         stopped_ = true;
         deadline_.cancel();
-        control_.close();
-        video_.close();
         pipe_.cancel();
         remote_.cancel();
     }
@@ -95,7 +92,7 @@ class Bridge {
         }
         using namespace asio::experimental::awaitable_operators;
         try {
-            co_await (upload() && write(control_, false) && write(video_, true) && download() && watch());
+            co_await (upload() && download());
         } catch (...) {
             if (!terminal_) {
                 if (failure_) {
@@ -132,9 +129,7 @@ class Bridge {
                     }
                     wire::Envelope result;
                     result.mutable_desktop_secure_attention_result()->set_win32_error(error);
-                    if (!(co_await ruvia::asAwaitable(control_.send(std::move(result))))) {
-                        throw std::runtime_error("Desktop result queue closed");
-                    }
+                    co_await remote_.sendCursor(std::move(result));
                     continue;
                 }
                 if (terminal(message)) {
@@ -142,9 +137,10 @@ class Bridge {
                     stop();
                     co_return;
                 }
-                auto& queue = message.channel_id() == "video" ? video_ : control_;
-                if (!(co_await ruvia::asAwaitable(queue.send(std::move(message))))) {
-                    throw std::runtime_error("Desktop send queue closed or message exceeds budget");
+                if (message.channel_id() == "video") {
+                    co_await remote_.sendVideo(std::move(message));
+                } else {
+                    co_await remote_.sendCursor(std::move(message));
                 }
             }
         } catch (...) {
@@ -153,51 +149,27 @@ class Bridge {
             throw;
         }
     }
-    asio::awaitable<void> write(DesktopSendQueue& queue, bool video) {
-        try {
-            while (auto message = co_await ruvia::asAwaitable(queue.receive())) {
-                const auto bytes = message->ByteSizeLong();
-                try {
-                    if (video) {
-                        co_await remote_.sendVideo(std::move(*message));
-                    } else {
-                        co_await remote_.sendCursor(std::move(*message));
-                    }
-                } catch (...) {
-                    queue.complete(bytes);
-                    throw;
-                }
-                queue.complete(bytes);
-            }
-        } catch (...) {
-            recordFailure(video ? "bridge_video_send" : "bridge_control_send");
-            stop();
-            throw;
-        }
-    }
     asio::awaitable<void> download() {
         try {
             for (;;) {
                 auto message = co_await remote_.receiveInput();
-                co_await sendLocal(std::move(message));
+                const auto bytes = message.ByteSizeLong();
+                try {
+                    co_await sendLocal(std::move(message));
+                } catch (...) {
+                    remote_.completeInput(bytes);
+                    throw;
+                }
+                remote_.completeInput(bytes);
             }
         } catch (...) {
-            recordFailure("bridge_input_receive");
-            stop();
-            throw;
-        }
-    }
-    asio::awaitable<void> watch() {
-        try {
-            co_await remote_.watchVideo();
-        } catch (...) {
-            recordFailure("bridge_video_receive");
+            recordFailure("control_ipc_write");
             stop();
             throw;
         }
     }
     void recordFailure(const char* stage) noexcept {
-        if (stopped_ || failure_) {
+        if (stopped_ || remote_.cancelled() || failure_) {
             return;
         }
         const auto point = desktopFailureStage(stage);
@@ -216,10 +188,9 @@ class Bridge {
     std::uint32_t windowsSession_;
     ruvia::BlockingPool& systemPool_;
     std::chrono::steady_clock::time_point nextSecureAttention_{};
-    DesktopTransport& remote_;
+    DesktopWorkerChannel& remote_;
     NamedPipeTransport& pipe_;
     asio::steady_timer deadline_;
-    DesktopSendQueue control_, video_;
     std::string session_;
     protocol::DesktopPipeValidator incoming_, outgoing_;
     std::uint64_t sequence_ = 0;
@@ -227,7 +198,7 @@ class Bridge {
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 } // namespace
-asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopTransport& remote,
+asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopWorkerChannel& remote,
                                               NamedPipeTransport& pipe, std::string sessionId, std::uint32_t windowsSession,
                                               std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract) {
     Bridge bridge(std::move(loop), systemPool, remote, pipe, std::move(sessionId), windowsSession, writeControl);

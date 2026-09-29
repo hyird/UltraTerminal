@@ -164,11 +164,11 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << serviceStatus() << '\n';
             break;
         case Command::kService:
-            dispatchService([](std::stop_token stop) {
+            dispatchService([](std::stop_token stop, ConsoleSessionEvents& consoleEvents) {
                 const auto config = loadConnectionConfig(serviceConfigPath());
                 asio::io_context io;
                 auto attachment = ruvia::attachEventLoop(io);
-                ControlRuntime runtime(attachment.loop(), config, agentExecutablePath());
+                ControlRuntime runtime(attachment.loop(), config, agentExecutablePath(), &consoleEvents);
                 std::stop_callback cancellation(stop, [&] { runtime.stop(); });
                 std::exception_ptr failure;
                 asio::co_spawn(io, runtime.run(), [&](std::exception_ptr error) { failure = error; attachment.stop(); });

@@ -107,6 +107,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     ConnectionConfig config;
     asio::steady_timer writeReady, heartbeatTimer, deadline, backoff, sessionsDone, logTimer;
     std::filesystem::path desktopExecutable;
+    ConsoleSessionEvents* consoleEvents;
     struct SessionEntry {
         std::shared_ptr<DesktopSession> runtime;
         bool writable;
@@ -126,9 +127,9 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     unsigned heartbeatSeconds = 0;
     ~State() { settingsPool.join(); }
 
-    State(ruvia::EventLoop owner, ConnectionConfig settings, std::filesystem::path executable)
+    State(ruvia::EventLoop owner, ConnectionConfig settings, std::filesystem::path executable, ConsoleSessionEvents* events)
         : loop(owner), executor(owner.executor()), config(std::move(settings)), writeReady(executor), heartbeatTimer(executor), deadline(executor), backoff(executor),
-          sessionsDone(executor), logTimer(executor), desktopExecutable(std::move(executable)) {
+          sessionsDone(executor), logTimer(executor), desktopExecutable(std::move(executable)), consoleEvents(events) {
         if (!desktopExecutable.empty() && !desktopExecutable.is_absolute()) {
             throw std::invalid_argument("Desktop executable must be absolute");
         }
@@ -355,7 +356,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
             session.runtime->stop();
         }
         sessions.clear();
-        auto runtime = std::make_shared<DesktopSession>(loop, config, message, desktopExecutable, selected);
+        auto runtime = std::make_shared<DesktopSession>(loop, config, message, desktopExecutable, selected, consoleEvents);
         sessions.emplace(message.session_id(), SessionEntry{runtime, writable});
         ++statistics.startedSessions;
         log(wire::AgentLog::DESKTOP_STARTED, message.session_id());
@@ -494,8 +495,8 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         co_await (runAndStop(self) && self->watchStop());
     }
 };
-ControlRuntime::ControlRuntime(ruvia::EventLoop loop, ConnectionConfig config, std::filesystem::path desktopExecutable)
-    : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(desktopExecutable))) {}
+ControlRuntime::ControlRuntime(ruvia::EventLoop loop, ConnectionConfig config, std::filesystem::path desktopExecutable, ConsoleSessionEvents* consoleEvents)
+    : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(desktopExecutable), consoleEvents)) {}
 ControlRuntime::~ControlRuntime() { stop(); }
 asio::awaitable<void> ControlRuntime::run() { return State::runOwned(state_); }
 void ControlRuntime::stop() {

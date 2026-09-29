@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include "console_session.transport.h"
 #include "login_install.transport.h"
 
 namespace ultraterimal::agent {
@@ -70,6 +71,7 @@ std::filesystem::path agentExecutablePath() {
 namespace {
 struct ServiceRuntime {
     ServiceTask task;
+    ConsoleSessionEvents consoleEvents;
     std::stop_source stopSource;
     SERVICE_STATUS_HANDLE statusHandle = nullptr;
     SERVICE_STATUS status{SERVICE_WIN32_OWN_PROCESS, SERVICE_START_PENDING, 0, NO_ERROR, 0, 1, 5000};
@@ -77,7 +79,7 @@ struct ServiceRuntime {
     DWORD failure = NO_ERROR;
     void publish(DWORD state, DWORD error = NO_ERROR) {
         status.dwCurrentState = state;
-        status.dwControlsAccepted = state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN : 0;
+        status.dwControlsAccepted = state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE : 0;
         status.dwWin32ExitCode = error;
         status.dwCheckPoint = (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING) ? 1 : 0;
         status.dwWaitHint = status.dwCheckPoint ? 5000 : 0;
@@ -100,6 +102,10 @@ DWORD WINAPI control(DWORD command, DWORD, void*, void* context) noexcept {
                 runtime.publish(SERVICE_STOP_PENDING);
                 runtime.stopSource.request_stop();
             }
+            return NO_ERROR;
+        }
+        if (command == SERVICE_CONTROL_SESSIONCHANGE) {
+            runtime.consoleEvents.notify();
             return NO_ERROR;
         }
         if (command == SERVICE_CONTROL_INTERROGATE) {
@@ -131,7 +137,7 @@ void WINAPI serviceMain(DWORD, wchar_t**) noexcept {
                 return;
             }
         }
-        runtime.task(runtime.stopSource.get_token());
+        runtime.task(runtime.stopSource.get_token(), runtime.consoleEvents);
         std::lock_guard lock(runtime.mutex);
         runtime.publish(SERVICE_STOPPED);
     } catch (...) {

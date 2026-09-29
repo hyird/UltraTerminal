@@ -5,7 +5,8 @@
 #include <string>
 
 namespace ultraterimal::agent {
-using ServiceTask = std::function<void(std::stop_token)>;
+class ConsoleSessionEvents;
+using ServiceTask = std::function<void(std::stop_token, ConsoleSessionEvents&)>;
 void dispatchService(ServiceTask task);
 std::filesystem::path serviceConfigPath();
 std::filesystem::path agentExecutablePath();

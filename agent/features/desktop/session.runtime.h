@@ -61,10 +61,11 @@ struct DesktopSessionResult {
 // the selected Windows session and trusted installed executable. run() pairs
 // native channels, launches the child off-loop, bridges IPC and joins the child on every exit.
 // stop() belongs to this event loop; await run() before destroying the owner.
+class ConsoleSessionEvents;
 class DesktopSession {
   public:
     DesktopSession(ruvia::EventLoop loop, ConnectionConfig config, wire::Envelope grant,
-                   std::filesystem::path executable, std::uint32_t windowsSession);
+                   std::filesystem::path executable, std::uint32_t windowsSession, ConsoleSessionEvents* consoleEvents = nullptr);
     ~DesktopSession();
     DesktopSession(const DesktopSession&) = delete;
     DesktopSession& operator=(const DesktopSession&) = delete;
