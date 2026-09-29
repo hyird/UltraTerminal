@@ -12,7 +12,7 @@
 
 ## 2. 技术与部署约束
 
-- Agent、共享协议、网关与平台统一 C++23；网关 Web 框架使用 Ruvia（`ruvia::web`）；前端 React + TypeScript + Tailwind CSS + Ant Design，数据库 MariaDB。语言标准按 target 声明。
+- Agent、共享协议、网关与平台统一 C++23；网关 Web 框架使用 Ruvia（`ruvia::web`）；前端 React + TypeScript + Tailwind CSS + HeroUI Pro，数据库 MariaDB。语言标准按 target 声明。
 - 优先实现 Windows Agent，先建立可独立构建与验证的本机能力；网关与前端后置，仅按联调需要接入，不预建 Linux Agent。
 - 实现顺序：先贯通原生桌面的服务调度、Agent 原生传输与浏览器 WSS 操作并完成端到端测试，再补齐原生桌面质量、恢复和部署验证；SSH/VNC 最后实现，仍属于完整交付范围。
 - Windows 采用系统服务与目标会话桌面工作进程的架构，支持未登录、锁屏和 UAC 桌面；安装后不创建托盘图标或常驻用户窗口。SSH/ConPTY 继承 Agent 服务进程的运行账户，不另做操作系统用户映射；Agent 为 LocalSystem 时终端也使用 SYSTEM。
@@ -23,8 +23,8 @@
 - C/C++ 依赖统一使用 vcpkg manifest 并固定 `builtin-baseline`，使用 CMake Presets；不得依赖本机临时安装的库。
 - Windows Agent 使用 `x64-windows-static` 和 `/MT`，第三方库与 CRT 静态链接；不要求额外第三方 DLL、VC++ Redistributable、.NET、SSH/VNC 服务或媒体扩展。
 - 基础系统 API 与现有驱动正常使用；可选媒体组件动态探测，缺失时不得阻止程序启动，编码回退到内嵌软件实现。
-- 旧前端已整体移除，当前处于重做准备阶段；新前端设计另行确定，不沿用旧模板、页面和导航作为实现约束。重建前不创建占位页面、空目录或前端构建任务。
-- 前端提交 `package-lock.json`，安装使用 `npm ci`；Node.js 仅用于开发与构建。
+- 前端按成熟堡垒机的业务流程组织工作台、管理控制台和个人安全；页面与菜单独立，使用统一外层布局。只提供实际已接通的能力，不创建占位页面或虚构业务数据。
+- 前端使用 Bun，提交 `bun.lock`，安装使用 `bun install --frozen-lockfile`；Bun 仅用于开发与构建。
 - Agent 只操作本机，SSH/VNC 必须内嵌；禁止连接独立 sshd/VNC Server、开放公网 SSH/VNC 端口或实现内网跳板。
 - 浏览器 ↔ Server 必须支持经 CDN 的 HTTPS/WSS 443；Agent ↔ Server 使用独立的原生 UDP/TCP 入口，不经过 CDN 的 HTTP 代理，不建立浏览器直连 Agent 的 P2P 路径。使用成熟加密传输库，不重复手写协议与密码学，不保留 Agent HTTP/WSS 入口或传输切换开关。
 

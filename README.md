@@ -4,16 +4,17 @@
 
 ## 持续集成
 
-GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行两项检查：
+GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行以下检查：
 
 - Windows Agent：Windows Server 2022 / MSVC、`windows-agent-release` Preset、静态链接构建、功能单元测试和 MSI 打包。
 - Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及功能单元测试。
+- Web：Bun 1.4.2、锁文件安装、格式检查、TypeScript 检查与生产构建。HeroUI Pro 安装通过仓库 Secret `HEROUI_AUTH_TOKEN` 使用专用 CI/CD Token。
 
 vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存 Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
-浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB。旧前端已整体移除，当前处于重做准备阶段，仓库不再提供登录、管理或远控页面。账号、设备授权、TOTP、Telegram、远控协议与 Agent 安装更新接口继续保留。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
+浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。工作台提供已授权设备和连接申请，管理控制台提供设备清单、设备授权、用户管理与平台设置；个人安全通过账户菜单进入。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
@@ -64,7 +65,20 @@ ctest --preset linux-server-release
 
 Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glibc 与 C++ 标准库需兼容构建环境；数据库可使用MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
 
-前端源码、依赖清单、浏览器测试和构建任务已移除，重建前无需安装 Node.js 依赖。后续客户端继续以 `protocol/schemas/session.proto` 和现有服务端 API 为契约。
+### 前端构建
+
+安装 Bun 1.4.2。首次开发需先执行 `bun x heroui-pro login` 登录拥有 React Pro 授权的账号；CI 使用 HeroUI Pro 控制台生成的 CI/CD Token，通过 `HEROUI_AUTH_TOKEN` 注入，不提交到源码。
+
+```powershell
+cd web
+bun install --frozen-lockfile
+bun run format:check
+bun run build
+```
+
+提交 `web/bun.lock`，不混用 npm 锁文件。`build` 先从唯一协议源 `protocol/schemas/session.proto` 生成客户端契约，再执行类型检查与 Vite 构建，输出完整目录 `build/web/`。Pro 组件安装脚本已在 `trustedDependencies` 中允许。若首次安装只得到公开占位包，执行 `bun x heroui-pro install --yes` 后重新构建。Bun 仅用于开发构建，部署时由现有 C++ 网关提供静态文件。
+
+发布时将整个前端输出合并到新版本的静态目录，保留已发布的 `windows-agent.json`、MSI 及对应源码归档；不能直接用空目录替换全部 `assets/`。新版本先保留完整回滚目录再切换并重启网关。页面采用 Hash 路由，刷新和书签不依赖反向代理 SPA 回退配置。
 
 ## 网关配置
 
@@ -79,7 +93,7 @@ Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glib
 | `database` | MariaDB 对象：`host`、`port`、`username`、`password`、`database`；可选 `socket`、`tls_ca` |
 | `security_key_file` | 启动服务必填：64 个小写十六进制字符的随机 256 位密钥文件，用于加密 TOTP 和 Bot 凭据；Linux 权限须为 `0600`，Windows ACL 仅允许管理员和服务账户 |
 | `origin` | 浏览器 HTTPS 来源，含非默认端口，不含路径 |
-| `web_root` | 可选静态资源目录；保留 `windows-agent.json` 和 `assets/` 中的 Agent 安装包及对应源码。当前仓库不生成前端页面 |
+| `web_root` | 静态资源目录；部署 `build/web/` 全部文件，同时保留 `windows-agent.json` 和 `assets/` 中的 Agent 安装包及对应源码 |
 
 `gateway --migrate <config.json>` 执行版本化迁移。`gateway --bootstrap <config.json>` 从标准输入读取 `username`、`password` JSON，仅用于创建首个用户；密码至少 12 字节，不放入命令行。`gateway --serve <config.json>` 启动 Web 与原生入口。同一数据库只运行一个网关，数据库锁失效时停止服务。
 
@@ -118,7 +132,7 @@ Agent 1.0.8 起，桌面工作进程及 Agent 服务进程的桌面桥接异常�
 Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='UltraterimalDesktop'] and EventID=1001]]" -MaxEvents 10 | ForEach-Object { [pscustomobject]@{Time=$_.TimeCreated; Detail=($_.Properties.Value -join ' | ')} }
 ```
 
-设备管理 API 先保存设备名称，创建状态为“待安装”的设备记录，再为该设备签发 Windows x64 的一次性安装命令。旧页面入口已移除，新前端需重新接入这些接口。Linux/macOS 暂未支持。管理员 PowerShell 执行后自动下载、校验并安装 MSI，再绑定到已创建的设备 ID；无需另外填写注册码。安装地址包含十分钟有效的一次性安装凭据，重新复制会使该设备旧的未使用命令失效，长期 token 不进入命令。安装响应禁止缓存；网关与反向代理/CDN 日志必须隐藏 `/api/install.ps1` 的查询参数。已绑定设备的命令仅修复或升级原电脑，不重新签发 token。
+管理员在设备清单添加设备，先保存名称，再签发 Windows x64 的一次性安装命令。Linux/macOS 暂未支持。管理员 PowerShell 执行后自动下载、校验并安装 MSI，再绑定到已创建的设备 ID；无需另外填写注册码。安装地址包含十分钟有效的一次性安装凭据，重新生成会使该设备旧的未使用命令失效，长期 token 不进入命令。安装响应禁止缓存；网关与反向代理/CDN 日志必须隐藏 `/api/install.ps1` 的查询参数。已绑定设备的命令仅修复或升级原电脑，不重新签发 token。
 
 手动运行 MSI 后，也可通过交互式注册执行：
 

@@ -14,6 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  web:
+    name: Web frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Install licensed frontend dependencies
+        env:
+          HEROUI_AUTH_TOKEN: ${{ secrets.HEROUI_AUTH_TOKEN }}
+        run: bun install --frozen-lockfile
+      - name: Check formatting
+        run: bun run format:check
+      - name: Typecheck and build
+        run: bun run build
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: web-${{ github.sha }}
+          path: build/web/
+          if-no-files-found: error
+          retention-days: 14
+
   windows:
     name: Windows Agent and MSI
     runs-on: windows-2022

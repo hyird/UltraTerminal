@@ -1,0 +1,246 @@
+import { useEffect, useState } from "react";
+import { Button, toast } from "@heroui/react";
+import {
+  Dialog,
+  Field,
+  FormActions,
+  Notice,
+  failureText,
+} from "../../components/form";
+import {
+  createDevice,
+  createEnrollment,
+  deleteDevice,
+  renameDevice,
+  updateAgent,
+  windowsLogin,
+} from "./device.service";
+import { onboardingCommand } from "./device.install";
+import type { Device } from "./device.types";
+export type DeviceAction =
+  "create" | "rename" | "remove" | "install" | "credentials" | "update";
+export function DeviceActionDialog({
+  action,
+  device,
+  onClose,
+  onCreated,
+}: {
+  action: DeviceAction;
+  device?: Device;
+  onClose: () => void;
+  onCreated?: (device: Device) => void;
+}) {
+  const [name, setName] = useState(
+    action === "rename" ? (device?.name ?? "") : "",
+  );
+  const [username, setUsername] = useState("");
+  const [domain, setDomain] = useState("");
+  const [password, setPassword] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [command, setCommand] = useState("");
+  const [loading, setLoading] = useState(action === "credentials");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (action !== "credentials" || !device) return;
+    let live = true;
+    windowsLogin(device.id, "read")
+      .then((result) => {
+        if (live) {
+          setUsername(result.username);
+          setDomain(result.domain);
+          setSaved(result.saved);
+        }
+      })
+      .catch((error) => {
+        if (live) setError(failureText(error));
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [action, device]);
+  const titles: Record<DeviceAction, string> = {
+    create: "添加 Windows 设备",
+    rename: "重命名设备",
+    remove: "删除设备",
+    install: "安装与接入",
+    credentials: "Windows 登录凭据",
+    update: "更新 Agent",
+  };
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy || loading) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (action === "create") {
+        const created = await createDevice(name.trim());
+        onCreated?.(created);
+        toast.success("设备已创建，请安装 Agent 完成接入");
+        return;
+      }
+      if (!device) return;
+      if (action === "install") {
+        setCommand(
+          onboardingCommand(await createEnrollment(device.id, "windows-x64")),
+        );
+        return;
+      }
+      if (action === "rename") await renameDevice(device.id, name.trim());
+      else if (action === "remove") await deleteDevice(device.id);
+      else if (action === "credentials")
+        await windowsLogin(device.id, "save", {
+          username,
+          password,
+          domain,
+        });
+      else if (action === "update") {
+        const result = await updateAgent(device.id);
+        toast.success(
+          result.status === "current"
+            ? `已是最新版本 ${result.version}`
+            : `已请求升级到 ${result.version}`,
+        );
+        onClose();
+        return;
+      }
+      toast.success("设备信息已更新");
+      onClose();
+    } catch (error) {
+      setError(failureText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog
+      title={device ? `${titles[action]} · ${device.name}` : titles[action]}
+      onClose={onClose}
+      busy={busy}
+    >
+      <form className="form-stack" onSubmit={submit}>
+        <Notice>{error}</Notice>
+        {(action === "create" || action === "rename") && (
+          <Field
+            label="设备名称"
+            value={name}
+            onChange={setName}
+            required
+            maxLength={128}
+            hint={
+              action === "create"
+                ? "使用容易识别的名称，例如办公室工作站。"
+                : undefined
+            }
+          />
+        )}
+        {action === "create" && (
+          <p className="text-muted text-sm leading-6">
+            先创建设备，再在目标 Windows
+            电脑执行一次性安装命令。接入成功后可向普通用户分配权限。
+          </p>
+        )}
+        {action === "remove" && (
+          <p className="text-sm leading-7">
+            删除后会撤销此设备凭据及用户授权，并关闭正在运行的远控会话。历史审计记录保留。重新接入需要重新注册。
+          </p>
+        )}
+        {action === "update" && (
+          <p className="text-sm leading-7">
+            将安装平台发布的最新
+            Agent，期间设备会短暂断开并自动重连，现有身份和凭据会保留。
+          </p>
+        )}
+        {action === "install" && (
+          <>
+            <p className="text-muted text-sm leading-6">
+              在目标 Windows 电脑的管理员 PowerShell
+              中执行安装命令。新设备的一次性命令十分钟内有效，重新生成会使旧命令失效。
+            </p>
+            {command && (
+              <>
+                <textarea
+                  aria-label="安装命令"
+                  className="command-output"
+                  readOnly
+                  value={command}
+                  rows={5}
+                />
+                <Button
+                  variant="outline"
+                  onPress={() =>
+                    void navigator.clipboard
+                      .writeText(command)
+                      .then(() => toast.success("安装命令已复制"))
+                      .catch(() => setError("复制失败，请手动选择命令"))
+                  }
+                >
+                  复制命令
+                </Button>
+              </>
+            )}
+          </>
+        )}
+        {action === "credentials" && (
+          <>
+            {loading ? (
+              <p role="status">正在读取凭据状态…</p>
+            ) : (
+              <>
+                <p className="text-muted text-sm leading-6">
+                  凭据加密保存在目标 Windows 设备，用于控制台登录与解锁。
+                  {saved
+                    ? "密码留空可保留原值。"
+                    : "首次保存需要用户名和密码。"}
+                </p>
+                <Field
+                  label="Windows 用户名"
+                  value={username}
+                  onChange={setUsername}
+                  required={!saved}
+                  autoComplete="off"
+                />
+                <Field
+                  label="域（可选）"
+                  value={domain}
+                  onChange={setDomain}
+                  maxLength={256}
+                  autoComplete="off"
+                />
+                <Field
+                  label="Windows 密码"
+                  type="password"
+                  value={password}
+                  onChange={setPassword}
+                  required={!saved}
+                  autoComplete="new-password"
+                />
+              </>
+            )}
+          </>
+        )}
+        <FormActions
+          onCancel={onClose}
+          busy={busy || loading}
+          danger={action === "remove"}
+          label={
+            action === "create"
+              ? "创建设备"
+              : action === "remove"
+                ? "删除设备"
+                : action === "install"
+                  ? command
+                    ? "重新生成"
+                    : "生成安装命令"
+                  : action === "update"
+                    ? "确认更新"
+                    : "保存"
+          }
+        />
+      </form>
+    </Dialog>
+  );
+}

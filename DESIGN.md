@@ -111,13 +111,13 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - [视频服务](https://github.com/rustdesk/rustdesk/blob/master/src/server/video_service.rs)：分离采集、编码与发送；采集恢复采用有次数和时间窗口上限的重试，恢复后重建画面基准，禁止无限重启。
 - [质量控制](https://github.com/rustdesk/rustdesk/blob/master/src/server/video_qos.rs)：反馈驱动帧率和编码质量调节；本项目结合已显示帧、解码耗时、队列深度与发送耗时决定降级，反馈失效时采用保守配置。
 - [输入服务](https://github.com/rustdesk/rustdesk/blob/master/src/server/input_service.rs)：区分按键、修饰键与输入状态清理；本项目由会话记录所持按键和按钮，失焦、撤权和断线统一释放。
-- 桌面能力参考上述实现；网络采用浏览器到网关的 Web 通道，以及 Agent 到服务器的原生 UDP 优先、TLS/TCP 降级通道，前端使用 React + TypeScript + Tailwind CSS + Ant Design。
+- 桌面能力参考上述实现；网络采用浏览器到网关的 Web 通道，以及 Agent 到服务器的原生 UDP 优先、TLS/TCP 降级通道，前端使用 React + TypeScript + Tailwind CSS + HeroUI Pro。
 
 ### 数据模型
 
 `User`、`Device`、`DeviceCapability`、`DeviceGrant`、`Session`、`SessionChannel`、`RestartOperation`、`SSHHostKey`、`CredentialReference`、`AuditEvent`。
 
-数据库存储身份、权限、会话和审计元数据；在线连接与实时队列由网关维护。前端静态资源由平台同源提供，Node.js 仅用于开发与构建。
+数据库存储身份、权限、会话和审计元数据；在线连接与实时队列由网关维护。前端静态资源由平台同源提供，Bun 仅用于开发与构建。
 
 ## 2. 协议与运行行为
 
@@ -193,13 +193,20 @@ Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI 
 - 支持核显加速与 CPU 编码；软件编码不能代替图形设备与桌面采集能力，采集不可用时明确报告。
 - CDN、外部反向代理与网关属于信任边界，Web TLS 在外部代理终止，网关不再加载 Web 证书；SSH 客户端位于网关，平台可读取会话内容，不承诺端到端保密。
 
-### 前端重建状态
+### 前端业务与导航
 
-旧前端及其模板、导航、页面、会话客户端、依赖和浏览器测试已整体移除。当前仓库只提供 Agent、服务端和共享协议；本章前面的浏览器行为描述用于保留客户端协议与安全契约，不代表存在可用的前端实现。
+前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。页面采用统一侧栏、顶部上下文、页面标题与内容容器，支持窄屏菜单；菜单只出现已实现且当前角色可用的业务。
 
-新前端设计另行确定。接入时须重新验证分步登录、管理员与普通用户权限隔离、设备授权、TOTP、Telegram 绑定及审批、桌面连接与撤权。客户端继续使用 HttpOnly Cookie、Origin 校验、一次性通道票据和现有 Protobuf 消息，服务端独立执行授权。
+- **工作台**：我的设备只显示本人拥有或获授权的设备；连接申请显示本人申请及审批结果。获得一次性批准后再进入桌面，客户端不自动提交新审批或接管他人会话。活动桌面独立显示，切换页面不销毁连接，离开可见区域暂停显示反馈。
+- **管理控制台**：设备清单负责添加、安装、重命名、升级和删除；设备授权负责向用户分配桌面查看、键鼠控制、系统重启和凭据管理权限，并选择直接连接或每次审批；用户管理负责创建、角色、停用与密码重置；平台设置负责 Bot 配置。管理员角色允许管理跨所有者设备，不自动授予远程控制权限。
+- **个人安全**：从底部账户菜单进入，提供修改密码、TOTP 绑定、一次性恢复码和 Telegram 绑定。账号身份与设备权限分别建模，用户与设备所有者的 TG 绑定均由登录态签发的短期链接完成。
+- **登录**：首屏只输入用户名和密码。密码有效且启用了 TOTP 时进入独立验证步骤，恢复码通过备用入口输入；验证完成前不产生登录 Cookie。错误反馈不透露账号存在性。
+- **生命周期**：创建平台账号 → 创建设备并安装 → 设备所有者或管理员分配最小权限 → 用户直接连接或提交审批 → 设备所有者在 Telegram 批准 → 一次性进入远控。撤权、停用、解绑、过期和会话结束均由服务端独立校验与执行，页面仅显示真实返回结果。
+- **实时更新**：设备、授权和审批通过事件通道更新，断线有界退避并允许人工重连；不使用定时 GET 刷新业务列表。登录与退出会重新建立用户隔离的客户端状态。
 
-网关静态文件能力继续用于分发 Agent MSI、更新清单和对应源码。移除页面不能删除已发布安装包所需的源码资源或改变设备身份。
+客户端使用 HttpOnly Cookie、Origin 校验、一次性通道票据和现有 Protobuf 消息，服务端独立执行授权。视频、光标、输入和通道实例由独立 Session 管理，React 不逐帧更新。页面和导航重新实现，协议与会话代码沿用经过验证的契约实现。
+
+网关静态文件同时分发前端、Agent MSI、更新清单和对应源码。前端发布保留已发布安装包及对应源码，不改变设备身份。协议行为或权限改动需重新执行分步登录、管理员与普通用户隔离、实时授权与撤权、TOTP、TG 和实际桌面端到端验收。
 
 ### 安全注意序列
 
