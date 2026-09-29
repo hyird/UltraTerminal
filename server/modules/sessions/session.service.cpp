@@ -10,7 +10,8 @@ namespace ultraterimal::server {
 namespace {
 bool validRequest(const SessionRequest& request) {
     if (request.userId.empty() || request.userId.size() > 128 || request.deviceId.empty() || request.deviceId.size() > 128 ||
-        request.kind < wire::DESKTOP || request.kind > wire::SSH || !request.writeControl) {
+        request.kind < wire::DESKTOP || request.kind > wire::SSH || !request.writeControl || request.reconnectSessionId.size() > 128 ||
+        (!request.reconnectSessionId.empty() && (request.preempt || request.kind != wire::DESKTOP))) {
         return false;
     }
     if (request.kind == wire::DESKTOP) {
@@ -102,11 +103,13 @@ std::expected<IssuedSession, SessionFailure> SessionService::create(const Sessio
         return std::unexpected(SessionFailure::kBusy);
     }
     const auto method = grant[0][1].as<std::string>();
-    if (method == "telegram" && !TelegramService::consumeApproval(tx, request, grant[0][0].as<std::int64_t>())) {
+    const auto reconnect = tx.exec("SELECT COALESCE(reconnect_until,ended_at+INTERVAL 5 MINUTE) FROM remote_sessions WHERE id=? AND user_id=? AND device_id=? AND login_token_hash=? AND grant_revision=? AND kind=? AND write_control=? AND state='closed' AND end_reason IN ('session_failed','agent_disconnected','gateway_restarted','setup_expired') AND reconnected_as IS NULL AND COALESCE(reconnect_until,ended_at+INTERVAL 5 MINUTE)>=now(6) FOR UPDATE", request.reconnectSessionId, request.userId, request.deviceId, request.loginHash, grant[0][0].as<std::int64_t>(), static_cast<int>(request.kind), request.writeControl);
+    const bool resumed = !request.reconnectSessionId.empty() && !reconnect.empty();
+    if (!resumed && method == "telegram" && !TelegramService::consumeApproval(tx, request, grant[0][0].as<std::int64_t>())) {
         auditDenied(tx, request, "approval_required");
         return std::unexpected(SessionFailure::kApprovalRequired);
     }
-    if (method == "totp") {
+    if (!resumed && method == "totp") {
         if (request.verificationCode.empty()) {
             return std::unexpected(SessionFailure::kVerificationRequired);
         }
@@ -122,6 +125,11 @@ std::expected<IssuedSession, SessionFailure> SessionService::create(const Sessio
         result.preemptedSessions.push_back(row[0].as<std::string>());
     }
     tx.exec("INSERT INTO remote_sessions(id,user_id,device_id,kind,write_control,setup_expires_at,login_token_hash,grant_revision) VALUES(?,?,?,?,?,now(6)+INTERVAL 60 SECOND,?,?)", result.id, request.userId, request.deviceId, static_cast<int>(request.kind), request.writeControl, request.loginHash, grant[0][0].as<std::int64_t>());
+    if (resumed) {
+        tx.exec("UPDATE remote_sessions SET reconnect_until=? WHERE id=?", reconnect[0][0].as<std::string>(), result.id);
+        tx.exec("UPDATE remote_sessions SET reconnected_as=? WHERE id=?", result.id, request.reconnectSessionId);
+        tx.exec("INSERT INTO audit_events(user_id,device_id,session_id,event_type,success,reason) VALUES(?,?,?,'session.reconnect',true,?)", request.userId, request.deviceId, result.id, request.reconnectSessionId);
+    }
     const std::array purposes{wire::DESKTOP_INPUT, wire::DESKTOP_VIDEO, wire::VNC_STREAM, wire::SSH_STREAM};
     for (auto purpose : purposes) {
         if (!protocol::purposeMatches(request.kind, purpose)) {
@@ -169,7 +177,7 @@ std::optional<ChannelAuthorization> SessionService::consume(const UserIdentity* 
     if (tx.exec(query, channelId, sessionId, static_cast<int>(purpose), tokenHash(ticket)).affectedRows == 0) {
         return std::nullopt;
     }
-    if (tx.exec("UPDATE remote_sessions SET state='active' WHERE id=? AND state='pending' AND NOT EXISTS (SELECT 1 FROM session_channels WHERE session_id=? AND (browser_consumed_at IS NULL OR agent_consumed_at IS NULL))", sessionId, sessionId).affectedRows) {
+    if (tx.exec("UPDATE remote_sessions SET state='active',reconnect_until=NULL WHERE id=? AND state='pending' AND NOT EXISTS (SELECT 1 FROM session_channels WHERE session_id=? AND (browser_consumed_at IS NULL OR agent_consumed_at IS NULL))", sessionId, sessionId).affectedRows) {
         tx.exec("INSERT INTO audit_events(user_id,device_id,session_id,event_type,success) VALUES(?,?,?,'session.active',true)", request.userId, request.deviceId, sessionId);
     }
     tx.commit();

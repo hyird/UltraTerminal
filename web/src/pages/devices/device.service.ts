@@ -152,6 +152,7 @@ export async function openDesktop(
   preempt = true,
   approvalId?: string,
   verificationCode?: string,
+  reconnectSessionId?: string,
 ): Promise<DesktopTicket> {
   if (!writeControl) throw new Error("此设备未授予连接权限");
   const item = record(
@@ -161,6 +162,7 @@ export async function openDesktop(
       preempt,
       approvalId,
       verificationCode,
+      reconnectSessionId,
     ),
   );
   if (!Array.isArray(item.channels) || item.channels.length !== 2)

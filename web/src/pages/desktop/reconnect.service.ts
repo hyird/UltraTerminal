@@ -51,7 +51,10 @@ export class DesktopReconnect {
           this.stop();
           return;
         }
-        if (state.state !== "closed") await closeDesktop(this.sessionId);
+        if (state.state !== "closed") {
+          this.start();
+          return;
+        }
         this.released = true;
       }
       if (this.stopped) return;
@@ -62,6 +65,7 @@ export class DesktopReconnect {
         false,
         approvalId,
         code,
+        this.sessionId,
       );
       if (this.stopped) {
         await closeDesktop(ticket.id).catch(() => {});

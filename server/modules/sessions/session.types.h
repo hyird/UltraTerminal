@@ -31,6 +31,7 @@ struct SessionRequest {
     std::int64_t grantRevision = 0;
     std::string approvalId;
     std::string verificationCode;
+    std::string reconnectSessionId;
 };
 struct IssuedChannel {
     std::string id;

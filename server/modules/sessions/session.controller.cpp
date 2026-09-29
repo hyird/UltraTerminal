@@ -14,9 +14,10 @@ bool boolean(const boost::json::object& object, std::string_view name) {
 }
 } // namespace
 ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id", "verification_code"});
+    const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id", "verification_code", "reconnect_session_id"});
     SessionRequest request;
     request.verificationCode = optionalText(body, "verification_code", 6);
+    request.reconnectSessionId = optionalText(body, "reconnect_session_id", 128);
     request.userId = context.requestState<UserIdentity>().id;
     request.loginHash = context.requestState<UserIdentity>().loginHash;
     if (body.contains("approval_id")) {

@@ -28,6 +28,7 @@ export const deviceApi = {
     preempt: boolean,
     approvalId?: string,
     verificationCode?: string,
+    reconnectSessionId?: string,
   ) =>
     jsonRequest("/api/sessions", {
       device_id: id,
@@ -37,6 +38,7 @@ export const deviceApi = {
       preempt,
       approval_id: approvalId,
       verification_code: verificationCode,
+      reconnect_session_id: reconnectSessionId,
     }),
   session: (id: string) =>
     jsonRequest(`/api/sessions/${encodeURIComponent(id)}`),
