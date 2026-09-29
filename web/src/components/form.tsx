@@ -66,7 +66,6 @@ export function Choice({
   items,
   disabled = false,
   compact = false,
-  popoverClassName,
 }: {
   label: string;
   value: string;
@@ -74,7 +73,6 @@ export function Choice({
   items: { id: string; label: string }[];
   disabled?: boolean;
   compact?: boolean;
-  popoverClassName?: string;
 }) {
   return (
     <Select
@@ -93,7 +91,7 @@ export function Choice({
         <Select.Value />
         <Select.Indicator />
       </Select.Trigger>
-      <Select.Popover className={popoverClassName}>
+      <Select.Popover>
         <ListBox items={items}>
           {(item) => (
             <ListBox.Item id={item.id} textValue={item.label}>

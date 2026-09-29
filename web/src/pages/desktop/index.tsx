@@ -269,7 +269,6 @@ function DesktopPanel({
         <Choice
           compact
           label="显示比例"
-          popoverClassName="desktop-options"
           value={scale}
           onChange={(value) => {
             const mode = value === "native" ? "native" : "fit";
@@ -284,7 +283,6 @@ function DesktopPanel({
         <Choice
           compact
           label="画质偏好"
-          popoverClassName="desktop-options"
           value={quality}
           onChange={(value) => {
             const mode =
@@ -313,7 +311,7 @@ function DesktopPanel({
               >
                 快捷键
               </Button>
-              <Dropdown.Popover className="desktop-options">
+              <Dropdown.Popover>
                 <Dropdown.Menu
                   onAction={(key) => {
                     const shortcut = desktopShortcuts.find(
@@ -338,7 +336,6 @@ function DesktopPanel({
               <Choice
                 compact
                 label="Windows 分辨率"
-                popoverClassName="desktop-options"
                 disabled={ended}
                 value={sample ? `${sample.width}x${sample.height}` : ""}
                 onChange={(value) => {
