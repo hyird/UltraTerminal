@@ -158,7 +158,7 @@ export class DesktopVideoReceiveBudget {
       message.owner !== this ||
       !message.active ||
       !Number.isSafeInteger(timestamp) ||
-      timestamp <= 0 ||
+      timestamp < 0 ||
       !Number.isSafeInteger(bytes) ||
       bytes <= 0 ||
       bytes > maximumDesktopMessageBytes ||

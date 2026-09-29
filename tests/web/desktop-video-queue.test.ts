@@ -77,6 +77,25 @@ test("round-trips the new receive capacity and retains protobuf's zero default",
   expect(newClient.maximumPendingVideoFrames).toBe(128);
 });
 
+test("accepts a valid initial video timestamp of zero", async () => {
+  const channel = new DesktopVideoReceiveChannel(true);
+  const state = {
+    submitted: [] as number[],
+    leases: new Map<number, DesktopVideoDecodeLease>(),
+    stopped: false,
+    failures: [] as string[],
+  };
+  expect(enqueueFrame(channel, 0, state)).toBe(true);
+  await channel.whenIdle();
+  expect(state.submitted).toEqual([0]);
+  expect(state.failures).toEqual([]);
+  const lease = state.leases.get(0);
+  if (!lease) throw new Error("Initial decode lease missing");
+  expect(channel.finishFrame(0, lease)).toBe(true);
+  expect(channel.budget.pendingFrameBytes).toBe(0);
+  channel.close();
+});
+
 test("serial channel admits only 16 decode submissions during a 40-frame burst", async () => {
   const channel = new DesktopVideoReceiveChannel(true);
   const state = {
