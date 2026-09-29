@@ -71,7 +71,7 @@ export class DesktopSession {
     private canvas: HTMLCanvasElement,
     private overlay: HTMLCanvasElement,
     private status: (message: string) => void,
-    private ended: (hadFrame: boolean) => void,
+    private ended: (hadFrame: boolean, retryable: boolean) => void,
     private displayModes: (
       modes: { width: number; height: number }[],
     ) => void = () => {},
@@ -95,7 +95,7 @@ export class DesktopSession {
       this.observePixelRatio();
       const viewport = canvas.closest(".desktop-viewport");
       if (viewport) this.viewportResize.observe(viewport);
-      this.deadline = setTimeout(() => this.fail("桌面首帧超时"), 60000);
+      this.deadline = setTimeout(() => this.fail("桌面首帧超时", true), 60000);
       document.addEventListener(
         "visibilitychange",
         () => this.reportDisplay(),
@@ -156,10 +156,11 @@ export class DesktopSession {
               channel.bytes -= data.byteLength;
             });
         };
-        socket.onerror = () => this.fail("桌面连接失败");
+        socket.onerror = () => this.fail("桌面连接失败", true);
         socket.onclose = (event) =>
           this.fail(
             `桌面连接已断开（通道 ${channel.purpose}，代码 ${event.code}）`,
+            true,
           );
       }
     } catch (error) {
@@ -184,7 +185,7 @@ export class DesktopSession {
               sequence: integer(++channel.sent, 1),
             }).finish(),
           ),
-        (reason) => this.fail(`桌面发送拥塞或连接已断开（${reason}）`),
+        (reason) => this.fail(`桌面发送拥塞或连接已断开（${reason}）`, true),
       );
       this.writers.set(channel, writer);
     }
@@ -736,11 +737,11 @@ export class DesktopSession {
     if (this.stopped) return;
     clearTimeout(this.livenessDeadline);
     this.livenessDeadline = setTimeout(
-      () => this.fail("远控存活确认超时"),
+      () => this.fail("远控存活确认超时", true),
       60000,
     );
   }
-  private fail(message: string): void {
+  private fail(message: string, retryable = false): void {
     if (this.stopped || this.stopping) return;
     console.warn("Desktop session ended", {
       session: this.ticket.id,
@@ -763,7 +764,7 @@ export class DesktopSession {
           : "（首帧接收/解码阶段）";
     this.stop();
     this.status(message + phase);
-    this.ended(hadFrame);
+    this.ended(hadFrame, retryable);
   }
   stop(): void {
     if (this.stopped || this.stopping) return;

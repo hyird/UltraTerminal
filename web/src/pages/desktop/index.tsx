@@ -4,6 +4,7 @@ import { useLocation } from "react-router";
 import {
   Choice,
   Dialog,
+  Field,
   FormActions,
   Notice,
   failureText,
@@ -21,10 +22,12 @@ import { desktopShortcuts } from "../../sessions/desktop/shortcuts.protocol";
 import type { DesktopPerformance } from "../../sessions/desktop/desktop.types";
 import {
   closeDesktop,
-  desktopState,
   requestRestart,
   restartPermission,
 } from "../devices/device.service";
+import { DesktopReconnect } from "./reconnect.service";
+import { requestApproval } from "../identity/identity.service";
+import { useDevices } from "../devices/device_state";
 export function DesktopWorkspace() {
   const { pathname } = useLocation();
   const { entries, active, activate, close } = useDesktops();
@@ -112,6 +115,64 @@ function DesktopPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const restartKey = useRef("");
+  const desktops = useDesktops();
+  const desktopsRef = useRef(desktops);
+  desktopsRef.current = desktops;
+  const reconnect = useRef<DesktopReconnect | null>(null);
+  const [verification, setVerification] = useState<"totp" | "telegram" | null>(
+    null,
+  );
+  const [code, setCode] = useState("");
+  const [approvalId, setApprovalId] = useState("");
+  const [approvalExpiresAt, setApprovalExpiresAt] = useState(0);
+  const { approvals } = useDevices();
+  const approval = approvals.find((item) => item.id === approvalId);
+  useEffect(() => {
+    if (!approvalId || !approvalExpiresAt) return;
+    const timer = setTimeout(
+      () => {
+        setApprovalId("");
+        setStatus("连接审批已过期，请重新申请");
+      },
+      Math.max(0, approvalExpiresAt * 1000 - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [approvalId, approvalExpiresAt]);
+  useEffect(() => {
+    if (!approval) return;
+    if (approval.state === "approved") {
+      setVerification(null);
+      setApprovalId("");
+      void reconnect.current?.resume(undefined, approval.id);
+    } else if (
+      ["denied", "cancelled", "expired", "failed"].includes(approval.state)
+    ) {
+      setStatus("连接审批未通过或已过期，请重新申请");
+      setApprovalId("");
+    }
+  }, [approval]);
+  async function verifyReconnect(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (verification === "totp") {
+        setVerification(null);
+        await reconnect.current?.resume(code);
+        setCode("");
+      } else {
+        const result = await requestApproval(entry.device.id, true);
+        setApprovalId(result.id);
+        setApprovalExpiresAt(result.expiresAt);
+        setStatus("等待设备所有者审批，通过后自动重连");
+      }
+    } catch (error) {
+      setError(failureText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
   useEffect(() => {
     let live = true;
     if (!canvas.current || !cursor.current) return;
@@ -123,25 +184,26 @@ function DesktopPanel({
         (message) => {
           if (live) setStatus(message);
         },
-        () => {
+        (hadFrame, retryable) => {
           if (!live) return;
           setEnded(true);
-          void desktopState(entry.ticket.id)
-            .then((result) => {
-              if (
-                live &&
-                (result.reason === "preempted" ||
-                  result.reason === "permission_revoked")
-              )
-                setStatus(
-                  result.reason === "preempted"
-                    ? "会话已被接管"
-                    : result.reason === "permission_revoked"
-                      ? "设备授权已撤销"
-                      : "远程会话已结束",
-                );
-            })
-            .catch(() => {});
+          setBitrate(0);
+          setSample(null);
+          if (!retryable) return;
+          reconnect.current = new DesktopReconnect(
+            entry.ticket.id,
+            entry.device.id,
+            hadFrame ? 0 : (entry.reconnectFailures ?? 0),
+            (ticket, failures) =>
+              desktopsRef.current.replace(entry.ticket.id, ticket, failures),
+            (message) => {
+              if (live) setStatus(message);
+            },
+            (method) => {
+              if (live) setVerification(method);
+            },
+          );
+          reconnect.current.start();
         },
         setModes,
         setBitrate,
@@ -160,6 +222,7 @@ function DesktopPanel({
       .catch(() => {});
     return () => {
       live = false;
+      reconnect.current?.stop();
       session.current?.stop();
       session.current = null;
       void closeDesktop(entry.ticket.id).catch(() => {});
@@ -346,6 +409,49 @@ function DesktopPanel({
         )}
       </div>
 
+      {verification && (
+        <Dialog
+          title={verification === "totp" ? "重连验证" : "重连审批"}
+          onClose={() => {
+            reconnect.current?.stop();
+            setVerification(null);
+            setStatus("自动重连已取消");
+          }}
+          busy={busy}
+        >
+          <form className="form-stack" onSubmit={verifyReconnect}>
+            <Notice>{error}</Notice>
+            <p className="text-sm">{status}</p>
+            {verification === "totp" && (
+              <Field
+                label="动态验证码"
+                value={code}
+                onChange={setCode}
+                required
+                minLength={6}
+                maxLength={6}
+                pattern="[0-9]{6}"
+                autoComplete="one-time-code"
+              />
+            )}
+            <FormActions
+              busy={busy || !!approvalId}
+              onCancel={() => {
+                reconnect.current?.stop();
+                setVerification(null);
+                setStatus("自动重连已取消");
+              }}
+              label={
+                verification === "totp"
+                  ? "验证并连接"
+                  : approvalId
+                    ? "等待审批"
+                    : "申请审批"
+              }
+            />
+          </form>
+        </Dialog>
+      )}
       {restart && (
         <Dialog
           title={`重启 ${entry.device.name}`}

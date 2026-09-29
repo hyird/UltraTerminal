@@ -13,6 +13,7 @@ import { closeDesktop, openDesktop } from "../pages/devices/device.service";
 export interface DesktopEntry {
   device: Device;
   ticket: DesktopTicket;
+  reconnectFailures?: number;
 }
 interface DesktopState {
   entries: DesktopEntry[];
@@ -26,6 +27,7 @@ interface DesktopState {
   ) => Promise<void>;
   activate: (id: string) => void;
   close: (id: string) => void;
+  replace: (id: string, ticket: DesktopTicket, failures: number) => void;
 }
 const Context = createContext<DesktopState | null>(null);
 export function DesktopProvider({ children }: { children: ReactNode }) {
@@ -90,9 +92,19 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
       if (!next) navigate("/workbench/devices");
     }
   }
+  function replace(id: string, ticket: DesktopTicket, failures: number) {
+    setEntries((items) =>
+      items.map((entry) =>
+        entry.ticket.id === id
+          ? { ...entry, ticket, reconnectFailures: failures }
+          : entry,
+      ),
+    );
+    setActive((selected) => (selected === id ? ticket.id : selected));
+  }
   return (
     <Context.Provider
-      value={{ entries, active, connecting, connect, activate, close }}
+      value={{ entries, active, connecting, connect, activate, close, replace }}
     >
       {children}
     </Context.Provider>
