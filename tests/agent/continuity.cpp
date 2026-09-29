@@ -93,6 +93,17 @@ int main() {
         config = configuration(1);
         first = probe(1);
         require(!overflow.outgoing(config) && !overflow.outgoing(first), "Namespace wrapped on handoff");
+        agent::DesktopHandoffState binding(1);
+        require(binding.observe(UINT32_MAX), "Transient console disappearance was ignored");
+        require(!binding.select(UINT32_MAX) && binding.changed(1), "Invalid selection erased pending transition");
+        require(binding.select(1) && !binding.changed(1), "Notification from selection leaked into the new launch");
+        require(!binding.replaceableExit(1, 1, false, std::nullopt), "Ordinary bootstrap failure retried without console change");
+        require(binding.select(2) && binding.observe(1), "Rapid return to the user console was ignored");
+        require(binding.replaceableExit(1, 1, false, std::nullopt), "Known pre-start cancellation treated as worker failure");
+        require(!binding.replaceableExit(1, 1, true, std::nullopt), "Running worker crash was hidden as startup cancellation");
+        require(!binding.replaceableExit(1, 1430522123, false, wire::DesktopFault::ENCODE_FAILED), "Independent worker failure was erased");
+        require(binding.replaceableExit(1, 1430522123, true, wire::DesktopFault::IPC_FAILED), "Expected old-worker pipe teardown rejected");
+        require(binding.select(1) && !binding.changed(1), "Second selection retained obsolete handoff state");
         agent::DesktopHandoffBudget budget;
         require(budget.admit() && budget.admit() && budget.admit(), "Handoff budget too small");
         for (unsigned attempt = 0; attempt < 100; ++attempt) {

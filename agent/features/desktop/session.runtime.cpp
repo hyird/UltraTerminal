@@ -42,10 +42,10 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     std::filesystem::path executable, loginCredential;
     std::unique_ptr<WindowsLoginBroker> login;
     std::string session;
-    std::uint32_t windowsSession;
+    DesktopHandoffState binding;
     bool writeControl;
     std::uint32_t desktopInputContract;
-    bool started = false, stopping = false, ended = false, joined = false, switching = false;
+    bool started = false, stopping = false, ended = false, joined = false;
     Resources resources;
     DesktopSessionResult result;
     DesktopHandoffBudget handoffs;
@@ -54,7 +54,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     State(ruvia::EventLoop owner, ConnectionConfig config, wire::Envelope grant,
           std::filesystem::path path, std::uint32_t selected, ConsoleSessionEvents* events)
         : loop(owner), remote(owner, config, grant), relay(owner, remote), grace(owner.executor()), transition(owner.executor()),
-          executable(std::move(path)), loginCredential(config.credentialFile.parent_path() / "windows_login.credential"), session(grant.session_id()), windowsSession(selected),
+          executable(std::move(path)), loginCredential(config.credentialFile.parent_path() / "windows_login.credential"), session(grant.session_id()), binding(selected),
           writeControl(grant.session_open().write_control()), desktopInputContract(grant.session_open().desktop_input_contract()) {
         if ((writeControl && desktopInputContract != 2) || (!writeControl && desktopInputContract != 0)) {
             throw std::invalid_argument("Desktop input contract is unsupported");
@@ -110,7 +110,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         result.fault.emplace();
         result.fault->set_stage(point);
         result.fault->set_code(desktopFailureCode(failure, point));
-        result.fault->set_windows_session_id(windowsSession);
+        result.fault->set_windows_session_id(binding.session());
         result.fault->set_process_id(result.processId);
     }
     void fail(const char* stage, std::exception_ptr failure) {
@@ -134,8 +134,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         try {
             while (!ended) {
                 co_await console->wait();
-                if (!ended && currentDesktopSession() != windowsSession) {
-                    switching = true;
+                if (!ended && binding.observe(currentDesktopSession())) {
                     detachWorker();
                 }
             }
@@ -159,11 +158,13 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     asio::awaitable<std::uint32_t> selectConsole() {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         auto delay = std::chrono::milliseconds(50);
+        std::uint32_t candidate = UINT32_MAX;
         while (!ended) {
             const auto selected = currentDesktopSession();
-            if (validSession(selected)) {
+            if (validSession(selected) && selected == candidate) {
                 co_return selected;
             }
+            candidate = validSession(selected) ? selected : UINT32_MAX;
             if (std::chrono::steady_clock::now() >= deadline) {
                 throw DesktopFailure(wire::DesktopFault::DESKTOP_UNAVAILABLE, "Console transition exceeded its deadline", wire::DesktopFault::WORKER_LAUNCH);
             }
@@ -173,13 +174,13 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
             if (error && !ended) {
                 throw std::system_error(error);
             }
-            delay = std::min(delay * 2, std::chrono::milliseconds(500));
+            delay = validSession(selected) ? std::chrono::milliseconds(50) : std::min(delay * 2, std::chrono::milliseconds(500));
         }
         co_return 0;
     }
     asio::awaitable<void> bridge(std::shared_ptr<DesktopWorkerChannel> channel) {
         try {
-            auto terminal = co_await bridgeDesktop(loop, systemPool, *channel, *resources.pipe, session, windowsSession, 0, writeControl, desktopInputContract);
+            auto terminal = co_await bridgeDesktop(loop, systemPool, *channel, *resources.pipe, session, binding.session(), 0, writeControl, desktopInputContract);
             if (!ended) {
                 result.terminal = std::move(terminal);
             }
@@ -221,18 +222,21 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         co_await asio::this_coro::reset_cancellation_state(asio::disable_cancellation());
         try {
             while (!ended) {
-                switching = false;
-                windowsSession = co_await selectConsole();
+                const auto selected = co_await selectConsole();
                 if (ended) {
                     break;
                 }
+                if (!binding.select(selected)) {
+                    throw std::runtime_error("Invalid console selection");
+                }
+                bool workerStarted = false;
                 result.processId = 0;
                 std::exception_ptr failure;
                 bridgeFailure = {};
                 const char* stage = "worker_launch";
                 try {
                     auto launch = ruvia::runBlocking(systemPool, loop.handle(),
-                                                     [executor = loop.executor(), selected = windowsSession, path = executable] {
+                                                     [executor = loop.executor(), selected = binding.session(), path = executable] {
                                                          DesktopIdentity user(selected);
                                                          Resources resources;
                                                          resources.pipe = std::make_unique<NamedPipeTransport>(executor, user.pipeSid());
@@ -241,20 +245,21 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                                                      });
                     resources = co_await ruvia::asAwaitable(std::move(launch));
                     result.processId = resources.child->id();
-                    if (ended || switching || currentDesktopSession() != windowsSession) {
+                    if (ended || binding.changed(currentDesktopSession())) {
                         throw std::runtime_error("Console changed during worker launch");
                     }
                     stage = "worker_pipe_pairing";
-                    co_await resources.pipe->accept(result.processId, windowsSession);
-                    if (ended || switching || currentDesktopSession() != windowsSession) {
+                    co_await resources.pipe->accept(result.processId, binding.session());
+                    if (ended || binding.changed(currentDesktopSession())) {
                         throw std::runtime_error("Console changed during worker pairing");
                     }
                     stage = "login_broker";
                     if (writeControl) {
-                        login = WindowsLoginBroker::create(loop, systemPool, loginCredential, windowsSession);
+                        login = WindowsLoginBroker::create(loop, systemPool, loginCredential, binding.session());
                     }
                     stage = "session_bridge";
                     auto channel = relay.attach();
+                    workerStarted = true;
                     if (login) {
                         using namespace asio::experimental::awaitable_operators;
                         co_await (bridge(channel) && login->run());
@@ -266,16 +271,17 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                 }
                 detachWorker();
                 const auto code = co_await reap();
-                const auto workerFault = protocol::desktopFailureFromExitCode(code, windowsSession, result.processId);
+                const auto workerFault = protocol::desktopFailureFromExitCode(code, binding.session(), result.processId);
                 // A concrete worker fault is not erased by a coincident console
                 // event. Only teardown IPC errors or a clean OS exit are expected.
-                const bool changed = switching || currentDesktopSession() != windowsSession;
+                const auto current = currentDesktopSession();
+                const bool changed = binding.changed(current);
                 bool independentFailure = false;
                 if (failure) {
                     const auto failureCode = desktopFailureCode(failure, desktopFailureStage(stage));
                     independentFailure = failureCode == wire::DesktopFault::STARTUP_TIMEOUT || failureCode == wire::DesktopFault::PROTOCOL_REJECTED;
                 }
-                const bool replaceable = !independentFailure && !result.terminal.has_session_error() && !result.forcedExit && (code == 0 || (workerFault && workerFault->code() == wire::DesktopFault::IPC_FAILED));
+                const bool replaceable = !independentFailure && !result.terminal.has_session_error() && !result.forcedExit && binding.replaceableExit(current, code, workerStarted, workerFault ? std::optional{workerFault->code()} : std::nullopt);
                 if (!ended && changed && replaceable && handoffs.admit()) {
                     resources = {};
                     login.reset();
@@ -285,10 +291,10 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                 if (!ended && failure) {
                     fail(stage, failure);
                 } else if (!ended && changed) {
-                    result.recordWorkerExit(code, windowsSession);
+                    result.recordWorkerExit(code, binding.session());
                     fail("session_bridge", std::make_exception_ptr(DesktopFailure(wire::DesktopFault::DESKTOP_UNAVAILABLE, "Console handoff budget exhausted", wire::DesktopFault::WORKER_LAUNCH)));
                 }
-                result.recordWorkerExit(code, windowsSession);
+                result.recordWorkerExit(code, binding.session());
                 if (result.hasIndependentFailure()) {
                     terminalError("desktop_failed", "Desktop worker reported an independent failure");
                 }
@@ -306,7 +312,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         // even when selection or handoff itself fails.
         if (resources.child) {
             const auto code = co_await reap();
-            result.recordWorkerExit(code, windowsSession);
+            result.recordWorkerExit(code, binding.session());
         }
         resources = {};
         login.reset();
