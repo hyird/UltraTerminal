@@ -14,7 +14,7 @@ vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
-浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。工作台提供已授权设备和连接申请，管理控制台提供设备清单、设备授权、用户管理与平台设置；个人安全通过账户菜单进入。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
+浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB；前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，开发和构建统一使用 Bun。界面基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，采用模板的侧栏、顶栏、KPI 和 DataGrid。平铺导航提供概览、我的设备和连接申请；管理员可见设备清单、设备授权、用户管理与平台设置，个人安全位于侧栏底部。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
@@ -66,6 +66,8 @@ ctest --preset linux-server-release
 Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glibc 与 C++ 标准库需兼容构建环境；数据库可使用MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
 
 ### 前端构建
+
+模板的 Next.js 路由已适配现有 React Router 和 Vite 静态部署；不需要 Next.js 服务端。模板默认主题与组件样式作为视觉基准，概览仅展示当前账号的真实授权设备、在线状态、会话和申请数量。
 
 安装 Bun 1.4.2；第三方 Pro 安装脚本及 protobufjs 声明生成工具仍需要构建机的 Node.js。依赖安装、锁文件和脚本入口统一使用 Bun，不强制改写第三方 CLI 的解释器。首次开发需先执行 `bun x heroui-pro login` 登录拥有 React Pro 授权的账号；CI 使用 HeroUI Pro 控制台生成的 CI/CD Token，通过 `HEROUI_AUTH_TOKEN` 注入，不提交到源码。
 

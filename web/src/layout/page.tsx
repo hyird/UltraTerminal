@@ -13,10 +13,9 @@ export function Page({
   children: ReactNode;
 }) {
   return (
-    <section className="page-workspace">
+    <section aria-label={title} className="page-workspace">
       <header className="page-heading">
         <div>
-          <h1>{title}</h1>
           <p>{description}</p>
         </div>
         {actions && (

@@ -1,5 +1,6 @@
+import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useEffect, useState } from "react";
-import { Button, Chip, Table, toast } from "@heroui/react";
+import { Button, Chip, toast } from "@heroui/react";
 import { Page, Empty } from "../../layout/page";
 import { Dialog, Notice, failureText } from "../../components/form";
 import { useDevices } from "../devices/device_state";
@@ -62,6 +63,102 @@ export function RequestsPage() {
       setBusy("");
     }
   }
+  const columns: DataGridColumn<Approval>[] = [
+    {
+      id: "column0",
+      header: "设备",
+      isRowHeader: true,
+      minWidth: 220,
+      cell: (item) => {
+        const device = devices.find((device) => device.id === item.deviceId);
+        return <>{device?.name ?? "设备已不可访问"}</>;
+      },
+    },
+    {
+      id: "column1",
+      header: "申请权限",
+      minWidth: 120,
+      cell: (item) => {
+        return <>{item.writeControl ? "远程控制" : "只读桌面"}</>;
+      },
+    },
+    {
+      id: "column2",
+      header: "状态",
+      minWidth: 120,
+      cell: (item) => {
+        const state =
+          (item.state === "pending" || item.state === "approved") &&
+          item.expiresAt * 1000 <= now
+            ? "expired"
+            : item.state;
+        return (
+          <>
+            <Chip
+              size="sm"
+              variant="soft"
+              color={
+                state === "approved"
+                  ? "success"
+                  : state === "pending"
+                    ? "warning"
+                    : "default"
+              }
+            >
+              {labels[state] ?? "未知状态"}
+            </Chip>
+          </>
+        );
+      },
+    },
+    {
+      id: "column3",
+      header: "有效期至",
+      minWidth: 120,
+      cell: (item) => {
+        return <>{new Date(item.expiresAt * 1000).toLocaleString()}</>;
+      },
+    },
+    {
+      id: "column4",
+      header: "操作",
+      minWidth: 120,
+      cell: (item) => {
+        const state =
+          (item.state === "pending" || item.state === "approved") &&
+          item.expiresAt * 1000 <= now
+            ? "expired"
+            : item.state;
+        const device = devices.find((device) => device.id === item.deviceId);
+        return (
+          <>
+            {state === "approved" ? (
+              <Button
+                size="sm"
+                isDisabled={!device?.online || !!busy}
+                isPending={busy === item.id}
+                onPress={() => setConnecting(item)}
+              >
+                进入桌面
+              </Button>
+            ) : state === "pending" ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                isPending={busy === item.id}
+                isDisabled={!!busy}
+                onPress={() => void act(item, true)}
+              >
+                取消申请
+              </Button>
+            ) : (
+              "—"
+            )}
+          </>
+        );
+      },
+    },
+  ];
   return (
     <Page
       title="连接申请"
@@ -70,86 +167,13 @@ export function RequestsPage() {
       <Notice>{error || feedError}</Notice>
       <div className="content-surface">
         {approvals.length ? (
-          <Table variant="secondary">
-            <Table.ScrollContainer>
-              <Table.Content
-                aria-label="我的连接申请"
-                className="min-w-[680px]"
-              >
-                <Table.Header>
-                  <Table.Column isRowHeader>设备</Table.Column>
-                  <Table.Column>申请权限</Table.Column>
-                  <Table.Column>状态</Table.Column>
-                  <Table.Column>有效期至</Table.Column>
-                  <Table.Column>操作</Table.Column>
-                </Table.Header>
-                <Table.Body>
-                  {approvals.map((item) => {
-                    const state =
-                      (item.state === "pending" || item.state === "approved") &&
-                      item.expiresAt * 1000 <= now
-                        ? "expired"
-                        : item.state;
-                    const device = devices.find(
-                      (device) => device.id === item.deviceId,
-                    );
-                    return (
-                      <Table.Row key={item.id} id={item.id}>
-                        <Table.Cell>
-                          {device?.name ?? "设备已不可访问"}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {item.writeControl ? "远程控制" : "只读桌面"}
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Chip
-                            size="sm"
-                            variant="soft"
-                            color={
-                              state === "approved"
-                                ? "success"
-                                : state === "pending"
-                                  ? "warning"
-                                  : "default"
-                            }
-                          >
-                            {labels[state] ?? "未知状态"}
-                          </Chip>
-                        </Table.Cell>
-                        <Table.Cell>
-                          {new Date(item.expiresAt * 1000).toLocaleString()}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {state === "approved" ? (
-                            <Button
-                              size="sm"
-                              isDisabled={!device?.online || !!busy}
-                              isPending={busy === item.id}
-                              onPress={() => setConnecting(item)}
-                            >
-                              进入桌面
-                            </Button>
-                          ) : state === "pending" ? (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              isPending={busy === item.id}
-                              isDisabled={!!busy}
-                              onPress={() => void act(item, true)}
-                            >
-                              取消申请
-                            </Button>
-                          ) : (
-                            "—"
-                          )}
-                        </Table.Cell>
-                      </Table.Row>
-                    );
-                  })}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
+          <DataGrid
+            aria-label="我的连接申请"
+            columns={columns}
+            data={approvals}
+            getRowId={(item) => item.id}
+            contentClassName="min-w-[740px]"
+          />
         ) : (
           <Empty
             title="暂无连接申请"

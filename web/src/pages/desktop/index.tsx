@@ -1,3 +1,4 @@
+import { IconButton } from "../../components/icon_button";
 import { useEffect, useRef, useState } from "react";
 import { Button, Chip, Dropdown, Label, toast } from "@heroui/react";
 import { useLocation } from "react-router";
@@ -5,7 +6,6 @@ import {
   Choice,
   Dialog,
   FormActions,
-  IconButton,
   Notice,
   failureText,
 } from "../../components/form";
@@ -47,9 +47,10 @@ export function DesktopWorkspace() {
             </Button>
             <IconButton
               label={`关闭 ${entry.device.name} 会话`}
-              icon="xmark"
               onPress={() => close(entry.ticket.id)}
-            />
+            >
+              <Icon name="xmark" />
+            </IconButton>
           </div>
         ))}
       </div>
@@ -255,24 +256,26 @@ function DesktopPanel({
         <div className="flex-1" />
         <IconButton
           label="切换全屏"
-          icon="arrows-expand"
           onPress={() => {
             const action = document.fullscreenElement
               ? document.exitFullscreen()
               : root.current?.requestFullscreen();
             void action?.catch(() => toast.danger("浏览器无法进入全屏"));
           }}
-        />
+        >
+          <Icon name="arrows-expand" />
+        </IconButton>
         {canRestart && (
           <IconButton
             label="重启 Windows"
-            icon="arrow-rotate-right"
-            disabled={ended}
+            isDisabled={ended}
             onPress={() => {
               restartKey.current = "";
               setRestart(true);
             }}
-          />
+          >
+            <Icon name="arrow-rotate-right" />
+          </IconButton>
         )}
       </div>
       <div className="desktop-viewport" data-scale={scale}>

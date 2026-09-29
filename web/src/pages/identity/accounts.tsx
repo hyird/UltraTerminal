@@ -1,5 +1,7 @@
+import { SearchField } from "@heroui/react";
+import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useEffect, useMemo, useState } from "react";
-import { Button, Chip, Table, toast } from "@heroui/react";
+import { Button, Chip, toast } from "@heroui/react";
 import { Page, Empty } from "../../layout/page";
 import {
   Choice,
@@ -61,6 +63,79 @@ export function AccountsPage() {
   );
   const pages = Math.max(1, Math.ceil(filtered.length / 12));
   const currentPage = Math.min(page, pages);
+  const columns: DataGridColumn<Account>[] = [
+    {
+      id: "column0",
+      header: "用户",
+      isRowHeader: true,
+      minWidth: 220,
+      cell: (item) => {
+        return (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="identity-initial">
+                {item.username.slice(0, 1).toUpperCase()}
+              </span>
+              <strong className="break-all font-medium">{item.username}</strong>
+            </div>
+          </>
+        );
+      },
+    },
+    {
+      id: "column1",
+      header: "平台角色",
+      minWidth: 120,
+      cell: (item) => {
+        return <>{item.role === "admin" ? "管理员" : "普通用户"}</>;
+      },
+    },
+    {
+      id: "column2",
+      header: "账号状态",
+      minWidth: 120,
+      cell: (item) => {
+        return (
+          <>
+            <Chip
+              size="sm"
+              variant="soft"
+              color={item.disabled ? "default" : "success"}
+            >
+              {item.disabled ? "已停用" : "正常"}
+            </Chip>
+          </>
+        );
+      },
+    },
+    {
+      id: "column3",
+      header: "双重验证",
+      minWidth: 120,
+      cell: (item) => {
+        return <>{item.totp ? "已开启" : "未开启"}</>;
+      },
+    },
+    {
+      id: "column4",
+      header: "操作",
+      minWidth: 120,
+      cell: (item) => {
+        return (
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onPress={() => setEditing(item)}
+              aria-label={`管理 ${item.username}`}
+            >
+              管理
+            </Button>
+          </>
+        );
+      },
+    },
+  ];
   return (
     <Page
       title="用户管理"
@@ -76,14 +151,20 @@ export function AccountsPage() {
       <div className="content-surface">
         <div className="list-toolbar">
           <div className="search-control">
-            <Field
-              label="搜索用户"
+            <SearchField
+              aria-label="搜索用户"
               value={search}
               onChange={(value) => {
                 setSearch(value);
                 setPage(1);
               }}
-            />
+            >
+              <SearchField.Group>
+                <SearchField.SearchIcon />
+                <SearchField.Input placeholder="搜索用户…" />
+                <SearchField.ClearButton />
+              </SearchField.Group>
+            </SearchField>
           </div>
           <Choice
             label="账号筛选"
@@ -106,62 +187,13 @@ export function AccountsPage() {
             正在加载用户…
           </div>
         ) : filtered.length ? (
-          <Table variant="secondary">
-            <Table.ScrollContainer>
-              <Table.Content aria-label="平台用户" className="min-w-[680px]">
-                <Table.Header>
-                  <Table.Column isRowHeader>用户</Table.Column>
-                  <Table.Column>平台角色</Table.Column>
-                  <Table.Column>账号状态</Table.Column>
-                  <Table.Column>双重验证</Table.Column>
-                  <Table.Column>操作</Table.Column>
-                </Table.Header>
-                <Table.Body>
-                  {filtered
-                    .slice((currentPage - 1) * 12, currentPage * 12)
-                    .map((item) => (
-                      <Table.Row key={item.id} id={item.id}>
-                        <Table.Cell>
-                          <div className="flex items-center gap-3">
-                            <span className="identity-initial">
-                              {item.username.slice(0, 1).toUpperCase()}
-                            </span>
-                            <strong className="break-all font-medium">
-                              {item.username}
-                            </strong>
-                          </div>
-                        </Table.Cell>
-                        <Table.Cell>
-                          {item.role === "admin" ? "管理员" : "普通用户"}
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Chip
-                            size="sm"
-                            variant="soft"
-                            color={item.disabled ? "default" : "success"}
-                          >
-                            {item.disabled ? "已停用" : "正常"}
-                          </Chip>
-                        </Table.Cell>
-                        <Table.Cell>
-                          {item.totp ? "已开启" : "未开启"}
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onPress={() => setEditing(item)}
-                            aria-label={`管理 ${item.username}`}
-                          >
-                            管理
-                          </Button>
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
+          <DataGrid
+            aria-label="用户列表"
+            columns={columns}
+            data={filtered.slice((currentPage - 1) * 12, currentPage * 12)}
+            getRowId={(item) => item.id}
+            contentClassName="min-w-[740px]"
+          />
         ) : (
           <Empty
             title={search ? "没有匹配的用户" : "暂无用户"}

@@ -1,5 +1,7 @@
+import { SearchField } from "@heroui/react";
+import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useMemo, useState } from "react";
-import { Button, Chip, Dropdown, Label, Table, toast } from "@heroui/react";
+import { Button, Chip, Dropdown, Label, toast } from "@heroui/react";
 import { useNavigate } from "react-router";
 import { Page, Empty } from "../../layout/page";
 import {
@@ -105,6 +107,191 @@ function DeviceList({
     : mode === "grants"
       ? "设备授权"
       : "设备清单";
+  const columns: DataGridColumn<Device>[] = [
+    {
+      id: "column0",
+      header: "设备",
+      isRowHeader: true,
+      minWidth: 220,
+      cell: (device) => {
+        return (
+          <>
+            <div className="device-name">
+              <span className="device-icon">
+                <Icon name="display" />
+              </span>
+              <div>
+                <strong>{device.name}</strong>
+                <small>Windows · {device.enrolled ? "已接入" : "待安装"}</small>
+              </div>
+            </div>
+          </>
+        );
+      },
+    },
+    {
+      id: "column1",
+      header: "状态",
+      minWidth: 120,
+      cell: (device) => {
+        return (
+          <>
+            <Chip
+              size="sm"
+              color={device.online ? "success" : "default"}
+              variant="soft"
+            >
+              {device.online ? "在线" : "离线"}
+            </Chip>
+          </>
+        );
+      },
+    },
+    {
+      id: "column2",
+      header: personal ? "我的权限" : "所有者",
+      minWidth: 120,
+      cell: (device) => {
+        return (
+          <>
+            {personal ? (
+              device.writeControl ? (
+                "远程控制"
+              ) : device.desktop ? (
+                "只读桌面"
+              ) : (
+                "设备管理"
+              )
+            ) : (
+              <span className="break-all">{device.ownerUsername ?? "—"}</span>
+            )}
+          </>
+        );
+      },
+    },
+    {
+      id: "column3",
+      header: personal ? "连接策略" : "最近在线",
+      minWidth: 120,
+      cell: (device) => {
+        return (
+          <>
+            {personal
+              ? device.requireApproval
+                ? "每次审批"
+                : "直接连接"
+              : device.online
+                ? "当前在线"
+                : device.lastSeen
+                  ? localTime(device.lastSeen)
+                  : "尚未接入"}
+          </>
+        );
+      },
+    },
+    {
+      id: "column4",
+      header: "操作",
+      minWidth: 120,
+      cell: (device) => {
+        return (
+          <>
+            <div className="flex items-center gap-1">
+              {personal && device.desktop && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isPending={desktops.connecting === device.id}
+                  isDisabled={!device.online || !!desktops.connecting}
+                  onPress={() => {
+                    if (device.requireApproval) setApproval(device);
+                    else void connect(device);
+                  }}
+                >
+                  {device.requireApproval ? "申请连接" : "连接"}
+                </Button>
+              )}
+              {mode === "grants" ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => setGrant(device)}
+                >
+                  分配权限
+                </Button>
+              ) : (
+                (device.canManage || !personal || device.manageCredentials) && (
+                  <Dropdown>
+                    <Button
+                      variant="ghost"
+                      isIconOnly
+                      size="sm"
+                      aria-label={`管理设备 ${device.name}`}
+                    >
+                      <Icon name="ellipsis" />
+                    </Button>
+                    <Dropdown.Popover>
+                      <Dropdown.Menu
+                        onAction={(key) => {
+                          if (key === "grants") setGrant(device);
+                          else if (
+                            key === "rename" ||
+                            key === "remove" ||
+                            key === "install" ||
+                            key === "credentials" ||
+                            key === "update"
+                          )
+                            setDialog({ action: key, device });
+                        }}
+                      >
+                        {(device.canManage || !personal) && (
+                          <>
+                            <Dropdown.Item id="grants" textValue="分配权限">
+                              <Label>分配权限</Label>
+                            </Dropdown.Item>
+                            <Dropdown.Item id="rename" textValue="重命名">
+                              <Label>重命名</Label>
+                            </Dropdown.Item>
+                            <Dropdown.Item id="install" textValue="安装与接入">
+                              <Label>安装与接入</Label>
+                            </Dropdown.Item>
+                            <Dropdown.Item
+                              id="update"
+                              textValue="更新 Agent"
+                              isDisabled={!device.online}
+                            >
+                              <Label>更新 Agent</Label>
+                            </Dropdown.Item>
+                          </>
+                        )}
+                        {device.manageCredentials && (
+                          <Dropdown.Item
+                            id="credentials"
+                            textValue="Windows 凭据"
+                          >
+                            <Label>Windows 凭据</Label>
+                          </Dropdown.Item>
+                        )}
+                        {(device.canManage || !personal) && (
+                          <Dropdown.Item
+                            id="remove"
+                            textValue="删除设备"
+                            variant="danger"
+                          >
+                            <Label>删除设备</Label>
+                          </Dropdown.Item>
+                        )}
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
+                )
+              )}
+            </div>
+          </>
+        );
+      },
+    },
+  ];
   return (
     <Page
       title={title}
@@ -133,14 +320,20 @@ function DeviceList({
       <div className="content-surface">
         <div className="list-toolbar">
           <div className="search-control">
-            <Field
-              label="搜索设备"
+            <SearchField
+              aria-label="搜索设备"
               value={search}
               onChange={(value) => {
                 setSearch(value);
                 setPage(1);
               }}
-            />
+            >
+              <SearchField.Group>
+                <SearchField.SearchIcon />
+                <SearchField.Input placeholder="搜索设备…" />
+                <SearchField.ClearButton />
+              </SearchField.Group>
+            </SearchField>
           </div>
           <Choice
             compact
@@ -165,187 +358,13 @@ function DeviceList({
             正在加载设备…
           </div>
         ) : filtered.length ? (
-          <Table variant="secondary">
-            <Table.ScrollContainer>
-              <Table.Content aria-label={title} className="min-w-[740px]">
-                <Table.Header>
-                  <Table.Column isRowHeader>设备</Table.Column>
-                  <Table.Column>状态</Table.Column>
-                  <Table.Column>
-                    {personal ? "我的权限" : "所有者"}
-                  </Table.Column>
-                  <Table.Column>
-                    {personal ? "连接策略" : "最近在线"}
-                  </Table.Column>
-                  <Table.Column>操作</Table.Column>
-                </Table.Header>
-                <Table.Body>
-                  {filtered
-                    .slice((currentPage - 1) * 12, currentPage * 12)
-                    .map((device) => (
-                      <Table.Row id={device.id} key={device.id}>
-                        <Table.Cell>
-                          <div className="device-name">
-                            <span className="device-icon">
-                              <Icon name="display" />
-                            </span>
-                            <div>
-                              <strong>{device.name}</strong>
-                              <small>
-                                Windows ·{" "}
-                                {device.enrolled ? "已接入" : "待安装"}
-                              </small>
-                            </div>
-                          </div>
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Chip
-                            size="sm"
-                            color={device.online ? "success" : "default"}
-                            variant="soft"
-                          >
-                            {device.online ? "在线" : "离线"}
-                          </Chip>
-                        </Table.Cell>
-                        <Table.Cell>
-                          {personal ? (
-                            device.writeControl ? (
-                              "远程控制"
-                            ) : device.desktop ? (
-                              "只读桌面"
-                            ) : (
-                              "设备管理"
-                            )
-                          ) : (
-                            <span className="break-all">
-                              {device.ownerUsername ?? "—"}
-                            </span>
-                          )}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {personal
-                            ? device.requireApproval
-                              ? "每次审批"
-                              : "直接连接"
-                            : device.online
-                              ? "当前在线"
-                              : device.lastSeen
-                                ? localTime(device.lastSeen)
-                                : "尚未接入"}
-                        </Table.Cell>
-                        <Table.Cell>
-                          <div className="flex items-center gap-1">
-                            {personal && device.desktop && (
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                isPending={desktops.connecting === device.id}
-                                isDisabled={
-                                  !device.online || !!desktops.connecting
-                                }
-                                onPress={() => {
-                                  if (device.requireApproval)
-                                    setApproval(device);
-                                  else void connect(device);
-                                }}
-                              >
-                                {device.requireApproval ? "申请连接" : "连接"}
-                              </Button>
-                            )}
-                            {mode === "grants" ? (
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onPress={() => setGrant(device)}
-                              >
-                                分配权限
-                              </Button>
-                            ) : (
-                              (device.canManage ||
-                                !personal ||
-                                device.manageCredentials) && (
-                                <Dropdown>
-                                  <Button
-                                    variant="ghost"
-                                    isIconOnly
-                                    size="sm"
-                                    aria-label={`管理设备 ${device.name}`}
-                                  >
-                                    <Icon name="ellipsis" />
-                                  </Button>
-                                  <Dropdown.Popover>
-                                    <Dropdown.Menu
-                                      onAction={(key) => {
-                                        if (key === "grants") setGrant(device);
-                                        else if (
-                                          key === "rename" ||
-                                          key === "remove" ||
-                                          key === "install" ||
-                                          key === "credentials" ||
-                                          key === "update"
-                                        )
-                                          setDialog({ action: key, device });
-                                      }}
-                                    >
-                                      {(device.canManage || !personal) && (
-                                        <>
-                                          <Dropdown.Item
-                                            id="grants"
-                                            textValue="分配权限"
-                                          >
-                                            <Label>分配权限</Label>
-                                          </Dropdown.Item>
-                                          <Dropdown.Item
-                                            id="rename"
-                                            textValue="重命名"
-                                          >
-                                            <Label>重命名</Label>
-                                          </Dropdown.Item>
-                                          <Dropdown.Item
-                                            id="install"
-                                            textValue="安装与接入"
-                                          >
-                                            <Label>安装与接入</Label>
-                                          </Dropdown.Item>
-                                          <Dropdown.Item
-                                            id="update"
-                                            textValue="更新 Agent"
-                                            isDisabled={!device.online}
-                                          >
-                                            <Label>更新 Agent</Label>
-                                          </Dropdown.Item>
-                                        </>
-                                      )}
-                                      {device.manageCredentials && (
-                                        <Dropdown.Item
-                                          id="credentials"
-                                          textValue="Windows 凭据"
-                                        >
-                                          <Label>Windows 凭据</Label>
-                                        </Dropdown.Item>
-                                      )}
-                                      {(device.canManage || !personal) && (
-                                        <Dropdown.Item
-                                          id="remove"
-                                          textValue="删除设备"
-                                          variant="danger"
-                                        >
-                                          <Label>删除设备</Label>
-                                        </Dropdown.Item>
-                                      )}
-                                    </Dropdown.Menu>
-                                  </Dropdown.Popover>
-                                </Dropdown>
-                              )
-                            )}
-                          </div>
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
-                </Table.Body>
-              </Table.Content>
-            </Table.ScrollContainer>
-          </Table>
+          <DataGrid
+            aria-label="设备列表"
+            columns={columns}
+            data={filtered.slice((currentPage - 1) * 12, currentPage * 12)}
+            getRowId={(item) => item.id}
+            contentClassName="min-w-[740px]"
+          />
         ) : (
           <Empty
             title={

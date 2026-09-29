@@ -40,8 +40,8 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 | 网关与平台 Web 框架 | C++23、Ruvia（`ruvia::web`）、CMake、vcpkg |
 | Agent 运行时与网络客户端 | Ruvia core、原生加密 UDP/TCP Transport、静态密码学依赖 |
 | 网关 HTTP / WebSocket | Ruvia 公开接口；HTTP/WS 回源，TLS 在外部边缘终止 |
-| 前端 | 已移除，待重新设计与实现 |
-| 浏览器桌面显示 | 待新前端重新实现，沿用现有视频协议 |
+| 前端 | HeroUI Pro Dashboard Template 1.0.13、React、TypeScript、Tailwind、Bun |
+| 浏览器桌面显示 | 独立会话对象、画布与输入控制，沿用现有视频协议 |
 | 桌面采集与输入 | DXGI Desktop Duplication、Win32 |
 | 视频编码 | Media Foundation 硬编、x264 软编 |
 | 无损矩形 | libpng、zlib，Raw/RLE 补充 |
@@ -195,7 +195,7 @@ Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI 
 
 ### 前端业务与导航
 
-前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。页面采用统一侧栏、顶部上下文、页面标题与内容容器，支持窄屏菜单；菜单只出现已实现且当前角色可用的业务。
+前端使用 React、TypeScript、Tailwind CSS 与 HeroUI Pro，依赖安装与构建使用 Bun 和提交的 `bun.lock`。业务组织参考 [JumpServer 资产授权](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/) 与 [Next Terminal 授权](https://www.next-terminal.com/zh/docs/usage/authorization.html) 的身份、资产、授权和访问工作台划分。视觉与组件组合基于用户提供的 HeroUI Pro Dashboard Template 1.0.13 源码，保留模板侧栏、顶栏、默认主题、KPI 和 DataGrid；Next.js 路由适配为现有 Hash 路由与静态构建。菜单平铺，只出现已实现且当前角色可用的业务，支持移动侧栏。概览只统计当前账号实际可见的设备、实时在线状态、当前浏览器会话和连接申请。
 
 - **工作台**：我的设备只显示本人拥有或获授权的设备；连接申请显示本人申请及审批结果。获得一次性批准后再进入桌面，客户端不自动提交新审批或接管他人会话。活动桌面独立显示，切换页面不销毁连接，离开可见区域暂停显示反馈。
 - **管理控制台**：设备清单负责添加、安装、重命名、升级和删除；设备授权负责向用户分配桌面查看、键鼠控制、系统重启和凭据管理权限，并选择直接连接或每次审批；用户管理负责创建、角色、停用与密码重置；平台设置负责 Bot 配置。管理员角色允许管理跨所有者设备，不自动授予远程控制权限。

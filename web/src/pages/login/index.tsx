@@ -31,7 +31,7 @@ export function LoginPage() {
       setPassword("");
       setCode("");
       auth.accept(user);
-      navigate("/workbench/devices", { replace: true });
+      navigate("/overview", { replace: true });
     } catch (reason) {
       if (reason instanceof ApiError && reason.code === "factor_required") {
         setStep("totp");

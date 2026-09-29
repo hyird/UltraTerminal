@@ -10,10 +10,9 @@ import {
   Select,
   Switch,
   TextField,
-  Tooltip,
 } from "@heroui/react";
 import type { ReactNode } from "react";
-import { Icon } from "./icon";
+
 export function Field({
   label,
   value,
@@ -217,32 +216,6 @@ export function FormActions({
         {label}
       </Button>
     </div>
-  );
-}
-export function IconButton({
-  label,
-  icon,
-  onPress,
-  disabled = false,
-}: {
-  label: string;
-  icon: string;
-  onPress: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <Tooltip>
-      <Button
-        isIconOnly
-        variant="ghost"
-        aria-label={label}
-        onPress={onPress}
-        isDisabled={disabled}
-      >
-        <Icon name={icon} />
-      </Button>
-      <Tooltip.Content>{label}</Tooltip.Content>
-    </Tooltip>
   );
 }
 export function failureText(error: unknown): string {
