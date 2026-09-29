@@ -177,7 +177,11 @@ export function Dialog({
       isDismissable={!busy}
       isKeyboardDismissDisabled={busy}
     >
-      <Modal.Container size={wide ? "lg" : "sm"}>
+      <Modal.Container
+        size={wide ? "lg" : "sm"}
+        placement="center"
+        scroll="inside"
+      >
         <Modal.Dialog>
           <Modal.CloseTrigger isDisabled={busy} />
           <Modal.Header>
