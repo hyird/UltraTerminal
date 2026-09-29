@@ -40,8 +40,8 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 | 网关与平台 Web 框架 | C++23、Ruvia（`ruvia::web`）、CMake、vcpkg |
 | Agent 运行时与网络客户端 | Ruvia core、原生加密 UDP/TCP Transport、静态密码学依赖 |
 | 网关 HTTP / WebSocket | Ruvia 公开接口；HTTP/WS 回源，TLS 在外部边缘终止 |
-| 前端 | React、TypeScript、Tailwind CSS、Ant Design、Vite |
-| 原生桌面显示 | WebCodecs、Canvas |
+| 前端 | 已移除，待重新设计与实现 |
+| 浏览器桌面显示 | 待新前端重新实现，沿用现有视频协议 |
 | 桌面采集与输入 | DXGI Desktop Duplication、Win32 |
 | 视频编码 | Media Foundation 硬编、x264 软编 |
 | 无损矩形 | libpng、zlib，Raw/RLE 补充 |
@@ -193,32 +193,13 @@ Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI 
 - 支持核显加速与 CPU 编码；软件编码不能代替图形设备与桌面采集能力，采集不可用时明确报告。
 - CDN、外部反向代理与网关属于信任边界，Web TLS 在外部代理终止，网关不再加载 Web 证书；SSH 客户端位于网关，平台可读取会话内容，不承诺端到端保密。
 
-### 前端模板
+### 前端重建状态
 
-前端直接裁剪自 condorheroblog/react-antd-admin（b4978f50e40ea0db835afbca915de44a25273e24），沿用原工程 src 结构、布局、主题和登录页面。导航参考 Next Terminal 的用户/管理布局及 JumpServer 的工作台/控制台分离：工作台只显示我的设备；管理员通过顶部工作区选择器进入管理控制台，侧栏显示设备授权、用户管理、系统设置。个人安全设置位于右上角账户菜单。每项使用独立路由；菜单由已授权路由和当前工作区共同决定，直接访问管理路径仍受角色守卫及服务端授权约束。统一复用“我的设备”的工作区标签、外层卡片容器和标题栏。登录首屏仅用户名/密码，服务端返回 factor_required 后展示独立 TOTP 步骤，恢复码通过单独恢复入口提交，未完成第二因素不创建登录会话。业务包含真实登录、账号与安全、设备授权、远控与 Windows 凭据；移除演示路由、Mock 和对应依赖。登录使用服务端 HttpOnly Cookie，模板不存储认证 token；远控工作区沿用模板标签栏，支持同时打开多台设备；每台设备只保留一个标签，重复连接切换到已有标签。每个标签独立持有通道、重连与重启操作状态，切换设备视图不销毁会话。后台标签通过现有显示反馈暂停画面更新并释放已按下的输入，保留通道与存活探测；重连不会抢占当前标签。关闭标签仅清理对应会话，退出页面清理全部会话；全屏保留标签切换。MIT 许可随静态产物发布。
+旧前端及其模板、导航、页面、会话客户端、依赖和浏览器测试已整体移除。当前仓库只提供 Agent、服务端和共享协议；本章前面的浏览器行为描述用于保留客户端协议与安全契约，不代表存在可用的前端实现。
 
-导航与身份交互参考：
+新前端设计另行确定。接入时须重新验证分步登录、管理员与普通用户权限隔离、设备授权、TOTP、Telegram 绑定及审批、桌面连接与撤权。客户端继续使用 HttpOnly Cookie、Origin 校验、一次性通道票据和现有 Protobuf 消息，服务端独立执行授权。
 
-- [Next Terminal 用户/管理入口](https://github.com/next-terminal/next-terminal/blob/48c445bb4151e126592ade6dedf9d6f29df5dfe5/src/layout/RedirectPage.tsx)、[菜单](https://github.com/next-terminal/next-terminal/blob/48c445bb4151e126592ade6dedf9d6f29df5dfe5/src/layout/menus.tsx)、[分步登录](https://github.com/next-terminal/next-terminal/blob/48c445bb4151e126592ade6dedf9d6f29df5dfe5/src/pages/account/LoginPage.tsx)。只参考公开前端的交互组织；其 v2 起后端不再开源。
-- [JumpServer 控制台路由](https://github.com/jumpserver/lina/blob/98619c2112de7436a4a5167ba7801916ee3ceec5/src/router/console/index.js)、[工作台路由](https://github.com/jumpserver/lina/blob/98619c2112de7436a4a5167ba7801916ee3ceec5/src/router/workbench/index.js)、[资产授权说明](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/)。借鉴用户、资产、操作权限的职责划分；当前仅提供已经实现的设备授权能力，不添加空的审计、组织或策略菜单。
-
-
-
-### 前端桌面像素显示
-
-- 按用户最新要求，前端以远端原始分辨率显示：一个源像素对应一个屏幕物理像素（CSS 尺寸除以 devicePixelRatio，抵消系统 DPI 与浏览器页面缩放；DPI 变化时重新布局），不进行窗口适配、画布重采样或自动修改远端分辨率。超出窗口的部分在桌面视口内滚动查看；小于视口时居中，不拉伸。
-- 画质档位只调整编码策略与码率预算，不改变前端显示比例。分辨率由具有控制权限的用户在“远程分辨率”菜单独立选择。
-- 输入和光标按源尺寸及画布边界定位，滚动后仍映射原始桌面坐标。每个解码帧绘制后立即释放，不保留静态帧副本。
-
-
-### 实时视频码率
-
-- 远控工具栏按约1秒实际接收的有效视频负载字节计算bits/s，自动显示kbps/Mbps；不含协议开销，不将配置目标或上限伪装为实测码率。
-- 接收视频触发统计窗口，静止后发布一次0值并停止计时，恢复视频后重新采样；断开取消计时，新会话显示待采样。React最多每秒更新一次指标，不逐帧更新。
-
-### 远控布局与弱网输入
-
-远控标签与设备列表共用主布局，不自动隐藏页头或侧栏；仅显式全屏时全屏显示工作区。输入在正常链路随下一次显示帧发送鼠标位置；输入通道 bufferedAmount 超过 2 KiB 时才使用 16 ms 的位置合并窗口，按键、鼠标按钮、滚轮始终先立即刷新当前位置再发送。保留可靠事件顺序、1 秒过期上限及恢复安全检查，不通过放宽断线超时隐藏积压。浏览器断线诊断只记录会话 ID、原因、通道编号、关闭码与队列计数，不记录凭据或输入内容。
+网关静态文件能力继续用于分发 Agent MSI、更新清单和对应源码。移除页面不能删除已发布安装包所需的源码资源或改变设备身份。
 
 ### 安全注意序列
 

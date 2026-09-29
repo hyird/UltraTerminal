@@ -23,7 +23,7 @@
 - C/C++ 依赖统一使用 vcpkg manifest 并固定 `builtin-baseline`，使用 CMake Presets；不得依赖本机临时安装的库。
 - Windows Agent 使用 `x64-windows-static` 和 `/MT`，第三方库与 CRT 静态链接；不要求额外第三方 DLL、VC++ Redistributable、.NET、SSH/VNC 服务或媒体扩展。
 - 基础系统 API 与现有驱动正常使用；可选媒体组件动态探测，缺失时不得阻止程序启动，编码回退到内嵌软件实现。
-- 前端直接以 condorheroblog/react-antd-admin 原仓库为基础裁剪并接入业务，保留模板的布局、主题、登录和路由体系；不另建仿模板实现。删除无用页面、组件、Mock 及对应依赖，按已实现能力提供入口。前端视觉与组织方式以模板为准。
+- 旧前端已整体移除，当前处于重做准备阶段；新前端设计另行确定，不沿用旧模板、页面和导航作为实现约束。重建前不创建占位页面、空目录或前端构建任务。
 - 前端提交 `package-lock.json`，安装使用 `npm ci`；Node.js 仅用于开发与构建。
 - Agent 只操作本机，SSH/VNC 必须内嵌；禁止连接独立 sshd/VNC Server、开放公网 SSH/VNC 端口或实现内网跳板。
 - 浏览器 ↔ Server 必须支持经 CDN 的 HTTPS/WSS 443；Agent ↔ Server 使用独立的原生 UDP/TCP 入口，不经过 CDN 的 HTTP 代理，不建立浏览器直连 Agent 的 P2P 路径。使用成熟加密传输库，不重复手写协议与密码学，不保留 Agent HTTP/WSS 入口或传输切换开关。
@@ -49,18 +49,7 @@ protocol/                      # 两端共用的无 I/O 契约 target
   schemas/                     # 唯一 .proto 来源
   include/ultraterimal/protocol/ # 手写公开契约头
   src/                         # 必要的无 I/O 契约实现
-web/
-  src/                        # 沿用 react-antd-admin 原工程结构
-    pages/                    # 登录、设备业务及必要错误页面
-    layout/                   # 模板布局、导航与工作区
-    router/                   # 模板路由与真实会话鉴权
-    store/                    # 模板状态；不保存认证凭据
-    sessions/                 # 远控会话、解码与输入
-    components/               # 实际复用的模板组件
-    styles/                   # 模板主题与业务功能样式
-    generated/                # 协议生成产物，不提交
-  public/                     # 静态资源与第三方许可
-tests/                       # 按 agent、server、protocol、web 归档
+tests/                       # 按 agent、server、protocol 归档
 ports/                       # vcpkg overlay ports 与构建适配
 build/                       # C++ 构建、生成代码与临时验证产物
 .github/workflows/            # CI

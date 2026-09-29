@@ -14,33 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  web:
-    name: Frontend
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v7.0.0
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install dependencies
-        run: |
-          npm ci --prefix web
-      - name: Format, types and production build
-        run: |
-          npm run format:check --prefix web
-          npm run build --prefix web
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: web-${{ github.sha }}
-          path: build/web/
-          if-no-files-found: error
-          retention-days: 14
-
   windows:
     name: Windows Agent and MSI
     runs-on: windows-2022

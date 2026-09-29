@@ -1,5 +1,0 @@
-Based directly on condorheroblog/react-antd-admin
-Upstream commit b4978f50e40ea0db835afbca915de44a25273e24
-MIT Copyright (c) 2023-PRESENT CondorHero
-Original layout, theme, sidebar, header, login composition and supporting modules retained and trimmed.
-Real Ultraterimal cookie authentication, device management and desktop sessions integrated.

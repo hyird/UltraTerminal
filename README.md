@@ -4,17 +4,16 @@
 
 ## 持续集成
 
-GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行三项检查：
+GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行两项检查：
 
-- Frontend：Node.js 24、`npm ci`、格式检查、类型检查、生产构建。
 - Windows Agent：Windows Server 2022 / MSVC、`windows-agent-release` Preset、静态链接构建、功能单元测试和 MSI 打包。
 - Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及功能单元测试。
 
-vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存前端、Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
+vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存 Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
-浏览器远程桌面平台。Windows Agent 与网关使用 C++23，前端使用 React、TypeScript、Tailwind CSS 和 Ant Design，数据库为 MariaDB。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
+浏览器远程桌面平台。Windows Agent 与网关使用 C++23，数据库为 MariaDB。旧前端已整体移除，当前处于重做准备阶段，仓库不再提供登录、管理或远控页面。账号、设备授权、TOTP、Telegram、远控协议与 Agent 安装更新接口继续保留。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
@@ -65,13 +64,7 @@ ctest --preset linux-server-release
 
 Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glibc 与 C++ 标准库需兼容构建环境；数据库可使用MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
 
-```powershell
-npm ci --prefix web
-npm run build --prefix web
-npm run format:check --prefix web
-```
-
-前端输出固定为 `build/web/`，部署后不需要 Node.js。协议从 `protocol/schemas/session.proto` 生成，不手改或提交生成目录。当前前端含系统重启管理 API，发布时须与实现这些路由并完成相应迁移的同版网关配套；旧网关 `20260924-packet-tolerance` 不提供 `/api/devices/restart-permission` 等接口，不能单独用本地 `build/web/` 覆盖其前端。
+前端源码、依赖清单、浏览器测试和构建任务已移除，重建前无需安装 Node.js 依赖。后续客户端继续以 `protocol/schemas/session.proto` 和现有服务端 API 为契约。
 
 ## 网关配置
 
@@ -86,7 +79,7 @@ npm run format:check --prefix web
 | `database` | MariaDB 对象：`host`、`port`、`username`、`password`、`database`；可选 `socket`、`tls_ca` |
 | `security_key_file` | 启动服务必填：64 个小写十六进制字符的随机 256 位密钥文件，用于加密 TOTP 和 Bot 凭据；Linux 权限须为 `0600`，Windows ACL 仅允许管理员和服务账户 |
 | `origin` | 浏览器 HTTPS 来源，含非默认端口，不含路径 |
-| `web_root` | 可选静态目录，指向 `build/web/` |
+| `web_root` | 可选静态资源目录；保留 `windows-agent.json` 和 `assets/` 中的 Agent 安装包及对应源码。当前仓库不生成前端页面 |
 
 `gateway --migrate <config.json>` 执行版本化迁移。`gateway --bootstrap <config.json>` 从标准输入读取 `username`、`password` JSON，仅用于创建首个用户；密码至少 12 字节，不放入命令行。`gateway --serve <config.json>` 启动 Web 与原生入口。同一数据库只运行一个网关，数据库锁失效时停止服务。
 
@@ -125,7 +118,7 @@ Agent 1.0.8 起，桌面工作进程及 Agent 服务进程的桌面桥接异常�
 Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='UltraterimalDesktop'] and EventID=1001]]" -MaxEvents 10 | ForEach-Object { [pscustomobject]@{Time=$_.TimeCreated; Detail=($_.Properties.Value -join ' | ')} }
 ```
 
-平台“添加设备”先保存设备名称，创建状态为“待安装”的设备记录。通过该设备的“管理 → 安装命令”选择 Windows x64，复制 `powershell -NoProfile -c "irm '安装地址' | iex"` 形式的一行命令。Linux/macOS 暂未支持。管理员 PowerShell 执行后自动下载、校验并安装 MSI，再绑定到已创建的设备 ID；无需另外填写注册码。安装地址包含十分钟有效的一次性安装凭据，重新复制会使该设备旧的未使用命令失效，长期 token 不进入命令。安装响应禁止缓存；网关与反向代理/CDN 日志必须隐藏 `/api/install.ps1` 的查询参数。已绑定设备的命令仅修复或升级原电脑，不重新签发 token。
+设备管理 API 先保存设备名称，创建状态为“待安装”的设备记录，再为该设备签发 Windows x64 的一次性安装命令。旧页面入口已移除，新前端需重新接入这些接口。Linux/macOS 暂未支持。管理员 PowerShell 执行后自动下载、校验并安装 MSI，再绑定到已创建的设备 ID；无需另外填写注册码。安装地址包含十分钟有效的一次性安装凭据，重新复制会使该设备旧的未使用命令失效，长期 token 不进入命令。安装响应禁止缓存；网关与反向代理/CDN 日志必须隐藏 `/api/install.ps1` 的查询参数。已绑定设备的命令仅修复或升级原电脑，不重新签发 token。
 
 手动运行 MSI 后，也可通过交互式注册执行：
 
@@ -165,9 +158,9 @@ Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='Ultrate
 
 ## Windows 系统重启
 
-设备注册者具备桌面及键鼠控制权限即可重启，无需另行授权。仅在线且支持该能力的 LocalSystem Agent 接收请求。控制端点击“重启设备”仅弹一次确认，确认后立即提交，无设备名称输入及倒计时；按钮保持原文案与状态，结果通过 toast 提示；Agent 持久记录操作 ID 后，调用 Windows 普通、非强制关闭应用的重启 API。Server 返回 `requested` 表示已受理并入队，`agent_accepted` 仅表示 Windows 接受请求，**都不证明系统已重启**。断连、时钟变化及 Agent 重新上线不自动宣称完成，也不得自动产生新 ID 再试。
+服务端校验桌面、键鼠控制和系统重启权限；所有者默认拥有这些权限。仅在线且支持该能力的 LocalSystem Agent 接收请求。Agent 持久记录操作 ID 后，调用 Windows 普通、非强制关闭应用的重启 API。Server 返回 `requested` 表示已受理并入队，`agent_accepted` 仅表示 Windows 接受请求，**都不证明系统已重启**。断连、时钟变化及 Agent 重新上线不自动宣称完成，也不得自动产生新 ID 再试。
 
-重启为单次直接操作：不显示人工结案、查询状态或冷却流程，历史结果不阻止再次点击。相同幂等键仍返回原记录；响应丢失后的当前页面重试沿用原键，成功提交后下一次明确点击使用新键。迁移 `006_restart_direct.sql` 移除设备级未结案唯一索引，历史审计记录保持不变。升级需备份数据库并成套部署网关和前端；旧 `/restart/current` 与 `/restart/:id/resolve` 流程接口在此版本移除，旧页面须刷新。回滚二进制无需反向修改数据库，旧版会恢复其应用层流程限制。
+重启为单次操作，历史结果不阻止新的已授权请求。相同幂等键仍返回原记录；响应丢失后的当前页面重试沿用原键，成功提交后下一次明确点击使用新键。迁移 `006_restart_direct.sql` 移除设备级未结案唯一索引，历史审计记录保持不变。升级需备份数据库并成套部署网关和前端；旧 `/restart/current` 与 `/restart/:id/resolve` 流程接口在此版本移除，旧页面须刷新。回滚二进制无需反向修改数据库，旧版会恢复其应用层流程限制。
 
 ## 验证
 
@@ -178,14 +171,8 @@ ctest --preset windows-agent-release -L unit --no-tests=error
 ctest --preset linux-server-release -L unit --no-tests=error
 ```
 
-真实桌面、锁屏、UAC、输入注入、服务安装和公网弱网行为在专用设备人工验收。现有原生桌面探针及独立浏览器回归工具仅用于本地诊断，不在 CI 中运行。
+真实桌面、锁屏、UAC、输入注入、服务安装和公网弱网行为在专用设备人工验收。现有原生桌面探针仅用于本地诊断，不在 CI 中运行；旧浏览器回归工具随前端移除，新前端完成后需重新建立端到端验收。
 单显示器测试机可显式运行 `build/windows-agent/tests/agent/Release/agent-video-runtime-tests.exe --resize`：连续切换六次真实分辨率，在同一协议通道校验尺寸、递增画面基准和独立关键帧解码，再在模式切换后验证关闭响应。测试正常退出或抛出异常时恢复原分辨率（强制终止进程不保证恢复）；不在 CI 中执行。
-
-软件视频互操作测试使用合成色条：
-
-```powershell
-node tests/web/software_video.cjs build/windows-agent/tests/agent/Release/agent-software-video-tests.exe build/video-fixtures "<browser.exe>"
-```
 
 Agent 1.0.15 起，网关 `agent_log event=DESKTOP_FAILED` 同时记录 `fault_stage`、`fault_code`、`windows_session`、`worker_pid`。例如 `CAPTURE_ENCODE / DISPLAY_UNAVAILABLE` 表示目标桌面没有可采集输出，`WORKER_READY_WAIT / STARTUP_TIMEOUT` 表示工作进程未在启动期限内产生首帧。结合 `device_id`、`session_id` 和 `runtime_id/event_sequence` 关联，不再把后续管道关闭作为采集根因；旧 Agent 无详情时显示 `none`。详情只含固定枚举与数字，不上传本机异常原文。先升级网关再升级 Agent；无需数据库迁移或前端升级。
 
@@ -205,7 +192,7 @@ Agent 1.0.10 起，每个成功的视频帧携带颜色转换与编码的实际�
 
 ### 设备管理
 
-设备列表最右侧的“管理”菜单按顺序提供凭据、重命名和删除，其中重命名和删除，仅设备注册者可操作。改名同步更新远控标签且不改变设备 ID 或 token。删除经一次确认后撤销设备、关闭远控会话并让原 token 失效；保留历史审计，重新接入需重新注册。
+设备管理接口提供凭据设置、重命名和删除；重命名和删除仅设备所有者可操作。改名不改变设备 ID 或 token。删除撤销设备、关闭远控会话并让原 token 失效；保留历史审计，重新接入需重新注册。
 
 每台设备注册时生成独立随机 token，数据库仅保存具有唯一约束的哈希，Agent 安全保存原凭据；一次性注册码只用于换取该设备凭据，不作为多台设备共享 token。
 
@@ -221,26 +208,26 @@ Agent 结构化事件通过已鉴权的原生控制通道上传，Gateway 输出
 
 ### 安全登录快捷键（Agent 1.0.6）
 
-远控工具栏的快捷键仅显示组合键。`Ctrl+Alt+Del` 使用独立的 `SECURE_ATTENTION` 输入事件，经服务端控制权限、桌面工作进程的画面代次和存活校验后，由 Session 0 服务调用系统 `SendSAS`，不模拟普通按键，不依赖 RDP。服务仅操作当前控制台会话，每个连接两秒内最多调用一次；返回错误码给浏览器，失败不关闭远控。
+`Ctrl+Alt+Del` 使用独立的 `SECURE_ATTENTION` 输入事件，经服务端控制权限、桌面工作进程的画面代次和存活校验后，由 Session 0 服务调用系统 `SendSAS`，不模拟普通按键，不依赖 RDP。服务仅操作当前控制台会话，每个连接两秒内最多调用一次；返回错误码给浏览器，失败不关闭远控。
 
 首次使用时，如果 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\SoftwareSASGeneration` 尚未配置，服务设置为 `1`（仅允许服务）。已有策略保持原值；`0` 或 `2` 会明确提示策略禁止。该机器级设置不会在卸载时删除，以免覆盖管理员后续策略。调用成功只表示已派发，实际界面变化需端到端验证。
 
-部署时先升级 Gateway，再更新 Agent 至 1.0.6，刷新前端并重建远控会话；旧 Agent 不支持该输入事件。后台“更新 Agent”通过独立原生连接获取 MSI，验证 SHA-256 后安装，保留设备凭据；安装失败由 MSI 事务回滚，结果上报后台日志。前端生产构建只输出包含样式、脚本和许可文本的 `index.html`；安装包和更新清单仍作为独立部署资源保留。
+部署时先升级 Gateway，再更新 Agent 至 1.0.6，刷新前端并重建远控会话；旧 Agent 不支持该输入事件。后台“更新 Agent”通过独立原生连接获取 MSI，验证 SHA-256 后安装，保留设备凭据；安装失败由 MSI 事务回滚，结果上报后台日志。安装包、对应源码和更新清单作为独立部署资源保留。
 
 ### 画面显示与分辨率保存
 
-工具栏提供“原始大小”和“适应窗口”，默认适应窗口。原始大小抵消浏览器 DPI 缩放，让远端一像素对应本地一个物理像素；适应窗口按横纵两个方向独立拉伸，铺满可用区域，不保持宽高比、不留边；窗口或全屏尺寸变化时重新适配。每个远控标签独立选择，重连保留当前选择。
+旧前端的画面布局与缩放实现已移除，后续客户端需重新实现显示、输入坐标映射和分辨率设置交互。
 
 Agent 1.0.7 起，远程分辨率通过 Windows `CDS_UPDATEREGISTRY | CDS_GLOBAL` 保存为机器显示配置。再次选择当前分辨率也会写入配置，断开远控不还原；后续系统显示设置、显卡驱动或显示器拓扑变化仍可能覆盖该值。
 
 ## 平台账号、设备共享与双重验证
 
-- 在管理控制台的“用户管理”创建账号、修改角色、禁用账号或重置密码；这些操作要求管理员重新验证自己的密码和验证码。平台保留至少一个可用管理员，密码重置不绕过已绑定的 TOTP。
-- 设备创建者为所有者。所有者在“管理 → 设备授权”按平台用户名共享设备，分别配置桌面查看、控制、系统重启、Windows 凭据管理，以及直接连接或每次审批。管理员在独立的“设备授权”页面查看全部有效设备并向普通用户分配或撤销授权；操作记录管理员和目标用户，撤权即时断开失效会话。管理员查看机器清单不会自动获得桌面控制权，所有者身份和审批接收人不变。
-- 在右上角账户菜单的“个人安全设置”绑定 Google 验证器：扫描二维码后输入验证码确认。登录首屏只填写用户名和密码；密码正确且已开启双重验证时进入独立验证码步骤，只有完成第二因素验证才签发登录 Cookie。“无法使用验证器”入口可使用一次性恢复码恢复访问，仍需要正确密码。恢复码只显示一次；重新生成后旧码失效。修改密码、启用/关闭 TOTP、重新生成恢复码会撤销其他登录。
+- 管理员通过身份管理 API 创建账号、修改角色、禁用账号或重置密码；这些操作要求管理员重新验证自己的密码和验证码。平台保留至少一个可用管理员，密码重置不绕过已绑定的 TOTP。
+- 设备创建者为所有者。所有者通过授权 API 按平台用户名共享设备，分别配置桌面查看、控制、系统重启、Windows 凭据管理，以及直接连接或每次审批。管理员通过管理接口查看全部有效设备并向普通用户分配或撤销授权；操作记录管理员和目标用户，撤权即时断开失效会话。管理员查看机器清单不会自动获得桌面控制权，所有者身份和审批接收人不变。
+- 身份 API 支持 Google 验证器绑定及验证码确认。密码正确且已开启双重验证时，登录接口返回 `factor_required`，只有完成第二因素验证才签发登录 Cookie。一次性恢复码可以替代动态验证码，仍需要正确密码。恢复码只显示一次；重新生成后旧码失效。修改密码、启用/关闭 TOTP、重新生成恢复码会撤销其他登录。
 - 验证码为 RFC 6238 的 SHA-1 / 6 位 / 30 秒，接受前后一个时间步并拒绝重用。服务器与手机应保持时间同步；连续 5 次验证失败后冷却 5 分钟。
-- Telegram：管理员先通过 @BotFather 创建 Bot，在管理控制台的“系统设置”录入 Token。平台验证 Bot 并设置同源 `/api/telegram/webhook` HTTPS 回调；反向代理须保留 `X-Telegram-Bot-Api-Secret-Token` 请求头，日志不得记录请求体或该请求头。无需开放 Agent HTTP 入口。
-- 每位用户在自己的安全设置生成有效期 10 分钟的一次性绑定链接，并在 Bot 私聊点击 Start。申请人及设备所有者都必须绑定，才能使用审批连接；审批只发给设备所有者，5 分钟有效、一次使用。解绑、停用 Bot、改授权或退出申请人的登录会使未使用的审批失效；重新连接需要重新审批。
+- Telegram：管理员先通过 @BotFather 创建 Bot，通过 Telegram 配置 API 录入 Token。平台验证 Bot 并设置同源 `/api/telegram/webhook` HTTPS 回调；反向代理须保留 `X-Telegram-Bot-Api-Secret-Token` 请求头，日志不得记录请求体或该请求头。无需开放 Agent HTTP 入口。
+- 每位用户通过自己的已认证会话生成有效期 10 分钟的一次性绑定链接，并在 Bot 私聊点击 Start。申请人及设备所有者都必须绑定，才能使用审批连接；审批只发给设备所有者，5 分钟有效、一次使用。解绑、停用 Bot、改授权或退出申请人的登录会使未使用的审批失效；重新连接需要重新审批。
 - Bot Token 只写入，不向页面回显；Token、回调密钥及 TOTP 密钥以 OpenSSL AES-256-GCM 加密保存，恢复码和登录票据只保存散列。加密密钥须在数据库外备份，不能随发布轮换或丢失。
 - 设备、绑定和审批通过 `/api/events` WSS 推送状态，禁止通过定时 GET 刷新。退出登录、禁用用户和改授权会终止失效的远控，运行中的会话仍保留周期性鉴权作为兜底。
 
