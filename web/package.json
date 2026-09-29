@@ -13,7 +13,7 @@
     "protocol": "bun -e \"require('node:fs').mkdirSync('src/generated', {recursive:true})\" && pbjs -t static-module -w es6 -o src/generated/session.js ../protocol/schemas/session.proto && pbts -o src/generated/session.d.ts src/generated/session.js",
     "typecheck": "bun run protocol && tsc --noEmit",
     "build": "bun run typecheck && vite build",
-    "test": "bun test ../tests/web",
+    "test": "bun run protocol && bun test ../tests/web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dev": "vite --host 127.0.0.1"
