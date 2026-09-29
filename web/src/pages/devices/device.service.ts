@@ -90,6 +90,7 @@ function parseDevice(entry: unknown): Device {
   return {
     id: text(item.id),
     name: text(item.name),
+    agentVersion: item.agent_version == null ? null : text(item.agent_version),
     online: item.online === true,
     canManage: item.can_manage === true,
     enrolled: item.enrolled === true,

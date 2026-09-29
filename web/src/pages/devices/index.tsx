@@ -141,7 +141,14 @@ function DeviceList({
               </span>
               <div>
                 <strong>{device.name}</strong>
-                <small>Windows · {device.enrolled ? "已接入" : "待安装"}</small>
+                <small>
+                  Windows · {device.enrolled ? "已接入" : "待安装"}
+                  {device.agentVersion
+                    ? ` · Agent ${device.agentVersion}`
+                    : device.enrolled
+                      ? " · Agent 版本未知"
+                      : ""}
+                </small>
               </div>
             </div>
           </>

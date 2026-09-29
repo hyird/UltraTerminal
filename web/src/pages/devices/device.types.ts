@@ -1,6 +1,7 @@
 export interface Device {
   id: string;
   name: string;
+  agentVersion: string | null;
   online: boolean;
   canManage: boolean;
   enrolled: boolean;

@@ -244,7 +244,7 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::devices(ruvia::Context& conte
     for (const auto& device : devices) {
         const auto& connections = context.workerState<ServerRuntime>().controlConnections;
         const auto connection = connections.find(device.id);
-        boost::json::object item{{"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"online", connection != connections.end() && connection->second->ready}};
+        boost::json::object item{{"agent_version", connection != connections.end() && connection->second->ready ? boost::json::value(connection->second->agentVersion) : boost::json::value(nullptr)}, {"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"online", connection != connections.end() && connection->second->ready}};
         item["last_seen"] = device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr);
         response.push_back(std::move(item));
     }
