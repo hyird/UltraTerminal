@@ -25,9 +25,9 @@ namespace ultraterimal::agent {
 namespace {
 class Bridge {
   public:
-    Bridge(ruvia::EventLoop loop, DesktopTransport& remote, NamedPipeTransport& pipe,
+    Bridge(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopTransport& remote, NamedPipeTransport& pipe,
            std::string session, std::uint32_t windowsSession, bool writeControl)
-        : loop_(loop), windowsSession_(windowsSession), remote_(remote), pipe_(pipe), deadline_(loop.executor()), control_(loop.handle(), 32, 2 * 1024 * 1024), video_(loop.handle(), 32, 32 * 1024 * 1024), session_(std::move(session)),
+        : loop_(loop), windowsSession_(windowsSession), systemPool_(systemPool), remote_(remote), pipe_(pipe), deadline_(loop.executor()), control_(loop.handle(), 32, 2 * 1024 * 1024), video_(loop.handle(), 32, 32 * 1024 * 1024), session_(std::move(session)),
           incoming_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kDesktop}),
           outgoing_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kService}) {}
     ~Bridge() {
@@ -196,7 +196,7 @@ class Bridge {
     bool stopped_ = false;
     ruvia::EventLoop loop_;
     std::uint32_t windowsSession_;
-    ruvia::BlockingPool systemPool_{{.threadCount = 1, .queueCapacity = 1}};
+    ruvia::BlockingPool& systemPool_;
     std::chrono::steady_clock::time_point nextSecureAttention_{};
     DesktopTransport& remote_;
     NamedPipeTransport& pipe_;
@@ -209,10 +209,10 @@ class Bridge {
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 } // namespace
-asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::EventLoop loop, DesktopTransport& remote,
+asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopTransport& remote,
                                               NamedPipeTransport& pipe, std::string sessionId, std::uint32_t windowsSession,
                                               std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract) {
-    Bridge bridge(std::move(loop), remote, pipe, std::move(sessionId), windowsSession, writeControl);
+    Bridge bridge(std::move(loop), systemPool, remote, pipe, std::move(sessionId), windowsSession, writeControl);
     co_return co_await bridge.run(windowsSession, displayIndex, writeControl, desktopInputContract);
 }
 } // namespace ultraterimal::agent

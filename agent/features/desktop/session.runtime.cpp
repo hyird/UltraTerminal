@@ -27,7 +27,9 @@ struct Resources {
 } // namespace
 struct DesktopSession::State : std::enable_shared_from_this<State> {
     ruvia::EventLoop loop;
-    ruvia::BlockingPool pool{{.threadCount = 1, .queueCapacity = 1}};
+    // Launch finishes before the bridge and login broker start. Each then awaits
+    // at most one job; allow both submissions before the worker wakes up.
+    ruvia::BlockingPool systemPool{{.threadCount = 1, .queueCapacity = 2}};
     DesktopTransport remote;
     asio::steady_timer grace;
     std::filesystem::path executable;
@@ -54,7 +56,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         }
         // The transport owns the tickets; do not retain a second grant copy.
     }
-    ~State() { pool.join(); }
+    ~State() { systemPool.join(); }
     void cancelIo() {
         if (login) {
             login->stop();
@@ -75,7 +77,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     }
     asio::awaitable<void> bridge() {
         try {
-            result.terminal = co_await bridgeDesktop(loop, remote, *resources.pipe, session, windowsSession, 0, writeControl, desktopInputContract);
+            result.terminal = co_await bridgeDesktop(loop, systemPool, remote, *resources.pipe, session, windowsSession, 0, writeControl, desktopInputContract);
         } catch (...) {
             if (login) {
                 login->stop();
@@ -101,7 +103,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
             }
             co_await self->remote.connect(std::move(credential));
             stage = "worker_launch";
-            auto launch = ruvia::runBlocking(self->pool, self->loop.handle(),
+            auto launch = ruvia::runBlocking(self->systemPool, self->loop.handle(),
                                              [executor = self->loop.executor(), selected = self->windowsSession, executable = self->executable] {
                                                  DesktopIdentity user(selected);
                                                  Resources resources;
@@ -118,7 +120,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
             co_await self->resources.pipe->accept(self->result.processId, self->windowsSession);
             stage = "login_broker";
             if (self->writeControl) {
-                self->login = WindowsLoginBroker::create(self->loop, self->pool, self->loginCredential, self->windowsSession);
+                self->login = WindowsLoginBroker::create(self->loop, self->systemPool, self->loginCredential, self->windowsSession);
             }
             stage = "session_bridge";
             if (self->login) {
