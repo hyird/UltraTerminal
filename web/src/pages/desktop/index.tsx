@@ -336,6 +336,9 @@ function DesktopPanel({
               <Choice
                 compact
                 label="Windows 分辨率"
+                popoverClassName="min-w-52"
+                itemClassName="ps-3 pe-12"
+                itemIndicatorClassName="end-3"
                 disabled={ended}
                 value={sample ? `${sample.width}x${sample.height}` : ""}
                 onChange={(value) => {
