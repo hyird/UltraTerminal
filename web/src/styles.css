@@ -330,6 +330,14 @@ textarea {
 .desktop-toolbar .desktop-shortcuts {
   background: var(--default);
 }
+.desktop-options .list-box,
+.desktop-options .dropdown__menu {
+  padding: 0.5rem;
+}
+.desktop-options .list-box-item,
+.desktop-options .menu-item {
+  padding-inline: 0.75rem;
+}
 .desktop-viewport {
   display: flex;
   position: relative;
