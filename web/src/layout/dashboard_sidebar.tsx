@@ -68,12 +68,14 @@ function SidebarContents({
                 aria-label="切换工作区域"
               >
                 <span className="flex items-center gap-2">
-                  {administration ? (
-                    <Gear className="size-4" />
-                  ) : (
-                    <Display className="size-4" />
-                  )}
-                  {administration ? "控制台" : "工作台"}
+                  <span className="sidebar__menu-icon">
+                    {administration ? (
+                      <Gear className="size-4" />
+                    ) : (
+                      <Display className="size-4" />
+                    )}
+                  </span>
+                  <span>{administration ? "控制台" : "工作台"}</span>
                 </span>
                 <ChevronDown className="size-4" />
               </Button>
