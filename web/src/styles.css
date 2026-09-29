@@ -7,7 +7,10 @@
   color-scheme: light;
   --accent: oklch(0.54 0.21 263);
   --accent-foreground: white;
-  --radius: 0.625rem;
+  --radius: 0.25rem;
+  --field-radius: 0.375rem;
+  --radius-3xl: 0.5rem;
+  --radius-4xl: 0.75rem;
 }
 body {
   margin: 0;
@@ -43,7 +46,7 @@ textarea {
   width: 2rem;
   height: 2rem;
   flex-shrink: 0;
-  border-radius: 0.625rem;
+  border-radius: 0.375rem;
   background: var(--accent);
   color: var(--accent-foreground);
 }
@@ -109,7 +112,7 @@ textarea {
 .content-surface {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0.875rem;
+  border-radius: 0.5rem;
   overflow: hidden;
 }
 .list-toolbar {
@@ -172,7 +175,7 @@ textarea {
   justify-content: center;
   color: var(--muted);
   background: var(--surface-secondary);
-  border-radius: 0.625rem;
+  border-radius: 0.375rem;
 }
 .empty-state {
   min-height: 18rem;
@@ -259,7 +262,7 @@ textarea {
   padding: 1rem;
   background: var(--surface-secondary);
   border: 1px solid var(--border);
-  border-radius: 0.625rem;
+  border-radius: 0.375rem;
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;
   line-height: 1.75;
@@ -270,7 +273,7 @@ textarea {
   gap: 0.5rem;
   padding: 1rem;
   background: var(--surface-secondary);
-  border-radius: 0.625rem;
+  border-radius: 0.375rem;
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }
@@ -296,7 +299,7 @@ textarea {
   max-width: 26rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 1rem;
+  border-radius: 0.625rem;
   padding: 2.25rem;
 }
 .desktop-workspace {
