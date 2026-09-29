@@ -26,6 +26,7 @@ export function DashboardNavbar({ title }: { title: string }) {
             <Bell className="size-4" />
           </IconButton>
           <Button
+            aria-label={user?.role === "admin" ? "管理设备" : "访问设备"}
             size="sm"
             onPress={() =>
               navigate(
