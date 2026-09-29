@@ -82,8 +82,18 @@ try {
                     # GitLab can send PowerShell's HTTP client an HTML challenge
                     # with status 200. Use curl for archive downloads, as vcpkg
                     # does, and still verify the pinned SHA512 below.
-                    & $curl --disable --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 300 --retry 3 --output $destination --url $url
-                    if ($LASTEXITCODE -ne 0) { throw ('Source download failed: ' + $filename) }
+                    # HTTP 200 challenge/error pages do not trigger curl's retry.
+                    # Retry the whole checked download, never accept new hashes.
+                    for ($attempt = 1; $attempt -le 3; $attempt++) {
+                        & $curl --disable --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 300 --retry 3 --output $destination --url $url
+                        $downloaded = $LASTEXITCODE -eq 0
+                        if ($downloaded -and (Test-Path -LiteralPath $destination) -and (Get-FileHash $destination -Algorithm SHA512).Hash -eq $checksum[0].checksumValue) { break }
+                        if ($attempt -eq 3) { throw ('Source download or checksum verification failed after 3 attempts: ' + $filename) }
+                        Write-Warning ('Retrying unverified source download: ' + $filename)
+                        Start-Sleep -Seconds (2 * $attempt)
+                    }
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $cached) -Force | Out-Null
+                    Copy-Item -LiteralPath $destination -Destination $cached -Force
                 }
             }
             if ((Get-FileHash $destination -Algorithm SHA512).Hash -ne $checksum[0].checksumValue) { throw ('Source checksum mismatch: ' + $filename) }

@@ -86,6 +86,13 @@ jobs:
           restore-keys: |
             vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-
             vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-
+      - name: Cache dependency source archives
+        # Sources are required for MSI publication even on binary-cache hits.
+        # Reuse verified archives instead of depending on GitLab on every run.
+        uses: actions/cache@v6.1.0
+        with:
+          path: build/tools/vcpkg/downloads
+          key: vcpkg-sources-v1-${{ runner.os }}-${{ steps.vcpkg.outputs.revision }}-${{ hashFiles('vcpkg.json', 'ports/**') }}
       - name: Bootstrap vcpkg
         run: |
           if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }

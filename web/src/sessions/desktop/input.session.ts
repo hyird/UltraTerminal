@@ -17,6 +17,7 @@ export class DesktopInput {
   private animation = 0;
   private wheelRemainder = [0, 0];
   private disposed = false;
+  private readonly macKeyboard = /Mac/i.test(navigator.platform);
   constructor(
     private canvas: HTMLCanvasElement,
     private send: (event: Input) => void,
@@ -121,6 +122,27 @@ export class DesktopInput {
   }
   private key(event: KeyboardEvent, pressed: boolean): void {
     if (!this.focused()) return;
+    if (this.macKeyboard) {
+      // Command is the editing modifier on macOS. Keep the native Windows
+      // shortcuts in shortcut() unchanged, including the explicit Win keys.
+      const control = event.code.startsWith("Control");
+      const command = event.code.startsWith("Meta");
+      if (control || command) {
+        event.preventDefault();
+        this.flushMove();
+        if (command && !pressed) {
+          for (const code of this.heldKeys) {
+            if (code < 0xa0 || code > 0xa5) this.sendKey(code, false);
+          }
+        }
+        const held = event.ctrlKey || event.metaKey;
+        if (held !== this.heldKeys.has(0xa2)) this.sendKey(0xa2, held);
+        this.syncShift(event.shiftKey);
+        return;
+      }
+      const held = event.ctrlKey || event.metaKey;
+      if (held !== this.heldKeys.has(0xa2)) this.sendKey(0xa2, held);
+    }
     const code =
       virtualKey(event.code) ??
       (event.key === "Shift"
@@ -135,7 +157,13 @@ export class DesktopInput {
     // Composition owns text, not physical modifiers or already-owned keyups.
     if (event.isComposing && pressed && !modifier) return;
     event.preventDefault();
-    if (pressed && event.repeat && !this.heldKeys.has(code)) return;
+    if (
+      pressed &&
+      event.repeat &&
+      !this.heldKeys.has(code) &&
+      !(this.macKeyboard && event.metaKey)
+    )
+      return;
     if (
       !pressed &&
       !this.heldKeys.has(code) &&
@@ -158,6 +186,10 @@ export class DesktopInput {
       this.syncShift(event.shiftKey);
       this.sendKey(code, pressed);
     }
+    // macOS may omit letter keyups while Command is held. Editing chords
+    // are discrete presses; release immediately so Command+C/V cannot stick.
+    if (this.macKeyboard && event.metaKey && pressed && !modifier)
+      this.sendKey(code, false);
   }
   private sendKey(code: number, pressed: boolean): void {
     if (pressed) this.heldKeys.add(code);
