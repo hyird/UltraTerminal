@@ -58,7 +58,7 @@ if (!root) throw new Error("Application root missing");
 createRoot(root).render(
   <HashRouter>
     <AuthProvider>
-      <Toast.Provider />
+      <Toast.Provider placement="top" width={320} gap={8} />
       <Routes>
         <Route path="/login" element={<LoginRoute />} />
         <Route element={<Protected />}>

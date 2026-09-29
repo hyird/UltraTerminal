@@ -1,6 +1,6 @@
 import { IconButton } from "../../components/icon_button";
 import { useEffect, useRef, useState } from "react";
-import { Button, Dropdown, Label, toast } from "@heroui/react";
+import { Button, Dropdown, Label, Tabs, toast } from "@heroui/react";
 import { useLocation } from "react-router";
 import {
   Choice,
@@ -30,41 +30,45 @@ export function DesktopWorkspace() {
       className="desktop-workspace"
       aria-label="远程桌面工作区"
     >
-      <div className="session-tabs" role="group" aria-label="远程会话">
+      <Tabs
+        selectedKey={active}
+        onSelectionChange={(key) => {
+          if (typeof key === "string") activate(key);
+        }}
+        className="desktop-session-tabs"
+      >
+        <div className="session-tabs">
+          <Tabs.ListContainer className="max-w-full">
+            <Tabs.List aria-label="远程会话">
+              {entries.map((entry) => (
+                <Tabs.Tab
+                  key={entry.ticket.id}
+                  id={entry.ticket.id}
+                  aria-label={entry.device.name}
+                  className="session-tab"
+                >
+                  <span>{entry.device.name}</span>
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              ))}
+            </Tabs.List>
+          </Tabs.ListContainer>
+        </div>
         {entries.map((entry) => (
-          <div
-            className="session-tab"
-            data-active={active === entry.ticket.id}
+          <Tabs.Panel
             key={entry.ticket.id}
+            id={entry.ticket.id}
+            shouldForceMount
+            className="session-tab-panel"
           >
-            <Button
-              size="sm"
-              aria-pressed={active === entry.ticket.id}
-              variant="ghost"
-              onPress={() => activate(entry.ticket.id)}
-            >
-              <Icon name="display" className="size-4" />
-              {entry.device.name}
-            </Button>
-            <IconButton
-              label={`关闭 ${entry.device.name} 会话`}
-              variant="ghost"
-              className="session-close"
-              onPress={() => close(entry.ticket.id)}
-            >
-              <Icon name="xmark" />
-            </IconButton>
-          </div>
+            <DesktopPanel
+              entry={entry}
+              visible={visible && active === entry.ticket.id}
+              onClose={() => close(entry.ticket.id)}
+            />
+          </Tabs.Panel>
         ))}
-      </div>
-      {entries.map((entry) => (
-        <DesktopPanel
-          key={entry.ticket.id}
-          entry={entry}
-          visible={visible && active === entry.ticket.id}
-          onClose={() => close(entry.ticket.id)}
-        />
-      ))}
+      </Tabs>
     </section>
   );
 }
@@ -254,6 +258,14 @@ function DesktopPanel({
             )}
           </>
         )}
+        <div className="desktop-status">
+          <span>{status}</span>
+          <span>
+            {sample
+              ? `${sample.width} × ${sample.height} · ${sample.framesPerSecond.toFixed(0)} FPS · ${(bitrate / 1000000).toFixed(1)} Mbps`
+              : "等待首帧"}
+          </span>
+        </div>
         <div className="flex-1" />
         <IconButton
           label="切换全屏"
@@ -282,6 +294,9 @@ function DesktopPanel({
             <Icon name="arrow-rotate-right" />
           </IconButton>
         )}
+        <Button size="sm" variant="secondary" onPress={onClose}>
+          关闭会话
+        </Button>
       </div>
       <div className="desktop-viewport" data-scale={scale}>
         <div className="desktop-stage">
@@ -296,22 +311,10 @@ function DesktopPanel({
           <div className="desktop-message" role="status">
             <Icon name="display" className="size-8" />
             <p>{status}</p>
-            {ended && (
-              <Button size="sm" variant="secondary" onPress={onClose}>
-                关闭会话
-              </Button>
-            )}
           </div>
         )}
       </div>
-      <footer className="desktop-status">
-        <span>{status}</span>
-        <span>
-          {sample
-            ? `${sample.width} × ${sample.height} · ${sample.framesPerSecond.toFixed(0)} FPS · ${(bitrate / 1000000).toFixed(1)} Mbps`
-            : "等待首帧"}
-        </span>
-      </footer>
+
       {restart && (
         <Dialog
           title={`重启 ${entry.device.name}`}
