@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 #include <ruvia/core/AsioTask.h>
@@ -45,7 +46,9 @@ struct VideoWorker {
         configurationPending = true;
         pixelsPending = false;
     }
-    std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopPacing::Rate rate, bool allowEncode) {
+    std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopPacing::Rate rate,
+                                           std::uint32_t pacingWidth, std::uint32_t pacingHeight,
+                                           std::optional<std::pair<std::uint32_t, std::uint32_t>>& geometryChanged, bool allowEncode) {
         if (reset) {
             discard();
         }
@@ -90,6 +93,10 @@ struct VideoWorker {
         // desktop. The caller must recreate a supported capture source.
         if (source.rotation != 1 || source.width % 2 || source.height % 2) {
             throw DesktopFailure(wire::DesktopFault::INVALID_GEOMETRY, "Desktop orientation or dimensions require capture reconfiguration");
+        }
+        if (source.width != pacingWidth || source.height != pacingHeight) {
+            geometryChanged = std::pair{source.width, source.height};
+            return std::nullopt;
         }
         DesktopVideoUpdate update;
         update.desktopLeft = source.desktopLeft;
@@ -233,16 +240,24 @@ struct DesktopVideoRuntime::State {
         const bool allowEncode = self->pacing.canEncode(now);
         const bool qualityRefresh = std::exchange(self->qualityRefresh, false);
         refresh = refresh || qualityRefresh;
-        auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->pacing.rate(), allowEncode] {
-            auto update = owned->next(display, refresh, reset, rate, allowEncode);
-            return std::pair{std::move(update), owned->recovery.nextAttempt()};
+        const auto [pacingWidth, pacingHeight] = self->pacing.geometry();
+        auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->pacing.rate(), pacingWidth, pacingHeight, allowEncode] {
+            std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
+            auto update = owned->next(display, refresh, reset, rate, pacingWidth, pacingHeight, geometryChanged, allowEncode);
+            return std::tuple{std::move(update), owned->recovery.nextAttempt(), geometryChanged};
         });
-        auto [result, retryAt] = co_await ruvia::asAwaitable(std::move(operation));
+        auto [result, retryAt, geometryChanged] = co_await ruvia::asAwaitable(std::move(operation));
         if (qualityRefresh && (!result || result->frame.data().empty())) {
             self->qualityRefresh = true;
         }
         self->nextFrameAt = retryAt; // Only capture recovery inserts a retry delay.
         if (self->stopped || self->reset) {
+            co_return std::nullopt;
+        }
+        if (geometryChanged) {
+            if (!self->pacing.setGeometry(geometryChanged->first, geometryChanged->second)) {
+                throw DesktopFailure(wire::DesktopFault::INVALID_GEOMETRY, "Desktop dimensions exceed the encoder quality-budget limits");
+            }
             co_return std::nullopt;
         }
         if (result && !result->frame.data().empty()) {

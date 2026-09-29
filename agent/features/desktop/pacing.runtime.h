@@ -6,8 +6,10 @@
 #include <cstdint>
 #include <deque>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace ultraterimal::agent {
 // Event-loop owned. Display acknowledgements measure the complete path rather
@@ -23,8 +25,42 @@ class DesktopPacing {
         std::uint32_t bitrate = 24000000;
         bool sharp = true;
     };
+    static constexpr std::uint32_t kMinimumFramesPerSecond = 10;
+    static constexpr std::uint32_t kMaximumFramesPerSecond = 60;
+    // Keep the pacing floor aligned with VideoEncoder and SoftwareVideoEncoder.
+    static constexpr std::uint32_t kMinimumVideoBitrate = 64000;
+    static constexpr std::uint32_t kMaximumVideoBitrate = 100000000;
+    static constexpr std::size_t kMaximumInFlightFrames = 128;
+
     Rate rate() const { return rate_; }
     bool background() const { return background_; }
+    std::pair<std::uint32_t, std::uint32_t> geometry() const { return {width_, height_}; }
+    std::uint32_t clearBitrateAt60() const {
+        const auto area = static_cast<std::uint64_t>(width_) * height_;
+        constexpr std::uint64_t referenceArea = 1920ull * 1080;
+        constexpr std::uint64_t referenceBitrate = 8000000;
+        const auto bits = (referenceBitrate * area + referenceArea - 1) / referenceArea;
+        return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(bits, kMinimumVideoBitrate, kMaximumVideoBitrate));
+    }
+    std::uint32_t minimumBitrate(std::uint32_t framesPerSecond) const {
+        const auto boundedFps = std::clamp(framesPerSecond, kMinimumFramesPerSecond, kMaximumFramesPerSecond);
+        const auto bits = (static_cast<std::uint64_t>(clearBitrateAt60()) * boundedFps + kMaximumFramesPerSecond - 1) / kMaximumFramesPerSecond;
+        return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(bits, kMinimumVideoBitrate, kMaximumVideoBitrate));
+    }
+    // Geometry is discovered/updated by the encoding worker, then committed on
+    // this owner loop before another frame is admitted.
+    bool setGeometry(std::uint32_t width, std::uint32_t height) {
+        const auto area = static_cast<std::uint64_t>(width) * height;
+        if (width < 16 || height < 16 || width > 4096 || height > 4096 || (width & 1) || (height & 1) || area > 4096ull * 2160) {
+            return false;
+        }
+        width_ = width;
+        height_ = height;
+        const auto currentFloor = minimumBitrate(rate_.framesPerSecond);
+        const auto healthyTarget = std::max(preferredBitrate(), clearBitrateAt60());
+        rate_.bitrate = std::max(currentFloor, std::min(rate_.bitrate, healthyTarget));
+        return true;
+    }
     void observeRoundTrip(std::chrono::microseconds elapsed, Clock::time_point now) {
         if (elapsed <= std::chrono::microseconds::zero() || elapsed >= std::chrono::seconds(60)) {
             return;
@@ -41,10 +77,8 @@ class DesktopPacing {
             return false;
         }
         quality_ = quality;
-        rate_ = {60, quality == Quality::kSharp ? 24000000u : quality == Quality::kSmooth ? 8000000u
-                                                                                          : 16000000u};
+        rate_ = {kMaximumFramesPerSecond, std::max(preferredBitrate(), clearBitrateAt60()), quality == Quality::kSharp};
         congestionSamples_ = 0;
-        rate_.sharp = quality == Quality::kSharp;
         return true;
     }
     void reset(std::uint64_t generation) {
@@ -55,6 +89,16 @@ class DesktopPacing {
         acknowledged_ = 0;
         congestionSamples_ = 0;
     }
+    std::size_t frameWindow() const {
+        // Use the slower of the independent RTT probe and displayed-frame
+        // baseline. Deliberately size the flight at the maximum 60 FPS, not the
+        // adapted output rate, so lowering FPS does not contract an in-flight
+        // window that is still draining. Four jitter frames and the latency are bounded.
+        const auto latency = std::max(roundTrip_.value_or(std::chrono::microseconds::zero()), baseline_);
+        const auto microseconds = static_cast<std::uint64_t>(std::clamp(latency, std::chrono::microseconds::zero(), std::chrono::microseconds(std::chrono::seconds(2))).count());
+        const auto frames = (microseconds * kMaximumFramesPerSecond + 999999) / 1000000 + kFrameWindowMargin;
+        return static_cast<std::size_t>(std::clamp<std::uint64_t>(frames, kFrameWindowMargin + 1, kMaximumInFlightFrames));
+    }
     bool canEncode(Clock::time_point now) const {
         if (background_) {
             return false;
@@ -64,7 +108,10 @@ class DesktopPacing {
         }
         // Bound both count and age. Capture may continue to retain the newest
         // pixels and cursor, but no dependent encoded frame is discarded.
-        return pending_.size() < 16 && pendingBytes_ < byteWindow() && now - pending_.front().sent < baseline_ + std::chrono::milliseconds(100);
+        const auto latency = std::min(std::max(roundTrip_.value_or(std::chrono::microseconds::zero()), baseline_),
+                                      std::chrono::microseconds(std::chrono::seconds(2)));
+        return pending_.size() < frameWindow() && pendingBytes_ < byteWindow() &&
+               now - pending_.front().sent < latency + std::chrono::milliseconds(100);
     }
     std::size_t byteWindow() const {
         if (!hasBaseline_) {
@@ -72,16 +119,24 @@ class DesktopPacing {
         }
         const auto bytesPerSecond = deliveryBytesPerSecond_ ? std::min<std::uint64_t>(rate_.bitrate / 8, deliveryBytesPerSecond_) : rate_.bitrate / 8;
         // Bandwidth-delay product plus 50 ms of queueing, with a hard memory cap.
-        const auto microseconds = static_cast<std::uint64_t>(std::clamp(roundTrip_.value_or(baseline_), std::chrono::microseconds(1000), std::chrono::microseconds(2000000)).count()) + 50000;
+        const auto latency = std::clamp(std::max(roundTrip_.value_or(std::chrono::microseconds::zero()), baseline_),
+                                        std::chrono::microseconds(1000), std::chrono::microseconds(2000000));
+        const auto microseconds = static_cast<std::uint64_t>(latency.count()) + 50000;
         return static_cast<std::size_t>(std::clamp<std::uint64_t>(bytesPerSecond * microseconds / 1000000, 32 * 1024, 2 * 1024 * 1024));
     }
     std::size_t pendingBytes() const { return pendingBytes_; }
+    std::size_t pendingFrames() const { return pending_.size(); }
     void sent(std::uint64_t generation, std::uint64_t frame, Clock::time_point now, std::size_t bytes) {
         if (generation != generation_) {
             reset(generation);
         }
-        if (pending_.size() == 16) {
-            throw std::logic_error("Encoded frame exceeded the acknowledgement window");
+        // The admission window can shrink while an async encode is in flight;
+        // only this immutable safety ceiling is checked at commit time.
+        if (pending_.size() >= kMaximumInFlightFrames) {
+            throw std::logic_error("Encoded frame exceeded the hard acknowledgement limit");
+        }
+        if (bytes > std::numeric_limits<std::size_t>::max() - pendingBytes_) {
+            throw std::overflow_error("Pending video byte count overflow");
         }
         pending_.push_back({frame, now, bytes});
         pendingBytes_ += bytes;
@@ -134,9 +189,6 @@ class DesktopPacing {
         }
         // WebCodecs output includes browser scheduling jitter, so a single
         // frame slightly over its nominal interval is not decoder overload.
-        // Sustained 50 ms output latency is slow enough to justify reducing
-        // temporal load; network delay is handled separately by bitrate and
-        // the bounded acknowledgement window.
         const bool decodeBound = decodeMicroseconds > 50000;
         const auto networkElapsed = elapsed - std::min(elapsed, std::chrono::microseconds(decodeMicroseconds));
         const auto networkBaseline = roundTrip_.value_or(baseline_);
@@ -149,43 +201,68 @@ class DesktopPacing {
             return true;
         }
         if (congested) {
-            // Quality preference is a healthy-link target, not a bandwidth floor.
-            // Preserve responsiveness on sub-megabit links instead of accumulating
-            // frames indefinitely at the former 8 Mbps sharp-mode minimum.
-            constexpr auto minimumBitrate = 512000u;
-            // Network pressure is relieved by reducing bytes while the ACK
-            // window supplies backpressure. It must not turn harmless RTT or
-            // a low-byte desktop update into a persistent low frame rate.
             if (decodeBound) {
-                rate_.framesPerSecond = std::max(10u, rate_.framesPerSecond * 3 / 4);
+                rate_.framesPerSecond = std::max(kMinimumFramesPerSecond, rate_.framesPerSecond * 3 / 4);
             }
-            if (transportBound && rate_.bitrate > minimumBitrate) {
-                rate_.bitrate = std::max(minimumBitrate, rate_.bitrate * 3 / 4);
-                // A large frame can saturate a narrow link without growing a
-                // multi-frame queue. Control probes isolate propagation delay.
-                if (roundTrip_ && networkElapsed > *roundTrip_ + std::chrono::milliseconds(40)) {
-                    const auto deliveryTime = static_cast<std::uint64_t>((networkElapsed - *roundTrip_).count());
-                    const auto deliveredBitrate = static_cast<std::uint64_t>(delivered) * 8000000ull / deliveryTime;
-                    rate_.bitrate = static_cast<std::uint32_t>(std::max<std::uint64_t>(minimumBitrate, std::min<std::uint64_t>(rate_.bitrate, deliveredBitrate * 9 / 10)));
-                }
+            if (transportBound) {
+                reduceForNetworkCongestion(networkElapsed, delivered);
             }
             congestionSamples_ = 0;
         } else {
-            rate_.framesPerSecond = std::min(60u, rate_.framesPerSecond + 5);
-            const auto preferredBitrate = quality_ == Quality::kSharp ? 24000000u : quality_ == Quality::kSmooth ? 8000000u
-                                                                                                                 : 16000000u;
-            rate_.bitrate = std::min(preferredBitrate, rate_.bitrate + std::max(64000u, rate_.bitrate / 10));
+            recoverRate();
         }
         adjustAt_ = now + std::chrono::milliseconds(500);
         return true;
     }
 
   private:
+    static constexpr std::uint64_t kFrameWindowMargin = 4;
     struct Pending {
         std::uint64_t frame;
         Clock::time_point sent;
         std::size_t bytes;
     };
+    std::uint32_t preferredBitrate() const {
+        return quality_ == Quality::kSharp ? 24000000u : quality_ == Quality::kSmooth ? 8000000u
+                                                                                      : 16000000u;
+    }
+    std::uint64_t availableBitrate(std::chrono::microseconds networkElapsed, std::size_t delivered) const {
+        std::uint64_t available = deliveryBytesPerSecond_ ? deliveryBytesPerSecond_ * 8 * 9 / 10 : kMaximumVideoBitrate;
+        if (roundTrip_ && networkElapsed > *roundTrip_ + std::chrono::milliseconds(40)) {
+            const auto deliveryTime = static_cast<std::uint64_t>((networkElapsed - *roundTrip_).count());
+            const auto observed = static_cast<std::uint64_t>(delivered) * 8000000ull / deliveryTime * 9 / 10;
+            available = std::min(available, observed);
+        }
+        return available;
+    }
+    void reduceForNetworkCongestion(std::chrono::microseconds networkElapsed, std::size_t delivered) {
+        auto target = static_cast<std::uint64_t>(rate_.bitrate) * 3 / 4;
+        target = std::min(target, availableBitrate(networkElapsed, delivered));
+        target = std::min<std::uint64_t>(target, kMaximumVideoBitrate);
+        const auto currentFloor = minimumBitrate(rate_.framesPerSecond);
+        if (target < currentFloor) {
+            const auto sustainableFps = target < kMinimumVideoBitrate
+                                            ? kMinimumFramesPerSecond
+                                            : target * kMaximumFramesPerSecond / clearBitrateAt60();
+            rate_.framesPerSecond = std::min(rate_.framesPerSecond,
+                                             static_cast<std::uint32_t>(std::clamp<std::uint64_t>(sustainableFps, kMinimumFramesPerSecond, kMaximumFramesPerSecond)));
+        }
+        // At capacities below the 10 FPS floor, retain the per-frame quality
+        // budget and let bounded ACK/byte/age admission wait for the latest
+        // source image. This is not permission to queue above link capacity.
+        rate_.bitrate = std::max(minimumBitrate(rate_.framesPerSecond), static_cast<std::uint32_t>(target));
+    }
+    void recoverRate() {
+        const auto target = std::max(preferredBitrate(), clearBitrateAt60());
+        const auto increment = std::max(64000u, rate_.bitrate / 10);
+        rate_.bitrate = std::min(target, rate_.bitrate > kMaximumVideoBitrate - increment ? kMaximumVideoBitrate : rate_.bitrate + increment);
+        const auto nextFps = std::min(kMaximumFramesPerSecond, rate_.framesPerSecond + 5);
+        if (nextFps > rate_.framesPerSecond && rate_.bitrate >= minimumBitrate(nextFps)) {
+            rate_.framesPerSecond = nextFps;
+        }
+    }
+
+    std::uint32_t width_ = 1920, height_ = 1080;
     Rate rate_;
     Quality quality_ = Quality::kSharp;
     std::deque<Pending> pending_;
