@@ -10,6 +10,12 @@ import {
 } from "../../components/form";
 import { Icon } from "../../components/icon";
 import { useDesktops, type DesktopEntry } from "../../store/desktops";
+import { useAuth } from "../../store/auth";
+import {
+  loadDesktopPreferences,
+  saveDesktopPreferences,
+  type DesktopPreferences,
+} from "./preferences.service";
 import { DesktopSession } from "../../sessions/desktop/desktop.session";
 import { desktopShortcuts } from "../../sessions/desktop/shortcuts.protocol";
 import type { DesktopPerformance } from "../../sessions/desktop/desktop.types";
@@ -86,8 +92,18 @@ function DesktopPanel({
   const root = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("正在建立加密连接…");
   const [ended, setEnded] = useState(false);
-  const [scale, setScale] = useState("fit");
-  const [quality, setQuality] = useState("auto");
+  const userId = useAuth().user?.id ?? "";
+  const [preferences, setPreferences] = useState(() =>
+    loadDesktopPreferences(userId, entry.device.id),
+  );
+  const { scale, quality } = preferences;
+  const initialPreferences = useRef(preferences);
+  const resolutionRestored = useRef(false);
+  function updatePreferences(change: Partial<DesktopPreferences>) {
+    const next = { ...preferences, ...change };
+    setPreferences(next);
+    saveDesktopPreferences(userId, entry.device.id, next);
+  }
   const [modes, setModes] = useState<{ width: number; height: number }[]>([]);
   const [sample, setSample] = useState<DesktopPerformance | null>(null);
   const [bitrate, setBitrate] = useState(0);
@@ -131,6 +147,8 @@ function DesktopPanel({
         setBitrate,
         setSample,
       );
+      session.current.setScaleMode(initialPreferences.current.scale);
+      session.current.setQuality(initialPreferences.current.quality);
     } catch (error) {
       setStatus(failureText(error));
       setEnded(true);
@@ -150,6 +168,21 @@ function DesktopPanel({
   useEffect(() => {
     session.current?.setVisible(visible);
   }, [visible]);
+  useEffect(() => {
+    if (resolutionRestored.current || !sample?.width || !modes.length) return;
+    resolutionRestored.current = true;
+    const resolution = initialPreferences.current.resolution;
+    if (
+      resolution &&
+      modes.some(
+        (mode) =>
+          mode.width === resolution.width && mode.height === resolution.height,
+      ) &&
+      (sample.width !== resolution.width || sample.height !== resolution.height)
+    ) {
+      session.current?.resize(resolution.width, resolution.height);
+    }
+  }, [modes, sample?.width, sample?.height]);
   async function reboot(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -176,7 +209,7 @@ function DesktopPanel({
           value={scale}
           onChange={(value) => {
             const mode = value === "native" ? "native" : "fit";
-            setScale(mode);
+            updatePreferences({ scale: mode });
             session.current?.setScaleMode(mode);
           }}
           items={[
@@ -195,7 +228,7 @@ function DesktopPanel({
                 : value === "sharp"
                   ? "sharp"
                   : "auto";
-            setQuality(mode);
+            updatePreferences({ quality: mode });
             session.current?.setQuality(mode);
           }}
           items={[
@@ -247,7 +280,11 @@ function DesktopPanel({
                   const mode = modes.find(
                     (item) => `${item.width}x${item.height}` === value,
                   );
-                  if (mode) session.current?.resize(mode.width, mode.height);
+                  if (mode) {
+                    resolutionRestored.current = true;
+                    updatePreferences({ resolution: mode });
+                    session.current?.resize(mode.width, mode.height);
+                  }
                 }}
                 items={modes.map((item) => ({
                   id: `${item.width}x${item.height}`,
