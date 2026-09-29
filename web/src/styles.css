@@ -303,9 +303,9 @@ textarea {
 }
 .desktop-toolbar > .select,
 .desktop-toolbar .desktop-shortcuts {
-  width: 10.5rem;
-  min-width: 10.5rem;
-  max-width: 10.5rem;
+  width: fit-content;
+  min-width: 0;
+  max-width: 100%;
 }
 .desktop-toolbar .select__trigger,
 .desktop-toolbar .desktop-shortcuts {
@@ -318,9 +318,16 @@ textarea {
   font-weight: 400;
   display: flex;
   align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.desktop-toolbar .select__indicator {
+  display: none;
+}
+.desktop-toolbar .select__value {
+  flex: none;
 }
 .desktop-toolbar .desktop-shortcuts {
-  justify-content: space-between;
   background: var(--default);
 }
 .desktop-viewport {

@@ -310,7 +310,6 @@ function DesktopPanel({
                 isDisabled={ended}
               >
                 快捷键
-                <Icon name="chevron-down" className="size-4" />
               </Button>
               <Dropdown.Popover>
                 <Dropdown.Menu
