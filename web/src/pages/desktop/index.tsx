@@ -93,6 +93,7 @@ function DesktopPanel({
   const cursor = useRef<HTMLCanvasElement>(null);
   const session = useRef<DesktopSession | null>(null);
   const root = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState(false);
   const [status, setStatus] = useState("正在建立加密连接…");
   const [ended, setEnded] = useState(false);
   const userId = useAuth().user?.id ?? "";
@@ -127,6 +128,14 @@ function DesktopPanel({
   const [approvalExpiresAt, setApprovalExpiresAt] = useState(0);
   const { approvals } = useDevices();
   const approval = approvals.find((item) => item.id === approvalId);
+  useEffect(() => {
+    const syncFullscreen = () =>
+      setFullscreen(document.fullscreenElement === root.current);
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    syncFullscreen();
+    return () =>
+      document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
   useEffect(() => {
     if (!approvalId || !approvalExpiresAt) return;
     const timer = setTimeout(
@@ -265,7 +274,7 @@ function DesktopPanel({
   }
   return (
     <div ref={root} className="desktop-panel" hidden={!visible}>
-      <div className="desktop-toolbar">
+      <div className="desktop-toolbar" hidden={fullscreen}>
         <Choice
           compact
           label="显示比例"
