@@ -101,9 +101,9 @@ void IdentityService::bootstrap(std::string_view username, std::string_view pass
     tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.bootstrap',true)", id);
     tx.commit();
 }
-std::optional<LoginSession> IdentityService::login(std::string_view username, std::string_view password, std::string_view code) const {
+std::expected<LoginSession, LoginError> IdentityService::login(std::string_view username, std::string_view password, std::string_view code) const {
     if (!validUsername(username) || password.empty() || password.size() > 1024 || code.size() > 32) {
-        return std::nullopt;
+        return std::unexpected(LoginError::kInvalidCredentials);
     }
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
@@ -112,16 +112,20 @@ std::optional<LoginSession> IdentityService::login(std::string_view username, st
         (void)passwordHash(password, std::string(64, '0'), 600000);
         tx.exec("INSERT INTO audit_events(event_type,success) VALUES('identity.login',false)");
         tx.commit();
-        return std::nullopt;
+        return std::unexpected(LoginError::kInvalidCredentials);
     }
     const auto id = rows[0]["id"].as<std::string>();
     if (rows[0]["disabled"].as<bool>() || rows[0]["blocked"].as<bool>()) {
-        return std::nullopt;
+        return std::unexpected(LoginError::kInvalidCredentials);
     }
-    if (!passwordMatches(rows[0], password) || !factorMatches(tx, rows[0], key_, code)) {
+    const bool passwordValid = passwordMatches(rows[0], password);
+    if (passwordValid && code.empty() && !rows[0]["totp_secret"].as<std::string>().empty()) {
+        return std::unexpected(LoginError::kFactorRequired);
+    }
+    if (!passwordValid || !factorMatches(tx, rows[0], key_, code)) {
         failedAttempt(tx, id);
         tx.commit();
-        return std::nullopt;
+        return std::unexpected(LoginError::kInvalidCredentials);
     }
     LoginSession result{{id, rows[0]["username"].as<std::string>(), rows[0]["role"].as<std::string>(), {}}, randomToken()};
     result.user.loginHash = tokenHash(result.token);

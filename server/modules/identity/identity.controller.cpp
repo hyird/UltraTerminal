@@ -9,6 +9,9 @@ ruvia::Task<ruvia::HttpResponse> IdentityController::login(ruvia::Context& conte
     const auto object = requestObject(co_await context.req().text(), {"username", "password", "code"});
     const auto session = co_await context.runBlocking([service = context.workerState<ServerRuntime>().identities, username = requestText(object, "username", 64), password = requestText(object, "password", 1024), code = optionalText(object, "code", 32)] { return service.login(username, password, code); });
     if (!session) {
+        if (session.error() == LoginError::kFactorRequired) {
+            co_return context.error({.status = ruvia::http_status::kUnauthorized, .code = "factor_required", .message = "Authenticator verification required"});
+        }
         co_return context.error({.status = ruvia::http_status::kUnauthorized, .code = "invalid_login", .message = "Invalid credentials"});
     }
     context.header("Set-Cookie", "__Host-ultraterimal=" + session->token + "; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=28800");

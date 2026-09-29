@@ -93,6 +93,8 @@ function parseDevice(entry: unknown): Device {
     writeControl: item.write_control === true,
     requireApproval: item.require_approval === true,
     manageCredentials: item.manage_credentials === true,
+    ownerUsername:
+      item.owner_username === undefined ? undefined : text(item.owner_username),
     lastSeen: item.last_seen === null ? null : text(item.last_seen),
   };
 }
@@ -200,15 +202,21 @@ export function observeDevices(
   remove: (id: string) => void,
   approvals: (items: Approval[]) => void,
   failed: (message: string) => void,
+  scope: "personal" | "administration" = "personal",
 ): () => void {
-  const session = new StatusSession((event) => {
-    if (event.type === "snapshot") {
-      if (!Array.isArray(event.devices)) throw new Error("设备列表格式错误");
-      snapshot(event.devices.map(parseDevice));
-    } else if (event.type === "upsert") upsert(parseDevice(event.device));
-    else if (event.type === "remove") remove(text(event.id));
-    else if (event.type === "account") approvals(approvalList(event.approvals));
-  }, failed);
+  const session = new StatusSession(
+    (event) => {
+      if (event.type === "snapshot") {
+        if (!Array.isArray(event.devices)) throw new Error("设备列表格式错误");
+        snapshot(event.devices.map(parseDevice));
+      } else if (event.type === "upsert") upsert(parseDevice(event.device));
+      else if (event.type === "remove") remove(text(event.id));
+      else if (event.type === "account")
+        approvals(approvalList(event.approvals));
+    },
+    failed,
+    scope,
+  );
   return () => session.close();
 }
 export async function listGrants(id: string): Promise<DeviceGrant[]> {

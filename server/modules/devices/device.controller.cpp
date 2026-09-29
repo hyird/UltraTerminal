@@ -253,7 +253,7 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::devices(ruvia::Context& conte
 ruvia::Task<ruvia::HttpResponse> DeviceController::grants(ruvia::Context& context) {
     const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().devices, user = context.requestState<UserIdentity>().id, device = std::string(context.req().param("id").value_or(""))] { return service.grants(user, device); });
     if (!result) {
-        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "access_denied", .message = "Owner required"});
+        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "access_denied", .message = "Device owner or administrator required"});
     }
     boost::json::array grants;
     for (const auto& g : *result) {
@@ -268,7 +268,7 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::saveGrant(ruvia::Context& con
     auto& runtime = context.workerState<ServerRuntime>();
     const bool ok = co_await context.runBlocking([service = runtime.devices, user = context.requestState<UserIdentity>().id, device, grant, remove = requestBool(body, "remove")] { return service.setGrant(user, device, grant, remove); });
     if (!ok) {
-        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "grant_rejected", .message = "Grant rejected; check owner, target user and Telegram configuration"});
+        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "grant_rejected", .message = "Grant rejected; check administrator or owner, target user and Telegram configuration"});
     }
     co_await revalidateAccess(context);
     runtime.status.publish("d:" + device);

@@ -111,13 +111,13 @@ bool DeviceService::capabilities(const DeviceIdentity& device, std::string_view 
     tx.commit();
     return true;
 }
-std::vector<DeviceInfo> DeviceService::list(std::string_view userId) const {
+std::vector<DeviceInfo> DeviceService::list(std::string_view userId, bool administration) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,g.desktop,g.write_control,g.require_approval,g.manage_credentials FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId);
+    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.require_approval,false),COALESCE(g.manage_credentials,false),owner.username FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId, administration, administration);
     std::vector<DeviceInfo> result;
     for (const auto& row : rows) {
-        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::optional<std::string>>(), row[3].as<bool>(), row[4].as<bool>(), row[5].as<bool>(), row[6].as<bool>(), row[7].as<bool>(), row[8].as<bool>()});
+        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::optional<std::string>>(), row[3].as<bool>(), row[4].as<bool>(), row[5].as<bool>(), row[6].as<bool>(), row[7].as<bool>(), row[8].as<bool>(), row[9].as<std::string>()});
     }
     return result;
 }
@@ -284,19 +284,19 @@ void DeviceService::auditWindowsLogin(std::string_view userId, std::string_view 
     tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,?,?)", userId, deviceId, std::string("device.windows_login.") + std::string(action), success);
     tx.commit();
 }
-std::optional<DeviceInfo> DeviceService::find(std::string_view userId, std::string_view deviceId) const {
+std::optional<DeviceInfo> DeviceService::find(std::string_view userId, std::string_view deviceId, bool administration) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,g.desktop,g.write_control,g.require_approval,g.manage_credentials FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, deviceId);
+    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.require_approval,false),COALESCE(g.manage_credentials,false),owner.username FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, administration, administration, deviceId);
     if (rows.empty()) {
         return std::nullopt;
     }
-    return DeviceInfo{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::optional<std::string>>(), rows[0][3].as<bool>(), rows[0][4].as<bool>(), rows[0][5].as<bool>(), rows[0][6].as<bool>(), rows[0][7].as<bool>(), rows[0][8].as<bool>()};
+    return DeviceInfo{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::optional<std::string>>(), rows[0][3].as<bool>(), rows[0][4].as<bool>(), rows[0][5].as<bool>(), rows[0][6].as<bool>(), rows[0][7].as<bool>(), rows[0][8].as<bool>(), rows[0][9].as<std::string>()};
 }
-std::optional<std::vector<DeviceGrant>> DeviceService::grants(std::string_view ownerId, std::string_view deviceId) const {
+std::optional<std::vector<DeviceGrant>> DeviceService::grants(std::string_view actorId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
-    if (tx.exec("SELECT 1 FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.id=? AND d.owner_id=? AND d.revoked_at IS NULL AND NOT u.disabled", deviceId, ownerId).empty()) {
+    if (tx.exec("SELECT 1 FROM devices d JOIN users u ON u.id=? WHERE d.id=? AND (d.owner_id=u.id OR u.role='admin') AND d.revoked_at IS NULL AND NOT u.disabled", actorId, deviceId).empty()) {
         return std::nullopt;
     }
     std::vector<DeviceGrant> result;
@@ -305,15 +305,17 @@ std::optional<std::vector<DeviceGrant>> DeviceService::grants(std::string_view o
     }
     return result;
 }
-bool DeviceService::setGrant(std::string_view ownerId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const {
+bool DeviceService::setGrant(std::string_view actorId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const {
     if (!remove && ((!grant.desktop && grant.writeControl) || (!grant.writeControl && (grant.systemRestart || grant.manageCredentials)))) {
         return false;
     }
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
-    if (tx.exec("SELECT d.id FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.id=? AND d.owner_id=? AND d.revoked_at IS NULL AND NOT u.disabled AND d.owner_id=u.id FOR UPDATE", deviceId, ownerId).empty()) {
+    const auto device = tx.exec("SELECT d.owner_id FROM devices d JOIN users u ON u.id=? WHERE d.id=? AND (d.owner_id=u.id OR u.role='admin') AND d.revoked_at IS NULL AND NOT u.disabled FOR UPDATE", actorId, deviceId);
+    if (device.empty()) {
         return false;
     }
+    const auto ownerId = device[0][0].as<std::string>();
     const auto rows = tx.exec("SELECT id FROM users WHERE username=? AND NOT disabled FOR UPDATE", grant.username);
     if (rows.empty()) {
         return false;
@@ -331,7 +333,7 @@ bool DeviceService::setGrant(std::string_view ownerId, std::string_view deviceId
         tx.exec("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials,require_approval) VALUES(?,?,?,false,false,?,?,?,?) ON DUPLICATE KEY UPDATE desktop=?,vnc=false,ssh=false,write_control=?,system_restart=?,manage_credentials=?,require_approval=?,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, target, grant.desktop, grant.writeControl, grant.systemRestart, grant.manageCredentials, grant.requireApproval, grant.desktop, grant.writeControl, grant.systemRestart, grant.manageCredentials, grant.requireApproval);
     }
     tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE device_id=? AND user_id=? AND state IN ('pending','approved')", deviceId, target);
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,?,true,?)", ownerId, deviceId, remove ? "device.grant.revoke" : "device.grant.save", target);
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,?,true,?)", actorId, deviceId, remove ? "device.grant.revoke" : "device.grant.save", target);
     tx.commit();
     return true;
 }

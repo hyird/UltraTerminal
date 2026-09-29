@@ -32,7 +32,7 @@ export async function jsonRequest(
     let code = "";
     try {
       const item = record(await response.json());
-      if (typeof item.error === "string") code = item.error;
+      if (typeof item.code === "string") code = item.code;
     } catch {
       /* The HTTP status remains authoritative. */
     }

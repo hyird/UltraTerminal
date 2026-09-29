@@ -52,8 +52,7 @@ ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& conte
     const auto issued = co_await context.runBlocking([service = runtime.sessions, request] { return service.create(request); });
     if (!issued) {
         if (issued.error() == SessionFailure::kApprovalRequired) {
-            context.status(ruvia::http_status::kConflict);
-            co_return jsonResponse(context, {{"error", "approval_required"}});
+            co_return context.error({.status = ruvia::http_status::kConflict, .code = "approval_required", .message = "Device owner approval required"});
         }
         const auto status = issued.error() == SessionFailure::kDenied ? ruvia::http_status::kForbidden : issued.error() == SessionFailure::kInvalid ? ruvia::http_status::kBadRequest
                                                                                                                                                     : ruvia::http_status::kConflict;

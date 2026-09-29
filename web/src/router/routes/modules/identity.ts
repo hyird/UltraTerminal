@@ -7,12 +7,12 @@ const routes: AppRouteRecordRaw[] = [
   {
     path: "/identity",
     Component: ContainerLayout,
-    handle: { title: "账号与安全", icon: createElement(SafetyOutlined) },
+    handle: { title: "个人安全设置", icon: createElement(SafetyOutlined) },
     children: [
       {
         index: true,
         Component: IdentityPage,
-        handle: { title: "账号与安全", keepAlive: false },
+        handle: { title: "个人安全设置", keepAlive: false },
       },
     ],
   },

@@ -153,6 +153,10 @@ int main() {
         const auto code = totpCode(setup.secret, now / 30);
         const auto activated = identities.changeSecurity(guest.user, "confirm", password, code).value();
         check(activated.recoveryCodes.size() == 10 && identities.security(guest.user.id).totp, "Enable TOTP");
+        const auto challenge = identities.login("guest", password);
+        check(!challenge && challenge.error() == LoginError::kFactorRequired, "Verified password requires second factor");
+        const auto invalid = identities.login("guest", "incorrect-password");
+        check(!invalid && invalid.error() == LoginError::kInvalidCredentials, "Wrong password never discloses second factor");
         check(!identities.login("guest", password) && !identities.login("guest", password, code), "TOTP required and replay blocked");
         check(identities.login("guest", password, totpCode(setup.secret, now / 30 + 1)).has_value(), "Valid TOTP login");
         check(identities.login("guest", password, activated.recoveryCodes.front()).has_value(), "Recovery login");
@@ -165,6 +169,27 @@ int main() {
             check(!identities.login("limited", "incorrect-password"), "Invalid login");
         }
         check(!identities.login("limited", password), "Account cooldown");
+        phase = "administrator machine allocation";
+        check(identities.createAccount(owner.user, "operator", password, "admin"), "Create allocation administrator");
+        check(identities.createAccount(owner.user, "recipient", password, "user"), "Create allocation recipient");
+        const auto operatorLogin = identities.login("operator", password).value();
+        const auto recipient = identities.login("recipient", password).value();
+        const auto privateDevice = devices.createDevice(recipient.user.id, "recipient machine");
+        check(devices.list(operatorLogin.user.id).empty(), "Administrator receives no implicit desktop access");
+        check(devices.find(operatorLogin.user.id, privateDevice.id, true).has_value(), "Administrator can discover another owner's machine");
+        check(devices.list(recipient.user.id, true).empty() && !devices.find(recipient.user.id, device.id, true), "Ordinary user cannot request administrative scope");
+        check(!devices.grants(recipient.user.id, device.id), "Ordinary user cannot read another owner's grants");
+        DeviceGrant allocation{{}, "recipient", true, true, false, false, false};
+        check(devices.setGrant(operatorLogin.user.id, device.id, allocation, false), "Administrator assigns another owner's machine");
+        check(devices.find(recipient.user.id, device.id)->writeControl, "Assigned user receives control");
+        check(!devices.setGrant(recipient.user.id, device.id, allocation, false), "Recipient cannot delegate grants");
+        DeviceGrant ownerGrant{{}, "owner", true, true, true, true, false};
+        check(!devices.setGrant(operatorLogin.user.id, device.id, ownerGrant, true), "Administrator cannot remove the owner's grant");
+        allocation.requireApproval = true;
+        check(devices.setGrant(operatorLogin.user.id, device.id, allocation, false), "Approval uses the device owner's Telegram binding");
+        check(devices.setGrant(operatorLogin.user.id, device.id, allocation, true) && !devices.find(recipient.user.id, device.id), "Administrator revokes allocation");
+        check(identities.updateAccount(owner.user, operatorLogin.user.id, "user", false, {}), "Demote administrator");
+        check(!devices.setGrant(operatorLogin.user.id, device.id, allocation, false) && !devices.grants(operatorLogin.user.id, device.id), "Database role revocation is authoritative");
         std::cout << "Access integration passed: ownership, roles, grants, login-bound tickets, revocation, Telegram approval, TOTP and recovery\n";
         return 0;
     } catch (const DatabaseError& error) {

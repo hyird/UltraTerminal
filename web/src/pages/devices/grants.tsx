@@ -1,4 +1,15 @@
-import { Alert, Button, Form, Input, Modal, Space, Switch, Table } from "antd";
+import {
+  Popconfirm,
+  Select,
+  Alert,
+  Button,
+  Form,
+  Input,
+  Modal,
+  Space,
+  Switch,
+  Table,
+} from "antd";
 import { useEffect, useState } from "react";
 import { listGrants, saveGrant } from "./device.service";
 import type { Device, DeviceGrant } from "./device.types";
@@ -15,14 +26,17 @@ const emptyGrant: DeviceGrant = {
 export function DeviceGrants({
   device,
   close,
+  usernames,
 }: {
   device: Device;
+  usernames?: string[];
   close: () => void;
 }) {
   const [grants, setGrants] = useState<DeviceGrant[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [editingUsername, setEditingUsername] = useState<string | null>(null);
   const [form] = Form.useForm<DeviceGrant>();
   useEffect(() => {
     let live = true;
@@ -57,8 +71,14 @@ export function DeviceGrants({
     <Modal
       open
       title={`设备授权 · ${device.name}`}
-      onCancel={close}
-      footer={<Button onClick={close}>关闭</Button>}
+      onCancel={() => {
+        if (!busy) close();
+      }}
+      footer={
+        <Button disabled={busy} onClick={close}>
+          关闭
+        </Button>
+      }
       width={760}
     >
       {error && <Alert className="mb-3" type="error" title={error} />}
@@ -66,6 +86,7 @@ export function DeviceGrants({
         className="mb-3"
         onClick={() => {
           form.setFieldsValue(emptyGrant);
+          setEditingUsername(null);
           setEditing(true);
         }}
       >
@@ -96,19 +117,28 @@ export function DeviceGrants({
                   disabled={busy}
                   onClick={() => {
                     form.setFieldsValue(g);
+                    setEditingUsername(g.username);
                     setEditing(true);
                   }}
                 >
                   修改
                 </Button>
-                <Button
-                  type="link"
-                  danger
-                  disabled={busy}
-                  onClick={() => void save(g, true)}
+                <Popconfirm
+                  title={`撤销 ${g.username} 的设备授权？`}
+                  description="正在使用该授权的连接会被断开。"
+                  okText="撤销"
+                  cancelText="取消"
+                  disabled={busy || g.username === device.ownerUsername}
+                  onConfirm={() => save(g, true)}
                 >
-                  撤销
-                </Button>
+                  <Button
+                    type="link"
+                    danger
+                    disabled={busy || g.username === device.ownerUsername}
+                  >
+                    撤销
+                  </Button>
+                </Popconfirm>
               </Space>
             ),
           },
@@ -126,7 +156,26 @@ export function DeviceGrants({
             label="平台用户名"
             rules={[{ required: true }]}
           >
-            <Input maxLength={64} autoComplete="off" />
+            {usernames ? (
+              <Select
+                disabled={editingUsername !== null}
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择普通用户"
+                options={[
+                  ...new Set([
+                    ...usernames,
+                    ...grants.map((grant) => grant.username),
+                  ]),
+                ].map((username) => ({ value: username, label: username }))}
+              />
+            ) : (
+              <Input
+                disabled={editingUsername !== null}
+                maxLength={64}
+                autoComplete="off"
+              />
+            )}
           </Form.Item>
           <Form.Item
             name="desktop"

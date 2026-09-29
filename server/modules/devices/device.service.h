@@ -27,6 +27,7 @@ struct DeviceInfo {
     bool writeControl = false;
     bool requireApproval = false;
     bool manageCredentials = false;
+    std::string ownerUsername = {};
 };
 struct DeviceGrant {
     std::string userId, username;
@@ -54,12 +55,12 @@ class DeviceService {
     std::optional<DeviceIdentity> authenticate(std::string_view credential) const;
     bool heartbeat(const DeviceIdentity& device) const;
     bool capabilities(const DeviceIdentity& device, std::string_view protobuf) const;
-    std::vector<DeviceInfo> list(std::string_view userId) const;
+    std::vector<DeviceInfo> list(std::string_view userId, bool administration = false) const;
     bool rename(std::string_view userId, std::string_view deviceId, std::string_view name) const;
     bool remove(std::string_view userId, std::string_view deviceId) const;
-    std::optional<std::vector<DeviceGrant>> grants(std::string_view ownerId, std::string_view deviceId) const;
-    bool setGrant(std::string_view ownerId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const;
-    std::optional<DeviceInfo> find(std::string_view userId, std::string_view deviceId) const;
+    std::optional<std::vector<DeviceGrant>> grants(std::string_view actorId, std::string_view deviceId) const;
+    bool setGrant(std::string_view actorId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const;
+    std::optional<DeviceInfo> find(std::string_view userId, std::string_view deviceId, bool administration = false) const;
     bool canConfigureWindowsLogin(std::string_view userId, std::string_view deviceId) const;
     std::optional<bool> systemRestartPermission(std::string_view userId, std::string_view deviceId) const;
     bool restartDispatchAllowed(std::string_view userId, std::string_view deviceId) const;

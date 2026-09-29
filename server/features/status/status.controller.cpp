@@ -12,7 +12,7 @@ namespace ultraterimal::server {
 namespace {
 boost::json::object deviceJson(const DeviceInfo& device, const ServerRuntime& runtime) {
     const auto connection = runtime.controlConnections.find(device.id);
-    return {{"id", device.id}, {"name", device.name}, {"online", connection != runtime.controlConnections.end() && connection->second->ready}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"require_approval", device.requireApproval}, {"manage_credentials", device.manageCredentials}, {"last_seen", device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr)}};
+    return {{"id", device.id}, {"name", device.name}, {"owner_username", device.ownerUsername}, {"online", connection != runtime.controlConnections.end() && connection->second->ready}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"require_approval", device.requireApproval}, {"manage_credentials", device.manageCredentials}, {"last_seen", device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr)}};
 }
 ruvia::Task<void> send(ruvia::Context& context, boost::json::object event) {
     const auto bytes = boost::json::serialize(event);
@@ -35,7 +35,11 @@ ruvia::Task<void> writeStatus(ruvia::Context& context, StatusSubscription& subsc
     try {
         auto& runtime = context.workerState<ServerRuntime>();
         const auto token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""));
-        const auto devices = co_await context.runBlocking([service = runtime.devices, user = subscription.userId] { return service.list(user); });
+        const bool administration = context.req().query("scope").value_or("") == "administration";
+        if (administration && context.requestState<UserIdentity>().role != "admin") {
+            throw std::runtime_error("Administrator required");
+        }
+        const auto devices = co_await context.runBlocking([service = runtime.devices, user = subscription.userId, administration] { return service.list(user, administration); });
         std::set<std::string> visible;
         boost::json::array snapshot;
         for (const auto& device : devices) {
@@ -50,7 +54,7 @@ ruvia::Task<void> writeStatus(ruvia::Context& context, StatusSubscription& subsc
                 break;
             }
             const auto user = co_await context.runBlocking([service = runtime.identities, token] { return service.authenticate(token); });
-            if (!user || user->id != subscription.userId || subscription.closed()) {
+            if (!user || user->id != subscription.userId || (administration && user->role != "admin") || subscription.closed()) {
                 break;
             }
             if (*event == "h") {
@@ -60,7 +64,7 @@ ruvia::Task<void> writeStatus(ruvia::Context& context, StatusSubscription& subsc
                 co_await sendAccount(context, *user);
             } else if (event->starts_with("d:")) {
                 const auto id = event->substr(2);
-                const auto device = co_await context.runBlocking([service = runtime.devices, user = subscription.userId, id] { return service.find(user, id); });
+                const auto device = co_await context.runBlocking([service = runtime.devices, user = subscription.userId, id, administration] { return service.find(user, id, administration); });
                 if (scope.stopRequested() || subscription.closed()) {
                     break;
                 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,6 +14,8 @@ struct UserIdentity {
     std::string role = "user";
     std::string loginHash;
 };
+enum class LoginError { kInvalidCredentials,
+                        kFactorRequired };
 struct LoginSession {
     UserIdentity user;
     std::string token;
@@ -37,7 +40,7 @@ class IdentityService {
   public:
     explicit IdentityService(DatabaseConfig database, std::string key = {}) : database_(std::move(database)), key_(std::move(key)) {}
     void bootstrap(std::string_view username, std::string_view password) const;
-    std::optional<LoginSession> login(std::string_view username, std::string_view password, std::string_view code = {}) const;
+    std::expected<LoginSession, LoginError> login(std::string_view username, std::string_view password, std::string_view code = {}) const;
     std::optional<UserIdentity> authenticate(std::string_view token) const;
     void logout(std::string_view token) const;
     SecurityInfo security(std::string_view userId) const;

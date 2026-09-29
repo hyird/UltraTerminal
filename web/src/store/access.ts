@@ -1,7 +1,7 @@
 import type { MenuItemType } from "#src/layout/layout-menu/types";
 import type { AppRouteRecordRaw } from "#src/router/types";
 
-import { rootRoute, router } from "#src/router";
+import { router } from "#src/router";
 import { ROOT_ROUTE_ID } from "#src/router/constants";
 import { baseRoutes } from "#src/router/routes";
 import { ascending } from "#src/router/utils/ascending";
@@ -53,8 +53,8 @@ export const useAccessStore = create<AccessState & AccessAction>((set) => ({
   },
 
   reset: () => {
-    /* 移除动态路由 */
-    router._internalSetRoutes(rootRoute);
+    // Keep registered route identities stable across account switches. AuthGuard
+    // rejects administration routes by role; menus are rebuilt on the next login.
     set(initialState);
   },
 }));

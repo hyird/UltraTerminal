@@ -9,13 +9,14 @@ export class StatusSession {
   constructor(
     private readonly update: (event: Record<string, unknown>) => void,
     private readonly failed: (message: string) => void,
+    private readonly scope: "personal" | "administration" = "personal",
   ) {
     this.connect();
   }
   private connect() {
     if (this.stopped) return;
     const socket = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/events`,
+      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/events${this.scope === "administration" ? "?scope=administration" : ""}`,
     );
     this.socket = socket;
     const heartbeat = () => {

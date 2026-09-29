@@ -9,6 +9,7 @@ export interface Device {
   requireApproval: boolean;
   manageCredentials: boolean;
   lastSeen: string | null;
+  ownerUsername?: string;
 }
 
 export interface DeviceGrant {
