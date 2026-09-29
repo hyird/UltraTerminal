@@ -1,4 +1,4 @@
-import { record } from "../../lib/http";
+import { authEvents, record } from "../../lib/http";
 
 export class StatusSession {
   private socket: WebSocket | undefined;
@@ -6,23 +6,32 @@ export class StatusSession {
   private heartbeat: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   private failures = 0;
+  private readonly expired = () => this.close();
   constructor(
     private readonly update: (event: Record<string, unknown>) => void,
     private readonly failed: (message: string) => void,
     private readonly scope: "personal" | "administration" = "personal",
   ) {
+    authEvents.addEventListener("expired", this.expired);
     this.connect();
   }
   private connect() {
     if (this.stopped) return;
-    const socket = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/events${this.scope === "administration" ? "?scope=administration" : ""}`,
-    );
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(
+        `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/events${this.scope === "administration" ? "?scope=administration" : ""}`,
+      );
+    } catch {
+      this.scheduleRetry();
+      return;
+    }
     this.socket = socket;
     const heartbeat = () => {
       clearTimeout(this.heartbeat);
       this.heartbeat = setTimeout(() => socket.close(), 45000);
     };
+    heartbeat();
     socket.onopen = heartbeat;
     socket.onmessage = (message: MessageEvent<unknown>) => {
       try {
@@ -45,21 +54,26 @@ export class StatusSession {
     socket.onclose = () => {
       clearTimeout(this.heartbeat);
       if (this.stopped) return;
-      if (++this.failures > 5) {
-        this.failed("状态连接已断开，请检查登录状态并重新加载页面");
-        return;
-      }
-      this.retry = setTimeout(
-        () => this.connect(),
-        Math.min(30000, 1000 * 2 ** (this.failures - 1)),
-      );
+      this.scheduleRetry();
     };
+  }
+  private scheduleRetry() {
+    if (this.stopped) return;
+    clearTimeout(this.retry);
+    this.failures = Math.min(this.failures + 1, 6);
+    this.failed("状态连接已断开，正在自动重连…");
+    this.retry = setTimeout(
+      () => this.connect(),
+      Math.min(30000, 1000 * 2 ** (this.failures - 1)),
+    );
   }
   close() {
     this.stopped = true;
+    authEvents.removeEventListener("expired", this.expired);
     clearTimeout(this.retry);
     clearTimeout(this.heartbeat);
     if (this.socket) {
+      this.socket.onopen = null;
       this.socket.onmessage = null;
       this.socket.onclose = null;
       this.socket.close();
