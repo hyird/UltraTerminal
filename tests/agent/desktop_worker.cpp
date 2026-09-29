@@ -49,6 +49,7 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     bool ready = false, configured = false, refreshed = false, firstFrame = false, cursorReceived = false;
     std::uint64_t videoGeneration = 0;
     bool closed = false;
+    bool closeRequested = false;
     unsigned probes = 0;
     std::uint64_t probeSequence = 2;
     auto firstProbeAt = std::chrono::steady_clock::time_point{};
@@ -77,6 +78,9 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
             cursorReceived = true;
         } else if (packet->has_desktop_probe()) {
             require(ready && packet->channel_id() == "input" && packet->desktop_probe().nonce() == ++probes, "Invalid desktop liveness probe");
+            if (closeRequested) {
+                continue;
+            }
             if (probes == 1) {
                 firstProbeAt = std::chrono::steady_clock::now();
             }
@@ -119,6 +123,7 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
                     auto close = message(++probeSequence);
                     close.mutable_session_close()->set_reason("recovered");
                     co_await send(pipe, close);
+                    closeRequested = true;
                 }
             }
         } else if (packet->has_video_frame()) {
