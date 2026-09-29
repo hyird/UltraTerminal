@@ -62,7 +62,7 @@ export function DeviceAssignmentsPage() {
       .includes(query.toLowerCase()),
   );
   return (
-    <PageWorkspace title="机器分配">
+    <PageWorkspace title="设备授权">
       {error && <Alert className="mb-4" type="error" title={error} />}
       <Card size="small" className="device-list-card">
         <div className="list-toolbar">

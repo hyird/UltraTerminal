@@ -47,7 +47,7 @@ export default function LayoutHeader({
     >
       <header
         className={cn(
-          "flex-shrink-0 flex gap-5 justify-between items-center md:px-4",
+          "flex-shrink-0 flex gap-2 md:gap-5 justify-between items-center md:px-4",
           { "overflow-hidden": isMaximize },
           className,
         )}

@@ -98,7 +98,7 @@ export function AccountsPage() {
   }
   return (
     <PageWorkspace
-      title="账号管理"
+      title="用户管理"
       action={
         <Button type="primary" disabled={loading} onClick={() => edit(null)}>
           创建账号

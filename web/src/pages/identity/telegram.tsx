@@ -77,11 +77,12 @@ export function TelegramSettingsPage() {
     }
   }
   return (
-    <PageWorkspace title="Telegram Bot 配置">
+    <PageWorkspace title="系统设置">
       {error && !action && (
         <Alert className="mb-4" type="error" title={error} />
       )}
       <Card size="small" className="device-list-card" loading={loading}>
+        <Typography.Title level={5}>Telegram Bot</Typography.Title>
         <Typography.Paragraph>
           {telegram.botUsername
             ? `当前 Bot：@${telegram.botUsername}`

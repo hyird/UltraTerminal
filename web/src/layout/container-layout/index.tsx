@@ -11,6 +11,7 @@ import LayoutContent from "../layout-content";
 import LayoutMobileMenu from "../layout-mobile-menu";
 import { BreadcrumbViews } from "../widgets/breadcrumb-views";
 import { headerHeight, tabbarHeight } from "../constants";
+import { WorkspaceSwitcher } from "../workspace-switcher";
 // Upstream ContainerLayout, trimmed to side navigation and the real workspace.
 export default function ContainerLayout() {
   const screens = Grid.useBreakpoint();
@@ -39,7 +40,8 @@ export default function ContainerLayout() {
       className="flex flex-col h-dvh min-h-0 overflow-hidden"
     >
       <LayoutHeader>
-        <BreadcrumbViews />
+        <WorkspaceSwitcher />
+        {!isMobile && <BreadcrumbViews />}
       </LayoutHeader>
       <LayoutMobileMenu />
       {!isMaximize && !isMobile && (

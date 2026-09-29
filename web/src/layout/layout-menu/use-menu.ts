@@ -20,9 +20,14 @@ export function useMenu() {
   const { isMixedNav, isTwoColumnNav } = useLayout();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const translatedMenus = translateMenus(wholeMenus, t);
-
   const { pathname } = useCurrentRoute();
+  const consoleView = pathname.startsWith("/administration/");
+  const translatedMenus = translateMenus(
+    wholeMenus.filter(
+      (item) => item.key.startsWith("/administration/") === consoleView,
+    ),
+    t,
+  );
   const matches = useMatches();
   /**
    * 混合菜单模式下需要拆分 menu 的 items

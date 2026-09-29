@@ -195,7 +195,13 @@ Windows Agent 采用系统服务与目标会话桌面工作进程，通过 DXGI 
 
 ### 前端模板
 
-前端直接裁剪自 condorheroblog/react-antd-admin（b4978f50e40ea0db835afbca915de44a25273e24），沿用原工程 src 结构、布局、主题和登录页面。个人安全设置、账号管理、机器分配和 Bot 配置采用独立路由与菜单；管理路由仅管理员可见。统一复用“我的设备”的工作区标签、外层卡片容器和标题栏。登录首屏仅用户名/密码，服务端返回 factor_required 后展示独立 TOTP 步骤，恢复码通过单独恢复入口提交，未完成第二因素不创建登录会话。业务包含真实登录、账号与安全、设备授权、远控与 Windows 凭据；移除演示路由、Mock 和对应依赖。登录使用服务端 HttpOnly Cookie，模板不存储认证 token；远控工作区沿用模板标签栏，支持同时打开多台设备；每台设备只保留一个标签，重复连接切换到已有标签。每个标签独立持有通道、重连与重启操作状态，切换设备视图不销毁会话。后台标签通过现有显示反馈暂停画面更新并释放已按下的输入，保留通道与存活探测；重连不会抢占当前标签。关闭标签仅清理对应会话，退出页面清理全部会话；全屏保留标签切换。MIT 许可随静态产物发布。
+前端直接裁剪自 condorheroblog/react-antd-admin（b4978f50e40ea0db835afbca915de44a25273e24），沿用原工程 src 结构、布局、主题和登录页面。导航参考 Next Terminal 的用户/管理布局及 JumpServer 的工作台/控制台分离：工作台只显示我的设备；管理员通过顶部工作区选择器进入管理控制台，侧栏显示设备授权、用户管理、系统设置。个人安全设置位于右上角账户菜单。每项使用独立路由；菜单由已授权路由和当前工作区共同决定，直接访问管理路径仍受角色守卫及服务端授权约束。统一复用“我的设备”的工作区标签、外层卡片容器和标题栏。登录首屏仅用户名/密码，服务端返回 factor_required 后展示独立 TOTP 步骤，恢复码通过单独恢复入口提交，未完成第二因素不创建登录会话。业务包含真实登录、账号与安全、设备授权、远控与 Windows 凭据；移除演示路由、Mock 和对应依赖。登录使用服务端 HttpOnly Cookie，模板不存储认证 token；远控工作区沿用模板标签栏，支持同时打开多台设备；每台设备只保留一个标签，重复连接切换到已有标签。每个标签独立持有通道、重连与重启操作状态，切换设备视图不销毁会话。后台标签通过现有显示反馈暂停画面更新并释放已按下的输入，保留通道与存活探测；重连不会抢占当前标签。关闭标签仅清理对应会话，退出页面清理全部会话；全屏保留标签切换。MIT 许可随静态产物发布。
+
+导航与身份交互参考：
+
+- [Next Terminal 用户/管理入口](https://github.com/next-terminal/next-terminal/blob/48c445bb4151e126592ade6dedf9d6f29df5dfe5/src/layout/RedirectPage.tsx)、[菜单](https://github.com/next-terminal/next-terminal/blob/48c445bb4151e126592ade6dedf9d6f29df5dfe5/src/layout/menus.tsx)、[分步登录](https://github.com/next-terminal/next-terminal/blob/48c445bb4151e126592ade6dedf9d6f29df5dfe5/src/pages/account/LoginPage.tsx)。只参考公开前端的交互组织；其 v2 起后端不再开源。
+- [JumpServer 控制台路由](https://github.com/jumpserver/lina/blob/98619c2112de7436a4a5167ba7801916ee3ceec5/src/router/console/index.js)、[工作台路由](https://github.com/jumpserver/lina/blob/98619c2112de7436a4a5167ba7801916ee3ceec5/src/router/workbench/index.js)、[资产授权说明](https://docs.jumpserver.org/zh/v4/manual/admin/console/authorization_manage/assets_authorization/)。借鉴用户、资产、操作权限的职责划分；当前仅提供已经实现的设备授权能力，不添加空的审计、组织或策略菜单。
+
 
 
 ### 前端桌面像素显示
