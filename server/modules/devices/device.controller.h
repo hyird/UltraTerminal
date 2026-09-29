@@ -28,8 +28,12 @@ class DeviceController final : public ruvia::Controller<DeviceController> {
     RUVIA_GET("/devices/restart-permission", restartPermissionStatus, UserAuthentication);
     RUVIA_POST("/devices/restart", restart, BrowserOrigin, UserAuthentication, ruvia::RateLimit<10, 60000>);
     RUVIA_GET("/devices/restart/:id", restartStatus, UserAuthentication);
+    RUVIA_GET("/devices/:id/grants", grants, UserAuthentication);
+    RUVIA_POST("/devices/:id/grants", saveGrant, BrowserOrigin, UserAuthentication);
     RUVIA_ROUTES_END
   private:
+    ruvia::Task<ruvia::HttpResponse> grants(ruvia::Context& context);
+    ruvia::Task<ruvia::HttpResponse> saveGrant(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> install(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> enrollment(ruvia::Context& context);
     ruvia::Task<ruvia::HttpResponse> devices(ruvia::Context& context);

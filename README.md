@@ -12,9 +12,9 @@ GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行三项�
 
 vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存前端、Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
 
-托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + PostgreSQL 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
+托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
-浏览器远程桌面平台。Windows Agent 与网关使用 C++23，前端使用 React、TypeScript、Tailwind CSS 和 Ant Design，数据库为 PostgreSQL。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
+浏览器远程桌面平台。Windows Agent 与网关使用 C++23，前端使用 React、TypeScript、Tailwind CSS 和 Ant Design，数据库为 MariaDB。架构与协议见 [DESIGN.md](DESIGN.md)，代码规范与目录契约见 [AGENTS.md](AGENTS.md)。
 
 远控断线与质量摘要写入网关服务日志。查询 `journalctl -u ultraterimal --since '10 minutes ago'`，按 `session_id` 关联 `desktop_session_ready`、`desktop_session_health`、`desktop_session_end` 和 `desktop_agent_event`；设备控制通道断线查 `agent_control_end`。`peer_closed` 不是网络故障的结论，具体字段含义见 [DESIGN.md](DESIGN.md)。
 
@@ -63,7 +63,7 @@ cmake --build --preset linux-server-release -j4
 ctest --preset linux-server-release
 ```
 
-Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glibc 与 C++ 标准库需兼容构建环境；数据库可使用已有 PostgreSQL/TimescaleDB 实例中的独立数据库与应用角色。
+Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glibc 与 C++ 标准库需兼容构建环境；数据库可使用MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
 
 ```powershell
 npm ci --prefix web
@@ -83,7 +83,8 @@ npm run format:check --prefix web
 | `native_address`、`native_port` | Agent 原生 UDP/TCP 入口，默认 `0.0.0.0`、`7443` |
 | `native_host`、`native_public_address` | Agent 证书校验域名、可直连的源站地址；添加设备命令使用。默认由 `origin` 域名推导，CDN 场景必须配置真实源站地址 |
 | `native_certificate_file`、`native_key_file` | 原生入口证书链与私钥，必填 |
-| `database` | libpq 连接串 |
+| `database` | MariaDB 对象：`host`、`port`、`username`、`password`、`database`；可选 `socket`、`tls_ca` |
+| `security_key_file` | 启动服务必填：64 个小写十六进制字符的随机 256 位密钥文件，用于加密 TOTP 和 Bot 凭据；Linux 权限须为 `0600`，Windows ACL 仅允许管理员和服务账户 |
 | `origin` | 浏览器 HTTPS 来源，含非默认端口，不含路径 |
 | `web_root` | 可选静态目录，指向 `build/web/` |
 
@@ -231,3 +232,31 @@ Agent 结构化事件通过已鉴权的原生控制通道上传，Gateway 输出
 工具栏提供“原始大小”和“适应窗口”，默认适应窗口。原始大小抵消浏览器 DPI 缩放，让远端一像素对应本地一个物理像素；适应窗口按横纵两个方向独立拉伸，铺满可用区域，不保持宽高比、不留边；窗口或全屏尺寸变化时重新适配。每个远控标签独立选择，重连保留当前选择。
 
 Agent 1.0.7 起，远程分辨率通过 Windows `CDS_UPDATEREGISTRY | CDS_GLOBAL` 保存为机器显示配置。再次选择当前分辨率也会写入配置，断开远控不还原；后续系统显示设置、显卡驱动或显示器拓扑变化仍可能覆盖该值。
+
+## 平台账号、设备共享与双重验证
+
+- 在“账号与安全 → 平台管理”创建账号、修改角色、禁用账号或重置密码；这些操作要求管理员重新验证自己的密码和验证码。平台保留至少一个可用管理员，密码重置不绕过已绑定的 TOTP。
+- 设备创建者为所有者。所有者在“管理 → 设备授权”按平台用户名共享设备，分别配置桌面查看、控制、系统重启、Windows 凭据管理，以及直接连接或每次审批。平台管理员不会自动获得其他人的设备权限。
+- 在“我的安全设置”绑定 Google 验证器：扫描二维码后输入验证码确认。登录填写密码及六位验证码，遗失验证器时可使用一次性恢复码。恢复码只显示一次；重新生成后旧码失效。修改密码、启用/关闭 TOTP、重新生成恢复码会撤销其他登录。
+- 验证码为 RFC 6238 的 SHA-1 / 6 位 / 30 秒，接受前后一个时间步并拒绝重用。服务器与手机应保持时间同步；连续 5 次验证失败后冷却 5 分钟。
+- Telegram：管理员先通过 @BotFather 创建 Bot，在平台录入 Token。平台验证 Bot 并设置同源 `/api/telegram/webhook` HTTPS 回调；反向代理须保留 `X-Telegram-Bot-Api-Secret-Token` 请求头，日志不得记录请求体或该请求头。无需开放 Agent HTTP 入口。
+- 每位用户在自己的安全设置生成有效期 10 分钟的一次性绑定链接，并在 Bot 私聊点击 Start。申请人及设备所有者都必须绑定，才能使用审批连接；审批只发给设备所有者，5 分钟有效、一次使用。解绑、停用 Bot、改授权或退出申请人的登录会使未使用的审批失效；重新连接需要重新审批。
+- Bot Token 只写入，不向页面回显；Token、回调密钥及 TOTP 密钥以 OpenSSL AES-256-GCM 加密保存，恢复码和登录票据只保存散列。加密密钥须在数据库外备份，不能随发布轮换或丢失。
+- 设备、绑定和审批通过 `/api/events` WSS 推送状态，禁止通过定时 GET 刷新。退出登录、禁用用户和改授权会终止失效的远控，运行中的会话仍保留周期性鉴权作为兜底。
+
+升级前备份数据库、网关配置及加密密钥，生成受保护的密钥文件并配置 `security_key_file`。网关和前端必须一起更新。现有 PostgreSQL 数据按下节手动迁移；无法确定归属的设备须核实审计，不自动分配给其他用户。回滚到旧版本时须停服并恢复对应的数据库及配置，不能让旧网关继续使用新版权限数据。
+
+安全原语单元测试为 `server.security`。数据库行为验证手动构建 `server-access-integration`，将**全新、可丢弃**数据库的 MariaDB 配置 JSON 对象从标准输入传入；该检查会执行迁移、创建账号与设备，不加入 CI，也不能指向业务数据库。真实 Telegram 的配置、发信和点击审批需要可用 Bot 后另行验证。
+
+
+## PostgreSQL 手动迁移到 MariaDB
+
+平台只使用 MariaDB；旧 PostgreSQL 迁移文件保存在 `server/migrations/postgresql/`，用于核对历史结构，不由网关执行。MariaDB 使用独立的 `001_mariadb.sql` 基线。DDL 会隐式提交，迁移失败会保留未完成标记并阻止重试；修复原因后恢复空库再运行，不能手动把未完成标记改成成功。
+
+1. 备份旧数据库、配置、发布目录和密钥；先在隔离 MariaDB 库演练。创建独立数据库和仅对该库有权限的应用账户。表使用 InnoDB、`utf8mb4_nopad_bin`，时间为 UTC `DATETIME(6)`。
+2. 新配置的 `database` 改为 JSON 对象。服务器同机部署优先使用 `host: "localhost"` 配合 Unix `socket`；TCP 默认 `127.0.0.1:3306`。远端数据库必须指定 `tls_ca` 并通过证书校验；不要把凭据放入启动参数。执行新版 `gateway --migrate <config.json>` 创建空表。
+3. 停止旧网关后，以一致快照导出 PostgreSQL 版本 7 的账号、设备、登录、注册码、能力、授权、远控会话、通道、审计和重启记录；按外键顺序导入 MariaDB。保留所有原始 ID、密码摘要、设备凭据摘要和审计编号；二进制能力数据按原字节导入，时间转为 UTC 并保留微秒。MariaDB 自增值须高于导入的最大编号。
+4. 逐表核对行数及全部原始列的内容摘要，再从成功的 `identity.bootstrap` 审计恢复管理员，从最早的 `device.create` / `device.register` 审计恢复设备所有者；所有者的管理权限以其现有桌面控制权限为前提。新授权版本号由 MariaDB 序列生成。结束旧远控会话并补充审计，随后重连。
+5. 同时切换网关、前端和配置，验证原账号登录、设备在线、授权隔离、桌面连接及撤权。保留原 PostgreSQL 数据库供回滚；不删除其他应用的数据库或停止共享数据库服务。
+
+正式切换后若产生新业务数据，回滚需要额外处理这些新增数据，不能直接切回旧快照。数据库迁移不更换 Agent 的设备身份或凭据。

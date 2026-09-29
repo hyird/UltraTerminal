@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config/request.schema.h"
+#include "features/desktop/access.runtime.h"
 #include "installer.script.h"
 #include "middleware/json.transport.h"
 #include "update.service.h"
@@ -78,6 +79,7 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::rename(ruvia::Context& contex
     if (!updated) {
         co_return context.error({.status = ruvia::http_status::kForbidden, .code = "access_denied", .message = "Only the device registrant can rename an active device"});
     }
+    context.workerState<ServerRuntime>().status.publish("d:" + device);
     co_return jsonResponse(context, {{"id", device}, {"name", name}});
 }
 ruvia::Task<ruvia::HttpResponse> DeviceController::remove(ruvia::Context& context) {
@@ -99,6 +101,8 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::remove(ruvia::Context& contex
             session->second->close(DesktopCloseReason::kDeviceDeleted);
         }
     }
+    runtime.status.publish("d:" + device);
+    runtime.status.publish("u:*");
     co_return jsonResponse(context, {{"id", device}, {"deleted", true}});
 }
 ruvia::Task<ruvia::HttpResponse> DeviceController::windowsLogin(ruvia::Context& context) {
@@ -231,7 +235,8 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::create(ruvia::Context& contex
     const auto name = requestText(body, "name", 128);
     const auto device = co_await context.runBlocking([service = context.workerState<ServerRuntime>().devices, userId = context.requestState<UserIdentity>().id, name] { return service.createDevice(userId, name); });
     context.status(ruvia::http_status::kCreated);
-    co_return jsonResponse(context, {{"id", device.id}, {"name", device.name}, {"enrolled", false}, {"can_manage", true}, {"online", false}, {"last_seen", nullptr}});
+    context.workerState<ServerRuntime>().status.publish("d:" + device.id);
+    co_return jsonResponse(context, {{"id", device.id}, {"name", device.name}, {"enrolled", false}, {"can_manage", true}, {"desktop", true}, {"write_control", true}, {"require_approval", false}, {"manage_credentials", true}, {"online", false}, {"last_seen", nullptr}});
 }
 ruvia::Task<ruvia::HttpResponse> DeviceController::devices(ruvia::Context& context) {
     const auto devices = co_await context.runBlocking([service = context.workerState<ServerRuntime>().devices, userId = context.requestState<UserIdentity>().id] { return service.list(userId); });
@@ -239,10 +244,35 @@ ruvia::Task<ruvia::HttpResponse> DeviceController::devices(ruvia::Context& conte
     for (const auto& device : devices) {
         const auto& connections = context.workerState<ServerRuntime>().controlConnections;
         const auto connection = connections.find(device.id);
-        boost::json::object item{{"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"online", connection != connections.end() && connection->second->ready}};
+        boost::json::object item{{"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"require_approval", device.requireApproval}, {"manage_credentials", device.manageCredentials}, {"online", connection != connections.end() && connection->second->ready}};
         item["last_seen"] = device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr);
         response.push_back(std::move(item));
     }
     co_return jsonResponse(context, response);
+}
+ruvia::Task<ruvia::HttpResponse> DeviceController::grants(ruvia::Context& context) {
+    const auto result = co_await context.runBlocking([service = context.workerState<ServerRuntime>().devices, user = context.requestState<UserIdentity>().id, device = std::string(context.req().param("id").value_or(""))] { return service.grants(user, device); });
+    if (!result) {
+        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "access_denied", .message = "Owner required"});
+    }
+    boost::json::array grants;
+    for (const auto& g : *result) {
+        grants.push_back(boost::json::object{{"user_id", g.userId}, {"username", g.username}, {"desktop", g.desktop}, {"write_control", g.writeControl}, {"system_restart", g.systemRestart}, {"manage_credentials", g.manageCredentials}, {"require_approval", g.requireApproval}});
+    }
+    co_return jsonResponse(context, grants);
+}
+ruvia::Task<ruvia::HttpResponse> DeviceController::saveGrant(ruvia::Context& context) {
+    const auto body = requestObject(co_await context.req().text(), {"username", "desktop", "write_control", "system_restart", "manage_credentials", "require_approval", "remove"});
+    const auto device = std::string(context.req().param("id").value_or(""));
+    const DeviceGrant grant{{}, requestText(body, "username", 64), requestBool(body, "desktop"), requestBool(body, "write_control"), requestBool(body, "system_restart"), requestBool(body, "manage_credentials"), requestBool(body, "require_approval")};
+    auto& runtime = context.workerState<ServerRuntime>();
+    const bool ok = co_await context.runBlocking([service = runtime.devices, user = context.requestState<UserIdentity>().id, device, grant, remove = requestBool(body, "remove")] { return service.setGrant(user, device, grant, remove); });
+    if (!ok) {
+        co_return context.error({.status = ruvia::http_status::kForbidden, .code = "grant_rejected", .message = "Grant rejected; check owner, target user and Telegram configuration"});
+    }
+    co_await revalidateAccess(context);
+    runtime.status.publish("d:" + device);
+    runtime.status.publish("u:*");
+    co_return jsonResponse(context, {{"ok", true}});
 }
 } // namespace ultraterimal::server

@@ -5,14 +5,20 @@ export function PasswordLogin() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const login = useAuthStore((s) => s.login);
-  async function submit(values: { username: string; password: string }) {
+  async function submit(values: {
+    username: string;
+    password: string;
+    code?: string;
+  }) {
     if (busy) return;
     setBusy(true);
     setError("");
     try {
       await login(values);
     } catch {
-      setError("登录失败，请检查用户名和密码或网络连接");
+      setError(
+        "登录失败，请检查用户名、密码和验证码；多次失败后请等待 5 分钟再试",
+      );
     } finally {
       setBusy(false);
     }
@@ -48,6 +54,9 @@ export function PasswordLogin() {
             maxLength={1024}
             size="large"
           />
+        </Form.Item>
+        <Form.Item name="code" label="验证码或恢复码（已启用双重验证时填写）">
+          <Input autoComplete="one-time-code" maxLength={32} size="large" />
         </Form.Item>
         {error && (
           <Alert role="alert" className="mb-4" type="error" title={error} />

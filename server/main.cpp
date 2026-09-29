@@ -47,6 +47,9 @@ int main(int argc, char** argv) {
         if (command != "--serve") {
             return 2;
         }
+        if (config.securityKey.empty()) {
+            throw std::runtime_error("security_key_file is required for serving");
+        }
         const auto gateway = std::make_shared<GatewayRuntime>(config.database);
         const auto native = std::make_shared<NativeServer>(config);
         auto& app = ruvia::app();
@@ -55,6 +58,7 @@ int main(int argc, char** argv) {
         }
         app.listen({.address = config.address, .http = config.port})
             .server({.workerCount = 1, .processSignalHandlers = ruvia::ProcessSignalHandlerPolicy::kInstall, .idleTimeout = std::chrono::seconds(45), .requestHeaderTimeout = std::chrono::seconds(10), .requestBodyTimeout = std::chrono::seconds(10), .writeTimeout = std::chrono::seconds(10), .maxConnectionsPerWorker = 512, .maxBufferedBodyBytes = 65536, .maxWebSocketMessageBytes = ultraterimal::protocol::kMaximumMessageBytes})
+            .httpClient({.alias = "telegram", .config = {.host = "api.telegram.org", .connectionCount = 2, .maxBufferedRequests = 32, .requestTimeout = std::chrono::seconds(10), .maxResponseBytes = 65536}})
             .blockingPool({.threadCount = 4, .queueCapacity = 64})
             .rateLimit({.rule = {.maxRequests = 300, .window = std::chrono::minutes(1)}})
             .useWorkerState<ServerRuntime>([config] { return ServerRuntime(config); })

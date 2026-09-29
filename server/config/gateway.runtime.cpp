@@ -10,7 +10,7 @@
 #include "modules/sessions/session.service.h"
 
 namespace ultraterimal::server {
-GatewayRuntime::GatewayRuntime(const std::string& database) : lease_(std::make_shared<pqxx::connection>(acquireGatewayLease(database))) {
+GatewayRuntime::GatewayRuntime(const DatabaseConfig& database) : lease_(std::make_shared<DatabaseConnection>(acquireGatewayLease(database))) {
     SessionService(database).recoverAfterRestart();
     DeviceService(database).recoverRestarts();
 }

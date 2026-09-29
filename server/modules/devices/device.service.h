@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "modules/database/database.config.h"
 #include "ultraterimal/protocol/message.protocol.h"
 namespace ultraterimal::server {
 struct DeviceRegistration {
@@ -22,6 +23,18 @@ struct DeviceInfo {
     std::optional<std::string> lastSeen;
     bool canManage = false;
     bool enrolled = true;
+    bool desktop = false;
+    bool writeControl = false;
+    bool requireApproval = false;
+    bool manageCredentials = false;
+};
+struct DeviceGrant {
+    std::string userId, username;
+    bool desktop = true;
+    bool writeControl = false;
+    bool systemRestart = false;
+    bool manageCredentials = false;
+    bool requireApproval = false;
 };
 struct RestartOperation {
     std::string id;
@@ -33,7 +46,7 @@ struct RestartOperation {
 };
 class DeviceService {
   public:
-    explicit DeviceService(std::string database) : database_(std::move(database)) {}
+    explicit DeviceService(DatabaseConfig database) : database_(std::move(database)) {}
     DeviceInfo createDevice(std::string_view userId, std::string_view name) const;
     std::optional<std::string> createEnrollment(std::string_view userId, std::string_view deviceId) const;
     std::optional<std::string> enrollmentDevice(std::string_view code) const;
@@ -44,6 +57,8 @@ class DeviceService {
     std::vector<DeviceInfo> list(std::string_view userId) const;
     bool rename(std::string_view userId, std::string_view deviceId, std::string_view name) const;
     bool remove(std::string_view userId, std::string_view deviceId) const;
+    std::optional<std::vector<DeviceGrant>> grants(std::string_view ownerId, std::string_view deviceId) const;
+    bool setGrant(std::string_view ownerId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const;
     std::optional<DeviceInfo> find(std::string_view userId, std::string_view deviceId) const;
     bool canConfigureWindowsLogin(std::string_view userId, std::string_view deviceId) const;
     std::optional<bool> systemRestartPermission(std::string_view userId, std::string_view deviceId) const;
@@ -58,6 +73,6 @@ class DeviceService {
     void auditWindowsLogin(std::string_view userId, std::string_view deviceId, std::string_view action, bool success) const;
 
   private:
-    std::string database_;
+    DatabaseConfig database_;
 };
 } // namespace ultraterimal::server

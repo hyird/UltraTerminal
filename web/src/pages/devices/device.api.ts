@@ -1,5 +1,9 @@
 import { jsonRequest } from "../../lib/http";
 export const deviceApi = {
+  grants: (id: string) =>
+    jsonRequest(`/api/devices/${encodeURIComponent(id)}/grants`),
+  saveGrant: (id: string, body: unknown) =>
+    jsonRequest(`/api/devices/${encodeURIComponent(id)}/grants`, body),
   list: () => jsonRequest("/api/devices"),
   create: (name: string) => jsonRequest("/api/devices/create", { name }),
   enroll: (id: string, platform: string) =>
@@ -18,13 +22,19 @@ export const deviceApi = {
       action,
       ...account,
     }),
-  desktop: (id: string, writeControl: boolean, preempt: boolean) =>
+  desktop: (
+    id: string,
+    writeControl: boolean,
+    preempt: boolean,
+    approvalId?: string,
+  ) =>
     jsonRequest("/api/sessions", {
       device_id: id,
       kind: "desktop",
       write_control: writeControl,
       ...(writeControl ? { desktop_input_contract: 2 } : {}),
       preempt,
+      approval_id: approvalId,
     }),
   session: (id: string) =>
     jsonRequest(`/api/sessions/${encodeURIComponent(id)}`),

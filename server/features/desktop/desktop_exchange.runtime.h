@@ -119,7 +119,7 @@ ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol
     }
     if (source == protocol::ChannelSource::kBrowser) {
         state.authorization = co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, user = context.template requestState<UserIdentity>(), message = *open] {
-            return service.consumeBrowser(user.id, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
+            return service.consumeBrowser(user, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
         });
     } else {
         state.authorization = co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, device = context.template requestState<DeviceIdentity>(), message = *open] {

@@ -22,7 +22,7 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
     }
     const auto& object = value.as_object();
     for (const auto& item : object) {
-        if (item.key() != "address" && item.key() != "port" && item.key() != "database" && item.key() != "origin" && item.key() != "web_root" && item.key() != "native_address" && item.key() != "native_public_address" && item.key() != "native_host" && item.key() != "native_port" && item.key() != "native_certificate_file" && item.key() != "native_key_file") {
+        if (item.key() != "address" && item.key() != "port" && item.key() != "database" && item.key() != "origin" && item.key() != "web_root" && item.key() != "native_address" && item.key() != "native_public_address" && item.key() != "native_host" && item.key() != "native_port" && item.key() != "native_certificate_file" && item.key() != "native_key_file" && item.key() != "security_key_file") {
             throw std::invalid_argument("Unknown gateway setting");
         }
     }
@@ -54,7 +54,7 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
     if (object.contains("web_root")) {
         config.webRoot = localPath("web_root");
     }
-    config.database = text("database") + " connect_timeout=3";
+    config.database = parseDatabaseConfig(boost::json::serialize(object.at("database")));
     config.origin = text("origin");
     if (!config.origin.starts_with("https://") || config.origin.find_first_of("\r\n ") != std::string::npos || config.origin.find('/', 8) != std::string::npos) {
         throw std::invalid_argument("Expected HTTPS origin without a path");
@@ -69,6 +69,26 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
     };
     if (!validHost(config.nativeHost) || !validHost(config.nativePublicAddress)) {
         throw std::invalid_argument("Invalid public native gateway address");
+    }
+    if (object.contains("security_key_file")) {
+        const auto keyPath = localPath("security_key_file");
+#ifndef _WIN32
+        const auto permissions = std::filesystem::status(keyPath).permissions();
+        if ((permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) != std::filesystem::perms::none) {
+            throw std::runtime_error("Security key file permissions are too broad");
+        }
+#endif
+        std::ifstream keyInput(keyPath, std::ios::binary);
+        std::string key(66, '\0');
+        keyInput.read(key.data(), static_cast<std::streamsize>(key.size()));
+        key.resize(static_cast<std::size_t>(keyInput.gcount()));
+        if (!key.empty() && key.back() == '\n') {
+            key.pop_back();
+        }
+        if (key.size() != 64 || key.find_first_not_of("0123456789abcdef") != std::string::npos) {
+            throw std::runtime_error("Invalid security key file");
+        }
+        config.securityKey = std::move(key);
     }
     return config;
 }

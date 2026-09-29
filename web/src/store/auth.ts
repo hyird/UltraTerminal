@@ -11,7 +11,11 @@ interface AuthState {
   initialized: boolean;
   error: string;
   initialize: () => Promise<void>;
-  login: (values: { username: string; password: string }) => Promise<void>;
+  login: (values: {
+    username: string;
+    password: string;
+    code?: string;
+  }) => Promise<void>;
   logout: () => Promise<void>;
 }
 let initialization: Promise<void> | undefined;
@@ -26,6 +30,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         useUserStore.setState({
           id: user?.id ?? "",
           username: user?.username ?? "",
+          role: user?.role ?? "user",
         });
         set({ authenticated: !!user, initialized: true });
       } catch {
@@ -33,8 +38,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
     })()),
   login: async (values) => {
-    const user = await login(values.username, values.password);
-    useUserStore.setState({ id: user.id, username: user.username });
+    const user = await login(values.username, values.password, values.code);
+    useUserStore.setState({
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    });
     set({ authenticated: true, error: "" });
   },
   logout: async () => {

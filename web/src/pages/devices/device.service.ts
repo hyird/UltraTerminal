@@ -1,6 +1,9 @@
+import { StatusSession } from "../../sessions/status/status.session";
+import { approvalList } from "../identity/identity.service";
+import type { Approval } from "../identity/identity.types";
 import { ApiError, record, text } from "../../lib/http";
 import { deviceApi } from "./device.api";
-import type { Device } from "./device.types";
+import type { Device, DeviceGrant } from "./device.types";
 export async function updateAgent(
   id: string,
 ): Promise<{ status: "requested" | "current"; version: string }> {
@@ -65,19 +68,35 @@ import type {
 export async function listDevices(): Promise<Device[]> {
   const value = await deviceApi.list();
   if (!Array.isArray(value)) throw new Error("设备列表格式错误");
-  return value.map((entry: unknown) => {
-    const item = record(entry);
-    if (typeof item.online !== "boolean") throw new Error("设备状态格式错误");
-    return {
-      id: text(item.id),
-      name: text(item.name),
-      online: item.online,
-      canManage: item.can_manage === true,
-      enrolled: item.enrolled !== false,
-      lastSeen: item.last_seen === null ? null : text(item.last_seen),
-    };
-  });
+  return value.map(parseDevice);
 }
+function parseDevice(entry: unknown): Device {
+  const item = record(entry);
+  for (const key of [
+    "online",
+    "can_manage",
+    "enrolled",
+    "desktop",
+    "write_control",
+    "require_approval",
+    "manage_credentials",
+  ]) {
+    if (typeof item[key] !== "boolean") throw new Error("设备状态格式错误");
+  }
+  return {
+    id: text(item.id),
+    name: text(item.name),
+    online: item.online === true,
+    canManage: item.can_manage === true,
+    enrolled: item.enrolled === true,
+    desktop: item.desktop === true,
+    writeControl: item.write_control === true,
+    requireApproval: item.require_approval === true,
+    manageCredentials: item.manage_credentials === true,
+    lastSeen: item.last_seen === null ? null : text(item.last_seen),
+  };
+}
+
 export interface Enrollment {
   code: string;
   deviceId: string;
@@ -87,16 +106,9 @@ export interface Enrollment {
   nativePort: number;
 }
 export async function createDevice(name: string): Promise<Device> {
-  const item = record(await deviceApi.create(name));
-  return {
-    id: text(item.id),
-    name: text(item.name),
-    online: false,
-    canManage: true,
-    enrolled: false,
-    lastSeen: null,
-  };
+  return parseDevice(await deviceApi.create(name));
 }
+
 export async function createEnrollment(
   id: string,
   platform: string,
@@ -132,18 +144,21 @@ export async function openDesktop(
   id: string,
   writeControl?: boolean,
   preempt = true,
+  approvalId?: string,
 ): Promise<DesktopTicket> {
   if (writeControl === undefined) {
     try {
-      return await openDesktop(id, true, preempt);
+      return await openDesktop(id, true, preempt, approvalId);
     } catch (error) {
       // Only an authorization denial may fall back to a read-only request.
       // Busy devices, expired logins, and network failures must remain errors.
       if (!(error instanceof ApiError) || error.status !== 403) throw error;
-      return openDesktop(id, false, preempt);
+      return openDesktop(id, false, preempt, approvalId);
     }
   }
-  const item = record(await deviceApi.desktop(id, writeControl, preempt));
+  const item = record(
+    await deviceApi.desktop(id, writeControl, preempt, approvalId),
+  );
   if (!Array.isArray(item.channels) || item.channels.length !== 2)
     throw new Error("会话通道格式错误");
   const channels = item.channels.map((entry: unknown): DesktopGrant => {
@@ -177,4 +192,61 @@ export async function renameDevice(id: string, name: string): Promise<string> {
 export async function deleteDevice(id: string): Promise<void> {
   const result = record(await deviceApi.remove(id));
   if (result.deleted !== true) throw new Error("设备删除未确认");
+}
+
+export function observeDevices(
+  snapshot: (items: Device[]) => void,
+  upsert: (item: Device) => void,
+  remove: (id: string) => void,
+  approvals: (items: Approval[]) => void,
+  failed: (message: string) => void,
+): () => void {
+  const session = new StatusSession((event) => {
+    if (event.type === "snapshot") {
+      if (!Array.isArray(event.devices)) throw new Error("设备列表格式错误");
+      snapshot(event.devices.map(parseDevice));
+    } else if (event.type === "upsert") upsert(parseDevice(event.device));
+    else if (event.type === "remove") remove(text(event.id));
+    else if (event.type === "account") approvals(approvalList(event.approvals));
+  }, failed);
+  return () => session.close();
+}
+export async function listGrants(id: string): Promise<DeviceGrant[]> {
+  const items = await deviceApi.grants(id);
+  if (!Array.isArray(items)) throw new Error("授权列表格式错误");
+  return items.map((entry: unknown) => {
+    const item = record(entry);
+    for (const key of [
+      "desktop",
+      "write_control",
+      "system_restart",
+      "manage_credentials",
+      "require_approval",
+    ])
+      if (typeof item[key] !== "boolean") throw new Error("授权字段格式错误");
+    return {
+      userId: text(item.user_id),
+      username: text(item.username),
+      desktop: item.desktop === true,
+      writeControl: item.write_control === true,
+      systemRestart: item.system_restart === true,
+      manageCredentials: item.manage_credentials === true,
+      requireApproval: item.require_approval === true,
+    };
+  });
+}
+export async function saveGrant(
+  id: string,
+  grant: DeviceGrant,
+  remove = false,
+): Promise<void> {
+  await deviceApi.saveGrant(id, {
+    username: grant.username,
+    desktop: grant.desktop,
+    write_control: grant.writeControl,
+    system_restart: grant.systemRestart,
+    manage_credentials: grant.manageCredentials,
+    require_approval: grant.requireApproval,
+    remove,
+  });
 }

@@ -10,37 +10,37 @@ DeviceInfo DeviceService::createDevice(std::string_view userId, std::string_view
         throw std::invalid_argument("Invalid device name");
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    if (tx.exec("SELECT id FROM users WHERE id=$1 AND NOT disabled FOR UPDATE", pqxx::params(tx, userId)).empty()) {
+    DatabaseTransaction tx(connection);
+    if (tx.exec("SELECT id FROM users WHERE id=? AND NOT disabled FOR UPDATE", userId).empty()) {
         throw std::runtime_error("User unavailable");
     }
-    if (tx.exec("SELECT count(*) FROM device_grants g JOIN devices d ON d.id=g.device_id WHERE g.user_id=$1 AND d.revoked_at IS NULL", pqxx::params(tx, userId))[0][0].as<int>() >= 1000) {
+    if (tx.exec("SELECT count(*) FROM device_grants g JOIN devices d ON d.id=g.device_id WHERE g.user_id=? AND d.revoked_at IS NULL", userId)[0][0].as<int>() >= 1000) {
         throw std::runtime_error("Device limit reached");
     }
-    DeviceInfo result{"d-" + randomToken(), std::string(name), std::nullopt, true, false};
-    tx.exec("INSERT INTO devices(id,name,credential_hash,enrolled) VALUES($1,$2,$3,false)", pqxx::params(tx, result.id, result.name, tokenHash(randomToken())));
-    tx.exec("INSERT INTO device_grants(device_id,user_id) VALUES($1,$2)", pqxx::params(tx, result.id, userId));
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES($1,$2,'device.create',true)", pqxx::params(tx, userId, result.id));
+    DeviceInfo result{"d-" + randomToken(), std::string(name), std::nullopt, true, false, true, true, false, true};
+    tx.exec("INSERT INTO devices(id,name,credential_hash,enrolled,owner_id) VALUES(?,?,?,false,?)", result.id, result.name, tokenHash(randomToken()), userId);
+    tx.exec("INSERT INTO device_grants(device_id,user_id,system_restart,manage_credentials) VALUES(?,?,true,true)", result.id, userId);
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,'device.create',true)", userId, result.id);
     tx.commit();
     return result;
 }
 std::optional<std::string> DeviceService::createEnrollment(std::string_view userId, std::string_view deviceId) const {
     const auto code = randomToken();
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto device = tx.exec("SELECT d.enrolled FROM devices d JOIN users u ON u.id=$1 WHERE d.id=$2 AND d.revoked_at IS NULL AND NOT u.disabled AND EXISTS (SELECT 1 FROM audit_events a WHERE a.device_id=d.id AND a.user_id=u.id AND a.event_type IN ('device.create','device.register') AND a.success) FOR UPDATE OF d", pqxx::params(tx, userId, deviceId));
+    DatabaseTransaction tx(connection);
+    const auto device = tx.exec("SELECT d.enrolled FROM devices d JOIN users u ON u.id=? WHERE d.id=? AND d.revoked_at IS NULL AND NOT u.disabled AND d.owner_id=u.id FOR UPDATE", userId, deviceId);
     if (device.empty()) {
         return std::nullopt;
     }
     if (device[0][0].as<bool>()) {
         return std::string{};
     }
-    tx.exec("DELETE FROM enrollment_codes WHERE expires_at<now()-interval '1 day'");
-    if (tx.exec("SELECT count(*) FROM enrollment_codes WHERE user_id=$1 AND consumed_at IS NULL AND expires_at>now()", pqxx::params(tx, userId))[0][0].as<int>() >= 20) {
+    tx.exec("DELETE FROM enrollment_codes WHERE expires_at<now(6)-INTERVAL 1 DAY");
+    if (tx.exec("SELECT count(*) FROM enrollment_codes WHERE user_id=? AND consumed_at IS NULL AND expires_at>now(6)", userId)[0][0].as<int>() >= 20) {
         throw std::runtime_error("Enrollment limit reached");
     }
-    tx.exec("UPDATE enrollment_codes SET expires_at=now() WHERE device_id=$1 AND consumed_at IS NULL", pqxx::params(tx, deviceId));
-    tx.exec("INSERT INTO enrollment_codes(code_hash,user_id,device_id,expires_at) VALUES($1,$2,$3,now()+interval '10 minutes')", pqxx::params(tx, tokenHash(code), userId, deviceId));
+    tx.exec("UPDATE enrollment_codes SET expires_at=now(6) WHERE device_id=? AND consumed_at IS NULL", deviceId);
+    tx.exec("INSERT INTO enrollment_codes(code_hash,user_id,device_id,expires_at) VALUES(?,?,?,now(6)+INTERVAL 10 MINUTE)", tokenHash(code), userId, deviceId);
     tx.commit();
     return code;
 }
@@ -49,8 +49,8 @@ std::optional<std::string> DeviceService::enrollmentDevice(std::string_view code
         return std::nullopt;
     }
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id FROM enrollment_codes e JOIN devices d ON d.id=e.device_id JOIN users u ON u.id=e.user_id WHERE e.code_hash=$1 AND e.consumed_at IS NULL AND e.expires_at>now() AND NOT u.disabled AND NOT d.enrolled AND d.revoked_at IS NULL", pqxx::params(tx, tokenHash(code)));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT d.id FROM enrollment_codes e JOIN devices d ON d.id=e.device_id JOIN users u ON u.id=e.user_id WHERE e.code_hash=? AND e.consumed_at IS NULL AND e.expires_at>now(6) AND NOT u.disabled AND NOT d.enrolled AND d.revoked_at IS NULL", tokenHash(code));
     if (rows.empty()) {
         return std::nullopt;
     }
@@ -61,17 +61,18 @@ std::optional<DeviceRegistration> DeviceService::registerDevice(std::string_view
         return std::nullopt;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec("UPDATE enrollment_codes SET consumed_at=now() WHERE code_hash=$1 AND device_id IS NOT NULL AND consumed_at IS NULL AND expires_at>now() AND user_id IN (SELECT id FROM users WHERE NOT disabled) RETURNING user_id,device_id", pqxx::params(tx, tokenHash(code)));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT user_id,device_id FROM enrollment_codes WHERE code_hash=? AND device_id IS NOT NULL AND consumed_at IS NULL AND expires_at>now(6) AND user_id IN (SELECT id FROM users WHERE NOT disabled) FOR UPDATE", tokenHash(code));
+    tx.exec("UPDATE enrollment_codes SET consumed_at=now(6) WHERE code_hash=? AND device_id IS NOT NULL AND consumed_at IS NULL AND expires_at>now(6) AND user_id IN (SELECT id FROM users WHERE NOT disabled)", tokenHash(code));
     if (rows.empty()) {
         return std::nullopt;
     }
     const auto userId = rows[0][0].as<std::string>();
     DeviceRegistration result{rows[0][1].as<std::string>(), randomToken()};
-    if (tx.exec("UPDATE devices SET credential_hash=$2,enrolled=true WHERE id=$1 AND NOT enrolled AND revoked_at IS NULL RETURNING id", pqxx::params(tx, result.deviceId, tokenHash(result.credential))).empty()) {
+    if (tx.exec("UPDATE devices SET credential_hash=?,enrolled=true WHERE id=? AND NOT enrolled AND revoked_at IS NULL", tokenHash(result.credential), result.deviceId).affectedRows == 0) {
         return std::nullopt;
     }
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES($1,$2,'device.register',true)", pqxx::params(tx, userId, result.deviceId));
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,'device.register',true)", userId, result.deviceId);
     tx.commit();
     return result;
 }
@@ -81,8 +82,8 @@ std::optional<DeviceIdentity> DeviceService::authenticate(std::string_view crede
     }
     const auto hash = tokenHash(credential);
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT id FROM devices WHERE credential_hash=$1 AND revoked_at IS NULL", pqxx::params(tx, hash));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT id FROM devices WHERE credential_hash=? AND revoked_at IS NULL", hash);
     if (rows.empty()) {
         return std::nullopt;
     }
@@ -90,8 +91,9 @@ std::optional<DeviceIdentity> DeviceService::authenticate(std::string_view crede
 }
 bool DeviceService::heartbeat(const DeviceIdentity& device) const {
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec("UPDATE devices SET last_seen_at=now() WHERE id=$1 AND credential_hash=$2 AND revoked_at IS NULL RETURNING id", pqxx::params(tx, device.id, device.credentialHash));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT id FROM devices WHERE id=? AND credential_hash=? AND revoked_at IS NULL FOR UPDATE", device.id, device.credentialHash);
+    tx.exec("UPDATE devices SET last_seen_at=now(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", device.id, device.credentialHash);
     tx.commit();
     return !rows.empty();
 }
@@ -100,22 +102,22 @@ bool DeviceService::capabilities(const DeviceIdentity& device, std::string_view 
         return false;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    if (tx.exec("SELECT id FROM devices WHERE id=$1 AND credential_hash=$2 AND revoked_at IS NULL FOR UPDATE", pqxx::params(tx, device.id, device.credentialHash)).empty()) {
+    DatabaseTransaction tx(connection);
+    if (tx.exec("SELECT id FROM devices WHERE id=? AND credential_hash=? AND revoked_at IS NULL FOR UPDATE", device.id, device.credentialHash).empty()) {
         return false;
     }
-    const pqxx::bytes_view bytes(reinterpret_cast<const std::byte*>(protobuf.data()), protobuf.size());
-    tx.exec("INSERT INTO device_capabilities(device_id,protocol_version,protobuf) VALUES($1,1,$2) ON CONFLICT(device_id) DO UPDATE SET protocol_version=1,protobuf=excluded.protobuf,updated_at=now()", pqxx::params(tx, device.id, bytes));
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(protobuf.data()), protobuf.size());
+    tx.exec("INSERT INTO device_capabilities(device_id,protocol_version,protobuf) VALUES(?,1,?) ON DUPLICATE KEY UPDATE protocol_version=1,protobuf=VALUES(protobuf),updated_at=now(6)", device.id, bytes);
     tx.commit();
     return true;
 }
 std::vector<DeviceInfo> DeviceService::list(std::string_view userId) const {
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id,d.name,d.last_seen_at::text,EXISTS (SELECT 1 FROM audit_events a WHERE a.device_id=d.id AND a.user_id=u.id AND a.event_type IN ('device.create','device.register') AND a.success),d.enrolled FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=$1 AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", pqxx::params(tx, userId));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,g.desktop,g.write_control,g.require_approval,g.manage_credentials FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId);
     std::vector<DeviceInfo> result;
     for (const auto& row : rows) {
-        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::optional<std::string>>(), row[3].as<bool>(), row[4].as<bool>()});
+        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::optional<std::string>>(), row[3].as<bool>(), row[4].as<bool>(), row[5].as<bool>(), row[6].as<bool>(), row[7].as<bool>(), row[8].as<bool>()});
     }
     return result;
 }
@@ -124,30 +126,32 @@ bool DeviceService::rename(std::string_view userId, std::string_view deviceId, s
         return false;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec("UPDATE devices d SET name=$3 WHERE d.id=$2 AND d.revoked_at IS NULL AND EXISTS (SELECT 1 FROM audit_events a JOIN users u ON u.id=a.user_id WHERE a.device_id=d.id AND a.user_id=$1 AND a.event_type IN ('device.create','device.register') AND a.success AND NOT u.disabled) RETURNING d.id", pqxx::params(tx, userId, deviceId, name));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT d.id FROM devices d WHERE d.id=? AND d.revoked_at IS NULL AND d.owner_id=? AND EXISTS (SELECT 1 FROM users u WHERE u.id=? AND NOT u.disabled) FOR UPDATE", deviceId, userId, userId);
+    tx.exec("UPDATE devices d SET name=? WHERE d.id=? AND d.revoked_at IS NULL AND d.owner_id=? AND EXISTS (SELECT 1 FROM users u WHERE u.id=? AND NOT u.disabled)", name, deviceId, userId, userId);
     if (rows.empty()) {
         return false;
     }
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES($1,$2,'device.rename',true)", pqxx::params(tx, userId, deviceId));
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,'device.rename',true)", userId, deviceId);
     tx.commit();
     return true;
 }
 bool DeviceService::remove(std::string_view userId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec("UPDATE devices d SET revoked_at=COALESCE(revoked_at,now()) WHERE d.id=$2 AND EXISTS (SELECT 1 FROM audit_events a JOIN users u ON u.id=a.user_id WHERE a.device_id=d.id AND a.user_id=$1 AND a.event_type IN ('device.create','device.register') AND a.success AND NOT u.disabled) RETURNING d.id", pqxx::params(tx, userId, deviceId));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT d.id FROM devices d WHERE d.id=? AND d.owner_id=? AND EXISTS (SELECT 1 FROM users u WHERE u.id=? AND NOT u.disabled) FOR UPDATE", deviceId, userId, userId);
+    tx.exec("UPDATE devices d SET revoked_at=COALESCE(revoked_at,now(6)) WHERE d.id=? AND d.owner_id=? AND EXISTS (SELECT 1 FROM users u WHERE u.id=? AND NOT u.disabled)", deviceId, userId, userId);
     if (rows.empty()) {
         return false;
     }
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES($1,$2,'device.delete',true)", pqxx::params(tx, userId, deviceId));
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,'device.delete',true)", userId, deviceId);
     tx.commit();
     return true;
 }
 std::optional<bool> DeviceService::systemRestartPermission(std::string_view userId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT (g.desktop AND g.write_control) FROM device_grants g JOIN devices d ON d.id=g.device_id JOIN users u ON u.id=g.user_id WHERE g.device_id=$1 AND g.user_id=$2 AND d.revoked_at IS NULL AND NOT u.disabled AND EXISTS (SELECT 1 FROM audit_events a WHERE a.device_id=d.id AND a.user_id=u.id AND a.event_type IN ('device.create','device.register') AND a.success)", pqxx::params(tx, deviceId, userId));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT (g.desktop AND g.write_control AND g.system_restart) FROM device_grants g JOIN devices d ON d.id=g.device_id JOIN users u ON u.id=g.user_id WHERE g.device_id=? AND g.user_id=? AND d.revoked_at IS NULL AND NOT u.disabled", deviceId, userId);
     if (rows.empty()) {
         return std::nullopt;
     }
@@ -155,16 +159,16 @@ std::optional<bool> DeviceService::systemRestartPermission(std::string_view user
 }
 bool DeviceService::restartDispatchAllowed(std::string_view userId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    return !tx.exec("SELECT 1 FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE d.id=$1 AND g.user_id=$2 AND (g.desktop AND g.write_control) AND d.revoked_at IS NULL AND NOT u.disabled AND EXISTS (SELECT 1 FROM audit_events a WHERE a.device_id=d.id AND a.user_id=u.id AND a.event_type IN ('device.create','device.register') AND a.success)", pqxx::params(tx, deviceId, userId)).empty();
+    DatabaseTransaction tx(connection);
+    return !tx.exec("SELECT 1 FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE d.id=? AND g.user_id=? AND (g.desktop AND g.write_control AND g.system_restart) AND d.revoked_at IS NULL AND NOT u.disabled", deviceId, userId).empty();
 }
 std::optional<RestartOperation> DeviceService::restartByIdempotencyKey(std::string_view userId, std::string_view deviceId, std::string_view idempotencyKey) const {
     if (idempotencyKey.empty() || idempotencyKey.size() > 128 || idempotencyKey.find('\0') != std::string_view::npos) {
         return std::nullopt;
     }
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT operation_id,device_id,status,extract(epoch from expires_at)::bigint,COALESCE(boot_time_unix_seconds,0) FROM restart_operations WHERE user_id=$1 AND idempotency_key=$2 AND device_id=$3", pqxx::params(tx, userId, idempotencyKey, deviceId));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT operation_id,device_id,status,FLOOR(UNIX_TIMESTAMP(expires_at)),COALESCE(boot_time_unix_seconds,0) FROM restart_operations WHERE user_id=? AND idempotency_key=? AND device_id=?", userId, idempotencyKey, deviceId);
     if (rows.empty()) {
         return std::nullopt;
     }
@@ -175,8 +179,8 @@ std::optional<RestartOperation> DeviceService::createRestart(std::string_view us
         return std::nullopt;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto duplicate = tx.exec("SELECT operation_id,device_id,status,extract(epoch from expires_at)::bigint,COALESCE(boot_time_unix_seconds,0) FROM restart_operations WHERE user_id=$1 AND idempotency_key=$2", pqxx::params(tx, userId, idempotencyKey));
+    DatabaseTransaction tx(connection);
+    const auto duplicate = tx.exec("SELECT operation_id,device_id,status,FLOOR(UNIX_TIMESTAMP(expires_at)),COALESCE(boot_time_unix_seconds,0) FROM restart_operations WHERE user_id=? AND idempotency_key=?", userId, idempotencyKey);
     if (!duplicate.empty()) {
         if (duplicate[0][1].as<std::string>() != deviceId) {
             tx.commit();
@@ -186,33 +190,34 @@ std::optional<RestartOperation> DeviceService::createRestart(std::string_view us
         tx.commit();
         return result;
     }
-    const auto device = tx.exec("SELECT id FROM devices WHERE id=$1 AND revoked_at IS NULL FOR UPDATE", pqxx::params(tx, deviceId));
+    const auto device = tx.exec("SELECT id FROM devices WHERE id=? AND revoked_at IS NULL FOR UPDATE", deviceId);
     if (device.empty()) {
-        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) SELECT id,NULL,'device.system_restart.request',false,'denied' FROM users WHERE id=$1", pqxx::params(tx, userId));
+        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) SELECT id,NULL,'device.system_restart.request',false,'denied' FROM users WHERE id=?", userId);
         tx.commit();
         return std::nullopt;
     }
-    const auto allowed = tx.exec("SELECT 1 FROM device_grants g JOIN users u ON u.id=g.user_id WHERE g.device_id=$1 AND g.user_id=$2 AND (g.desktop AND g.write_control) AND NOT u.disabled AND EXISTS (SELECT 1 FROM audit_events a WHERE a.device_id=g.device_id AND a.user_id=g.user_id AND a.event_type IN ('device.create','device.register') AND a.success) FOR UPDATE OF g", pqxx::params(tx, deviceId, userId));
+    const auto allowed = tx.exec("SELECT 1 FROM device_grants g JOIN users u ON u.id=g.user_id WHERE g.device_id=? AND g.user_id=? AND (g.desktop AND g.write_control AND g.system_restart) AND NOT u.disabled FOR UPDATE", deviceId, userId);
     if (allowed.empty()) {
-        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES($1,$2,'device.system_restart.request',false,'permission_denied')", pqxx::params(tx, userId, deviceId));
+        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.system_restart.request',false,'permission_denied')", userId, deviceId);
         tx.commit();
         return std::nullopt;
     }
     RestartOperation result{randomToken(), std::string(deviceId), "PENDING", 0, bootTimeUnixSeconds, true};
-    const auto rows = tx.exec("INSERT INTO restart_operations(operation_id,idempotency_key,user_id,device_id,status,expires_at,boot_time_unix_seconds) VALUES($1,$2,$3,$4,'PENDING',now()+interval '30 seconds',$5) RETURNING extract(epoch from expires_at)::bigint", pqxx::params(tx, result.id, idempotencyKey, userId, deviceId, bootTimeUnixSeconds));
+    const auto rows = tx.exec("INSERT INTO restart_operations(operation_id,idempotency_key,user_id,device_id,status,expires_at,boot_time_unix_seconds) VALUES(?,?,?,?,'PENDING',now(6)+INTERVAL 30 SECOND,?) RETURNING FLOOR(UNIX_TIMESTAMP(expires_at))", result.id, idempotencyKey, userId, deviceId, bootTimeUnixSeconds);
     result.expiresAtUnixSeconds = static_cast<std::uint64_t>(rows[0][0].as<std::int64_t>());
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES($1,$2,'device.system_restart.request',true)", pqxx::params(tx, userId, deviceId));
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,'device.system_restart.request',true)", userId, deviceId);
     tx.commit();
     return result;
 }
 std::optional<RestartOperation> DeviceService::restart(std::string_view userId, std::string_view operationId) const {
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto expired = tx.exec("UPDATE restart_operations SET status='UNKNOWN',result_status='UNKNOWN',updated_at=now() WHERE operation_id=$1 AND user_id=$2 AND status='PENDING' AND expires_at<=now() RETURNING user_id,device_id", pqxx::params(tx, operationId, userId));
+    DatabaseTransaction tx(connection);
+    const auto expired = tx.exec("SELECT user_id,device_id FROM restart_operations WHERE operation_id=? AND user_id=? AND status='PENDING' AND expires_at<=now(6) FOR UPDATE", operationId, userId);
+    tx.exec("UPDATE restart_operations SET status='UNKNOWN',result_status='UNKNOWN',updated_at=now(6) WHERE operation_id=? AND user_id=? AND status='PENDING' AND expires_at<=now(6)", operationId, userId);
     if (!expired.empty()) {
-        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES($1,$2,'device.system_restart.result',false,'pending_expired')", pqxx::params(tx, expired[0][0].as<std::string>(), expired[0][1].as<std::string>()));
+        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.system_restart.result',false,'pending_expired')", expired[0][0].as<std::string>(), expired[0][1].as<std::string>());
     }
-    const auto rows = tx.exec("SELECT r.operation_id,r.device_id,r.status,extract(epoch from r.expires_at)::bigint,COALESCE(r.boot_time_unix_seconds,0) FROM restart_operations r JOIN users u ON u.id=r.user_id WHERE r.operation_id=$1 AND r.user_id=$2 AND NOT u.disabled", pqxx::params(tx, operationId, userId));
+    const auto rows = tx.exec("SELECT r.operation_id,r.device_id,r.status,FLOOR(UNIX_TIMESTAMP(r.expires_at)),COALESCE(r.boot_time_unix_seconds,0) FROM restart_operations r JOIN users u ON u.id=r.user_id WHERE r.operation_id=? AND r.user_id=? AND NOT u.disabled", operationId, userId);
     if (rows.empty()) {
         tx.commit();
         return std::nullopt;
@@ -229,28 +234,22 @@ bool DeviceService::applyRestartResult(const DeviceIdentity& device, const wire:
     const auto status = result.status() == wire::WindowsRestartResult::ACCEPTED ? "ACCEPTED" : result.status() == wire::WindowsRestartResult::FAILED ? "FAILED"
                                                                                                                                                      : "UNKNOWN";
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec(
-        "UPDATE restart_operations r SET status=$3,result_status=$3,win32_error=$4,updated_at=now() "
-        "FROM devices d WHERE r.operation_id=$1 AND r.device_id=$2 AND d.id=r.device_id "
-        "AND d.credential_hash=$5 AND d.revoked_at IS NULL AND r.status IN ('PENDING','UNKNOWN') "
-        "AND NOT (r.status='UNKNOWN' AND $3='UNKNOWN') RETURNING r.user_id,r.device_id",
-        pqxx::params(tx, result.operation_id(), device.id, status,
-                     result.status() == wire::WindowsRestartResult::FAILED ? std::optional<std::uint32_t>(result.win32_error()) : std::nullopt,
-                     device.credentialHash));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT r.user_id,r.device_id FROM restart_operations r JOIN devices d ON d.id=r.device_id WHERE r.operation_id=? AND r.device_id=? AND d.credential_hash=? AND d.revoked_at IS NULL AND r.status IN ('PENDING','UNKNOWN') AND NOT (r.status='UNKNOWN' AND ?='UNKNOWN') FOR UPDATE", result.operation_id(), device.id, device.credentialHash, status);
+    tx.exec("UPDATE restart_operations r JOIN devices d ON d.id=r.device_id SET r.status=?,r.result_status=?,r.win32_error=?,r.updated_at=now(6) WHERE r.operation_id=? AND r.device_id=? AND d.credential_hash=? AND d.revoked_at IS NULL AND r.status IN ('PENDING','UNKNOWN') AND NOT (r.status='UNKNOWN' AND ?='UNKNOWN')", status, status, result.status() == wire::WindowsRestartResult::FAILED ? std::optional<std::uint32_t>(result.win32_error()) : std::nullopt, result.operation_id(), device.id, device.credentialHash, status);
     if (!rows.empty()) {
-        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES($1,$2,'device.system_restart.result',$4,$3)",
-                pqxx::params(tx, rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), status, status == std::string_view("ACCEPTED")));
+        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.system_restart.result',?,?)", rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), status == std::string_view("ACCEPTED"), status);
     }
     tx.commit();
     return !rows.empty();
 }
 void DeviceService::updateRestart(std::string_view operationId, std::string_view status, std::optional<std::uint32_t> win32Error) const {
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec("UPDATE restart_operations SET status=$2,result_status=$3,win32_error=$4,updated_at=now() WHERE operation_id=$1 AND status='PENDING' AND $2='FAILED' RETURNING user_id,device_id", pqxx::params(tx, operationId, status, status == "PENDING" ? std::optional<std::string>{} : std::optional<std::string>{status}, win32Error));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT user_id,device_id FROM restart_operations WHERE operation_id=? AND status='PENDING' AND ?='FAILED' FOR UPDATE", operationId, status);
+    tx.exec("UPDATE restart_operations SET status=?,result_status=?,win32_error=?,updated_at=now(6) WHERE operation_id=? AND status='PENDING' AND ?='FAILED'", status, status == "PENDING" ? std::optional<std::string>{} : std::optional<std::string>{status}, win32Error, operationId, status);
     if (!rows.empty()) {
-        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES($1,$2,'device.system_restart.result',$4,$3)", pqxx::params(tx, rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), status, status == "ACCEPTED"));
+        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.system_restart.result',?,?)", rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), status == "ACCEPTED", status);
     }
     tx.commit();
 }
@@ -263,31 +262,77 @@ void DeviceService::confirmRestart(std::string_view deviceId, std::uint64_t boot
 }
 void DeviceService::recoverRestarts() const {
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    tx.exec("WITH recovered AS (UPDATE restart_operations SET status='UNKNOWN',result_status='UNKNOWN',updated_at=now() WHERE status='PENDING' RETURNING user_id,device_id) INSERT INTO audit_events(user_id,device_id,event_type,success,reason) SELECT user_id,device_id,'device.system_restart.result',false,'gateway_restarted' FROM recovered");
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT user_id,device_id FROM restart_operations WHERE status='PENDING' FOR UPDATE");
+    tx.exec("UPDATE restart_operations SET status='UNKNOWN',result_status='UNKNOWN',updated_at=now(6) WHERE status='PENDING'");
+    for (const auto& row : rows) {
+        tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.system_restart.result',false,'gateway_restarted')", row[0].as<std::string>(), row[1].as<std::string>());
+    }
     tx.commit();
 }
 bool DeviceService::canConfigureWindowsLogin(std::string_view userId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    return !tx.exec("SELECT 1 FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=$1 AND d.id=$2 AND NOT u.disabled AND d.revoked_at IS NULL AND g.desktop AND g.write_control", pqxx::params(tx, userId, deviceId)).empty();
+    DatabaseTransaction tx(connection);
+    return !tx.exec("SELECT 1 FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL AND g.desktop AND g.write_control AND g.manage_credentials", userId, deviceId).empty();
 }
 void DeviceService::auditWindowsLogin(std::string_view userId, std::string_view deviceId, std::string_view action, bool success) const {
     if (action != "save" && action != "clear") {
         return;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES($1,$2,$3,$4)", pqxx::params(tx, userId, deviceId, std::string("device.windows_login.") + std::string(action), success));
+    DatabaseTransaction tx(connection);
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,?,?)", userId, deviceId, std::string("device.windows_login.") + std::string(action), success);
     tx.commit();
 }
 std::optional<DeviceInfo> DeviceService::find(std::string_view userId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id,d.name,d.last_seen_at::text FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=$1 AND d.id=$2 AND NOT u.disabled AND d.revoked_at IS NULL", pqxx::params(tx, userId, deviceId));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,g.desktop,g.write_control,g.require_approval,g.manage_credentials FROM devices d JOIN device_grants g ON g.device_id=d.id JOIN users u ON u.id=g.user_id WHERE g.user_id=? AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, deviceId);
     if (rows.empty()) {
         return std::nullopt;
     }
-    return DeviceInfo{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::optional<std::string>>()};
+    return DeviceInfo{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::optional<std::string>>(), rows[0][3].as<bool>(), rows[0][4].as<bool>(), rows[0][5].as<bool>(), rows[0][6].as<bool>(), rows[0][7].as<bool>(), rows[0][8].as<bool>()};
+}
+std::optional<std::vector<DeviceGrant>> DeviceService::grants(std::string_view ownerId, std::string_view deviceId) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    if (tx.exec("SELECT 1 FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.id=? AND d.owner_id=? AND d.revoked_at IS NULL AND NOT u.disabled", deviceId, ownerId).empty()) {
+        return std::nullopt;
+    }
+    std::vector<DeviceGrant> result;
+    for (const auto& row : tx.exec("SELECT g.user_id,u.username,g.desktop,g.write_control,g.system_restart,g.manage_credentials,g.require_approval FROM device_grants g JOIN users u ON u.id=g.user_id WHERE device_id=? ORDER BY u.username", deviceId)) {
+        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<bool>(), row[3].as<bool>(), row[4].as<bool>(), row[5].as<bool>(), row[6].as<bool>()});
+    }
+    return result;
+}
+bool DeviceService::setGrant(std::string_view ownerId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const {
+    if (!remove && ((!grant.desktop && grant.writeControl) || (!grant.writeControl && (grant.systemRestart || grant.manageCredentials)))) {
+        return false;
+    }
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    if (tx.exec("SELECT d.id FROM devices d JOIN users u ON u.id=d.owner_id WHERE d.id=? AND d.owner_id=? AND d.revoked_at IS NULL AND NOT u.disabled AND d.owner_id=u.id FOR UPDATE", deviceId, ownerId).empty()) {
+        return false;
+    }
+    const auto rows = tx.exec("SELECT id FROM users WHERE username=? AND NOT disabled FOR UPDATE", grant.username);
+    if (rows.empty()) {
+        return false;
+    }
+    const auto target = rows[0][0].as<std::string>();
+    if (target == ownerId && (remove || !grant.desktop || !grant.writeControl || !grant.systemRestart || !grant.manageCredentials)) {
+        return false;
+    }
+    if (!remove && grant.requireApproval && tx.exec("SELECT 1 FROM telegram_settings s JOIN telegram_accounts a ON a.user_id=?", ownerId).empty()) {
+        return false;
+    }
+    if (remove) {
+        tx.exec("DELETE FROM device_grants WHERE device_id=? AND user_id=?", deviceId, target);
+    } else {
+        tx.exec("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials,require_approval) VALUES(?,?,?,false,false,?,?,?,?) ON DUPLICATE KEY UPDATE desktop=?,vnc=false,ssh=false,write_control=?,system_restart=?,manage_credentials=?,require_approval=?,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, target, grant.desktop, grant.writeControl, grant.systemRestart, grant.manageCredentials, grant.requireApproval, grant.desktop, grant.writeControl, grant.systemRestart, grant.manageCredentials, grant.requireApproval);
+    }
+    tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE device_id=? AND user_id=? AND state IN ('pending','approved')", deviceId, target);
+    tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,?,true,?)", ownerId, deviceId, remove ? "device.grant.revoke" : "device.grant.save", target);
+    tx.commit();
+    return true;
 }
 } // namespace ultraterimal::server

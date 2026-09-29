@@ -17,12 +17,12 @@
   ],
   "features": {
     "server": {
-      "description": "Ruvia gateway and PostgreSQL storage",
+      "description": "Ruvia gateway and MariaDB storage",
       "dependencies": [
         "brotli",
         "zlib",
         "zstd",
-        "libpqxx",
+        "libmariadb",
         "spdlog"
       ]
     }

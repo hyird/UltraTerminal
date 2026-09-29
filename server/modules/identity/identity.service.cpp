@@ -4,11 +4,11 @@
 #include <span>
 #include <stdexcept>
 
-#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
 #include "modules/database/database.service.h"
+#include "security.protocol.h"
 namespace ultraterimal::server {
 namespace {
 std::string hex(std::span<const unsigned char> bytes) {
@@ -30,6 +30,44 @@ std::string passwordHash(std::string_view password, std::string_view salt, int i
         throw std::runtime_error("Password derivation failed");
     }
     return hex(bytes);
+}
+bool validUsername(std::string_view username) {
+    return username.size() >= 3 && username.size() <= 64 && username.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == std::string_view::npos;
+}
+bool passwordMatches(const DatabaseRow& row, std::string_view password) {
+    return !password.empty() && password.size() <= 1024 && constantEqual(row["password_hash"].as<std::string>(), passwordHash(password, row["password_salt"].as<std::string>(), row["password_iterations"].as<int>()));
+}
+void failedAttempt(DatabaseTransaction& tx, std::string_view id) {
+    tx.exec("UPDATE users SET login_blocked_until=CASE WHEN failed_logins>=4 THEN now(6)+INTERVAL 5 MINUTE ELSE login_blocked_until END,failed_logins=CASE WHEN failed_logins>=4 THEN 0 ELSE failed_logins+1 END WHERE id=?", id);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.verify',false)", id);
+}
+bool factorMatches(DatabaseTransaction& tx, const DatabaseRow& row, std::string_view key, std::string_view code) {
+    const auto encrypted = row["totp_secret"].as<std::string>();
+    if (encrypted.empty()) {
+        return code.empty();
+    }
+    const auto id = row["id"].as<std::string>();
+    const auto step = verifyTotp(openSecret(key, "totp:" + id, encrypted), code, row["unix_time"].as<std::int64_t>(), row["totp_last_step"].as<std::int64_t>());
+    if (step) {
+        tx.exec("UPDATE users SET totp_last_step=? WHERE id=?", *step, id);
+        return true;
+    }
+    if (code.size() != 32 || code.find_first_not_of("0123456789abcdef") != std::string_view::npos) {
+        return false;
+    }
+    return !tx.exec("DELETE FROM recovery_codes WHERE user_id=? AND code_hash=? RETURNING code_hash", id, tokenHash(code)).empty();
+}
+DatabaseResult actorRows(DatabaseTransaction& tx, const UserIdentity& user) {
+    return tx.exec("SELECT u.*,FLOOR(UNIX_TIMESTAMP(now(6))) AS unix_time,coalesce(login_blocked_until>now(6),false) AS blocked FROM users u WHERE u.id=? AND NOT u.disabled AND EXISTS(SELECT 1 FROM login_sessions s WHERE s.user_id=u.id AND s.token_hash=? AND s.expires_at>now(6)) FOR UPDATE", user.id, user.loginHash);
+}
+bool adminAllowed(DatabaseTransaction& tx, const UserIdentity& actor) {
+    tx.exec("SELECT name FROM operation_locks WHERE name='accounts' FOR UPDATE");
+    const auto rows = actorRows(tx, actor);
+    return !rows.empty() && rows[0]["role"].as<std::string>() == "admin";
+}
+void invalidateLogins(DatabaseTransaction& tx, std::string_view id, std::string_view keep) {
+    tx.exec("DELETE FROM login_sessions WHERE user_id=? AND token_hash<>?", id, keep);
+    tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE (user_id=? OR owner_id=?) AND state IN ('pending','approved')", id, id);
 }
 } // namespace
 std::string randomToken() {
@@ -54,66 +92,204 @@ void IdentityService::bootstrap(std::string_view username, std::string_view pass
     }
     const auto salt = randomToken(), digest = passwordHash(password, salt, 600000), id = "u-" + randomToken();
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    tx.exec("SELECT pg_advisory_xact_lock(842105212)");
+    DatabaseTransaction tx(connection);
+    tx.exec("SELECT name FROM operation_locks WHERE name='bootstrap' FOR UPDATE");
     if (!tx.exec("SELECT id FROM users LIMIT 1").empty()) {
         throw std::runtime_error("Bootstrap already completed");
     }
-    tx.exec("INSERT INTO users(id,username,password_salt,password_hash,password_iterations) VALUES($1,$2,$3,$4,600000)", pqxx::params(tx, id, username, salt, digest));
-    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES($1,'identity.bootstrap',true)", pqxx::params(tx, id));
+    tx.exec("INSERT INTO users(id,username,password_salt,password_hash,password_iterations,role) VALUES(?,?,?,?,600000,'admin')", id, username, salt, digest);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.bootstrap',true)", id);
     tx.commit();
 }
-std::optional<LoginSession> IdentityService::login(std::string_view username, std::string_view password) const {
-    if (username.size() > 64 || password.empty() || password.size() > 1024) {
+std::optional<LoginSession> IdentityService::login(std::string_view username, std::string_view password, std::string_view code) const {
+    if (!validUsername(username) || password.empty() || password.size() > 1024 || code.size() > 32) {
         return std::nullopt;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    const auto rows = tx.exec("SELECT id,username,password_salt,password_hash,password_iterations FROM users WHERE username=$1 AND NOT disabled FOR UPDATE", pqxx::params(tx, username));
-    const auto digest = passwordHash(password, rows.empty() ? std::string(64, '0') : rows[0]["password_salt"].as<std::string>(), rows.empty() ? 600000 : rows[0]["password_iterations"].as<int>());
-    const auto expected = rows.empty() ? std::string(64, '0') : rows[0]["password_hash"].as<std::string>();
-    if (rows.empty() || expected.size() != digest.size() || CRYPTO_memcmp(expected.data(), digest.data(), digest.size()) != 0) {
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT *,FLOOR(UNIX_TIMESTAMP(now(6))) AS unix_time,coalesce(login_blocked_until>now(6),false) AS blocked FROM users WHERE username=? FOR UPDATE", username);
+    if (rows.empty()) {
+        (void)passwordHash(password, std::string(64, '0'), 600000);
         tx.exec("INSERT INTO audit_events(event_type,success) VALUES('identity.login',false)");
         tx.commit();
         return std::nullopt;
     }
-    LoginSession result{{rows[0]["id"].as<std::string>(), rows[0]["username"].as<std::string>()}, randomToken()};
-    tx.exec("DELETE FROM login_sessions WHERE expires_at<=now() OR token_hash IN (SELECT token_hash FROM login_sessions WHERE user_id=$1 ORDER BY created_at DESC OFFSET 9)", pqxx::params(tx, result.user.id));
-    tx.exec("INSERT INTO login_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '8 hours')", pqxx::params(tx, tokenHash(result.token), result.user.id));
-    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES($1,'identity.login',true)", pqxx::params(tx, result.user.id));
+    const auto id = rows[0]["id"].as<std::string>();
+    if (rows[0]["disabled"].as<bool>() || rows[0]["blocked"].as<bool>()) {
+        return std::nullopt;
+    }
+    if (!passwordMatches(rows[0], password) || !factorMatches(tx, rows[0], key_, code)) {
+        failedAttempt(tx, id);
+        tx.commit();
+        return std::nullopt;
+    }
+    LoginSession result{{id, rows[0]["username"].as<std::string>(), rows[0]["role"].as<std::string>(), {}}, randomToken()};
+    result.user.loginHash = tokenHash(result.token);
+    tx.exec("UPDATE users SET failed_logins=0,login_blocked_until=NULL WHERE id=?", id);
+    tx.exec("DELETE FROM login_sessions WHERE expires_at<=now(6) OR token_hash IN (SELECT token_hash FROM (SELECT token_hash FROM login_sessions WHERE user_id=? ORDER BY created_at DESC LIMIT 18446744073709551615 OFFSET 9) AS older)", id);
+    tx.exec("INSERT INTO login_sessions(token_hash,user_id,expires_at) VALUES(?,?,now(6)+INTERVAL 8 HOUR)", result.user.loginHash, id);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.login',true)", id);
     tx.commit();
     return result;
-}
-bool IdentityService::verifyPassword(std::string_view userId, std::string_view password) const {
-    if (userId.empty() || password.empty() || password.size() > 1024) {
-        return false;
-    }
-    auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT password_salt,password_hash,password_iterations FROM users WHERE id=$1 AND NOT disabled", pqxx::params(tx, userId));
-    const auto digest = passwordHash(password, rows.empty() ? std::string(64, '0') : rows[0]["password_salt"].as<std::string>(), rows.empty() ? 600000 : rows[0]["password_iterations"].as<int>());
-    const auto expected = rows.empty() ? std::string(64, '0') : rows[0]["password_hash"].as<std::string>();
-    return !rows.empty() && expected.size() == digest.size() && CRYPTO_memcmp(expected.data(), digest.data(), digest.size()) == 0;
 }
 std::optional<UserIdentity> IdentityService::authenticate(std::string_view token) const {
     if (!validToken(token)) {
         return std::nullopt;
     }
     auto connection = openDatabase(database_);
-    pqxx::read_transaction tx(connection);
-    const auto rows = tx.exec("SELECT u.id,u.username FROM users u JOIN login_sessions s ON s.user_id=u.id WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT u.disabled", pqxx::params(tx, tokenHash(token)));
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT u.id,u.username,u.role FROM users u JOIN login_sessions s ON s.user_id=u.id WHERE s.token_hash=? AND s.expires_at>now(6) AND NOT u.disabled", tokenHash(token));
     if (rows.empty()) {
         return std::nullopt;
     }
-    return UserIdentity{rows[0][0].as<std::string>(), rows[0][1].as<std::string>()};
+    return UserIdentity{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::string>(), tokenHash(token)};
 }
 void IdentityService::logout(std::string_view token) const {
     if (!validToken(token)) {
         return;
     }
     auto connection = openDatabase(database_);
-    pqxx::work tx(connection);
-    tx.exec("DELETE FROM login_sessions WHERE token_hash=$1", pqxx::params(tx, tokenHash(token)));
+    DatabaseTransaction tx(connection);
+    tx.exec("DELETE FROM login_sessions WHERE token_hash=?", tokenHash(token));
+    tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE login_token_hash=? AND state IN ('pending','approved')", tokenHash(token));
     tx.commit();
+}
+SecurityInfo IdentityService::security(std::string_view userId) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    const auto rows = tx.exec("SELECT totp_secret<>'',(SELECT count(*) FROM recovery_codes WHERE user_id=u.id) FROM users u WHERE id=? AND NOT disabled", userId);
+    if (rows.empty()) {
+        return {};
+    }
+    return {rows[0][0].as<bool>(), rows[0][1].as<int>()};
+}
+bool IdentityService::reauthenticate(const UserIdentity& user, std::string_view password, std::string_view code) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    const auto rows = actorRows(tx, user);
+    if (rows.empty() || rows[0]["blocked"].as<bool>()) {
+        return false;
+    }
+    const bool ok = passwordMatches(rows[0], password) && factorMatches(tx, rows[0], key_, code);
+    if (!ok) {
+        failedAttempt(tx, user.id);
+    } else {
+        tx.exec("UPDATE users SET failed_logins=0,login_blocked_until=NULL WHERE id=?", user.id);
+    }
+    tx.commit();
+    return ok;
+}
+std::optional<SecurityChange> IdentityService::changeSecurity(const UserIdentity& user, std::string_view action, std::string_view password, std::string_view code, std::string_view newPassword) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    const auto rows = actorRows(tx, user);
+    if (rows.empty() || rows[0]["blocked"].as<bool>()) {
+        return std::nullopt;
+    }
+    const bool enabled = !rows[0]["totp_secret"].as<std::string>().empty();
+    const bool validAction = (action == "begin" || action == "confirm") ? !enabled : action == "disable" || action == "recovery" ? enabled
+                                                                                                                                 : action == "password" && newPassword.size() >= 12 && newPassword.size() <= 1024;
+    if (!validAction || !passwordMatches(rows[0], password) || (action != "confirm" && !factorMatches(tx, rows[0], key_, code))) {
+        failedAttempt(tx, user.id);
+        tx.commit();
+        return std::nullopt;
+    }
+    SecurityChange result;
+    if (action == "begin") {
+        result.secret = newTotpSecret();
+        tx.exec("UPDATE users SET totp_pending=?,totp_pending_expires_at=now(6)+INTERVAL 10 MINUTE WHERE id=?", sealSecret(key_, "pending:" + user.id, result.secret), user.id);
+    } else if (action == "confirm") {
+        const auto pending = rows[0]["totp_pending"].as<std::string>();
+        const auto alive = tx.exec("SELECT 1 FROM users WHERE id=? AND totp_pending_expires_at>now(6)", user.id);
+        if (pending.empty() || alive.empty()) {
+            return std::nullopt;
+        }
+        const auto secret = openSecret(key_, "pending:" + user.id, pending);
+        const auto step = verifyTotp(secret, code, rows[0]["unix_time"].as<std::int64_t>(), -1);
+        if (!step) {
+            failedAttempt(tx, user.id);
+            tx.commit();
+            return std::nullopt;
+        }
+        tx.exec("UPDATE users SET totp_secret=?,totp_last_step=?,totp_pending='',totp_pending_expires_at=NULL WHERE id=?", sealSecret(key_, "totp:" + user.id, secret), *step, user.id);
+    } else if (action == "disable") {
+        tx.exec("UPDATE users SET totp_secret='',totp_last_step=-1,totp_pending='',totp_pending_expires_at=NULL WHERE id=?", user.id);
+        tx.exec("DELETE FROM recovery_codes WHERE user_id=?", user.id);
+    } else if (action == "password") {
+        const auto salt = randomToken();
+        tx.exec("UPDATE users SET password_salt=?,password_hash=?,password_iterations=600000 WHERE id=?", salt, passwordHash(newPassword, salt, 600000), user.id);
+    }
+    if (action == "confirm" || action == "recovery") {
+        tx.exec("DELETE FROM recovery_codes WHERE user_id=?", user.id);
+        for (int i = 0; i < 10; ++i) {
+            const auto recovery = randomToken().substr(0, 32);
+            tx.exec("INSERT INTO recovery_codes(user_id,code_hash) VALUES(?,?)", user.id, tokenHash(recovery));
+            result.recoveryCodes.push_back(recovery);
+        }
+    }
+    if (action != "begin") {
+        invalidateLogins(tx, user.id, user.loginHash);
+    }
+    tx.exec("UPDATE users SET failed_logins=0,login_blocked_until=NULL WHERE id=?", user.id);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success,reason) VALUES(?,'identity.security',true,?)", user.id, action);
+    tx.commit();
+    return result;
+}
+std::optional<std::vector<AccountInfo>> IdentityService::accounts(const UserIdentity& actor) const {
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    if (!adminAllowed(tx, actor)) {
+        return std::nullopt;
+    }
+    std::vector<AccountInfo> result;
+    for (const auto& row : tx.exec("SELECT id,username,role,disabled,totp_secret<>'' FROM users ORDER BY created_at LIMIT 1000")) {
+        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::string>(), row[3].as<bool>(), row[4].as<bool>()});
+    }
+    tx.commit();
+    return result;
+}
+bool IdentityService::createAccount(const UserIdentity& actor, std::string_view username, std::string_view password, std::string_view role) const {
+    if (!validUsername(username) || password.size() < 12 || password.size() > 1024 || (role != "admin" && role != "user")) {
+        return false;
+    }
+    const auto salt = randomToken(), digest = passwordHash(password, salt, 600000), id = "u-" + randomToken();
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    if (!adminAllowed(tx, actor) || tx.exec("SELECT count(*) FROM users")[0][0].as<int>() >= 1000) {
+        return false;
+    }
+    if (!tx.exec("SELECT id FROM users WHERE username=?", username).empty()) {
+        return false;
+    }
+    tx.exec("INSERT INTO users(id,username,password_salt,password_hash,password_iterations,role) VALUES(?,?,?,?,600000,?)", id, username, salt, digest, role);
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success,reason) VALUES(?,'identity.create',true,?)", actor.id, id);
+    tx.commit();
+    return true;
+}
+bool IdentityService::updateAccount(const UserIdentity& actor, std::string_view id, std::string_view role, bool disabled, std::string_view password) const {
+    if ((role != "admin" && role != "user") || (!password.empty() && (password.size() < 12 || password.size() > 1024))) {
+        return false;
+    }
+    auto connection = openDatabase(database_);
+    DatabaseTransaction tx(connection);
+    if (!adminAllowed(tx, actor)) {
+        return false;
+    }
+    const auto rows = tx.exec("SELECT role,disabled FROM users WHERE id=? FOR UPDATE", id);
+    if (rows.empty()) {
+        return false;
+    }
+    if (rows[0][0].as<std::string>() == "admin" && !rows[0][1].as<bool>() && (role != "admin" || disabled) && tx.exec("SELECT count(*) FROM users WHERE role='admin' AND NOT disabled")[0][0].as<int>() <= 1) {
+        return false;
+    }
+    tx.exec("UPDATE users SET role=?,disabled=? WHERE id=?", role, disabled, id);
+    if (!password.empty()) {
+        const auto salt = randomToken();
+        tx.exec("UPDATE users SET password_salt=?,password_hash=?,password_iterations=600000,failed_logins=0,login_blocked_until=NULL WHERE id=?", salt, passwordHash(password, salt, 600000), id);
+    }
+    invalidateLogins(tx, id, {});
+    tx.exec("INSERT INTO audit_events(user_id,event_type,success,reason) VALUES(?,'identity.update',true,?)", actor.id, id);
+    tx.commit();
+    return true;
 }
 } // namespace ultraterimal::server

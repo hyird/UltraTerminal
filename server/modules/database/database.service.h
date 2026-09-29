@@ -1,10 +1,8 @@
 #pragma once
-#include <string>
-
-#include <pqxx/pqxx>
+#include "database.transport.h"
 namespace ultraterimal::server {
-pqxx::connection openDatabase(const std::string& settings);
-void migrateDatabase(const std::string& settings);
-pqxx::connection acquireGatewayLease(const std::string& settings);
-bool gatewayLeaseAlive(pqxx::connection& lease);
+DatabaseConnection openDatabase(const DatabaseConfig& settings);
+void migrateDatabase(const DatabaseConfig& settings);
+DatabaseConnection acquireGatewayLease(const DatabaseConfig& settings);
+bool gatewayLeaseAlive(DatabaseConnection& lease);
 } // namespace ultraterimal::server

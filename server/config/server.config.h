@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+
+#include "modules/database/database.config.h"
 namespace ultraterimal::server {
 struct ServerConfig {
     std::string address = "127.0.0.1";
@@ -12,8 +14,9 @@ struct ServerConfig {
     std::uint16_t nativePort = 7443;
     std::filesystem::path nativeCertificateFile, nativeKeyFile;
     std::filesystem::path webRoot;
-    std::string database;
+    DatabaseConfig database;
     std::string origin;
+    std::string securityKey;
 };
 ServerConfig loadServerConfig(const std::filesystem::path& file);
 } // namespace ultraterimal::server

@@ -33,4 +33,18 @@ inline std::string requestText(const boost::json::object& object, std::string_vi
     }
     return std::string(value->as_string());
 }
+inline std::string optionalText(const boost::json::object& object, std::string_view name, std::size_t maximum) {
+    const auto* value = object.if_contains(name);
+    if (!value || (value->is_string() && value->as_string().empty())) {
+        return {};
+    }
+    return requestText(object, name, maximum);
+}
+inline bool requestBool(const boost::json::object& object, std::string_view name) {
+    const auto* value = object.if_contains(name);
+    if (!value || !value->is_bool()) {
+        throw ruvia::HttpError({.status = ruvia::http_status::kBadRequest, .code = "invalid_field", .message = "Expected a boolean"});
+    }
+    return value->as_bool();
+}
 } // namespace ultraterimal::server

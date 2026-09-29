@@ -1,11 +1,18 @@
 export class ApiError extends Error {
-  constructor(public readonly status: number) {
+  constructor(
+    public readonly status: number,
+    public readonly code = "",
+  ) {
     super(
       status === 401
         ? "登录已过期，请重新登录"
-        : status === 409
-          ? "设备当前不可用或控制权已被占用"
-          : "请求失败，请稍后重试",
+        : status === 403
+          ? "操作未获授权，请检查权限、密码、验证码或 Telegram 绑定状态"
+          : status === 429
+            ? "操作过于频繁，请稍后重试"
+            : status === 409
+              ? "设备当前不可用或控制权已被占用"
+              : "请求失败，请稍后重试",
     );
   }
 }
@@ -21,7 +28,16 @@ export async function jsonRequest(
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    let code = "";
+    try {
+      const item = record(await response.json());
+      if (typeof item.error === "string") code = item.error;
+    } catch {
+      /* The HTTP status remains authoritative. */
+    }
+    throw new ApiError(response.status, code);
+  }
   return response.json();
 }
 

@@ -14,9 +14,13 @@ bool boolean(const boost::json::object& object, std::string_view name) {
 }
 } // namespace
 ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract"});
+    const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id"});
     SessionRequest request;
     request.userId = context.requestState<UserIdentity>().id;
+    request.loginHash = context.requestState<UserIdentity>().loginHash;
+    if (body.contains("approval_id")) {
+        request.approvalId = requestText(body, "approval_id", 32);
+    }
     request.deviceId = requestText(body, "device_id", 128);
     const auto kind = requestText(body, "kind", 16);
     request.kind = kind == "desktop" ? wire::DESKTOP : kind == "vnc" ? wire::VNC
@@ -47,6 +51,10 @@ ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& conte
     // Authorize before exposing online/capability state or dispatching to the device.
     const auto issued = co_await context.runBlocking([service = runtime.sessions, request] { return service.create(request); });
     if (!issued) {
+        if (issued.error() == SessionFailure::kApprovalRequired) {
+            context.status(ruvia::http_status::kConflict);
+            co_return jsonResponse(context, {{"error", "approval_required"}});
+        }
         const auto status = issued.error() == SessionFailure::kDenied ? ruvia::http_status::kForbidden : issued.error() == SessionFailure::kInvalid ? ruvia::http_status::kBadRequest
                                                                                                                                                     : ruvia::http_status::kConflict;
         co_return context.error({.status = status, .code = issued.error() == SessionFailure::kIncompatible ? "desktop_input_upgrade_required" : "session_rejected", .message = "Session request rejected"});

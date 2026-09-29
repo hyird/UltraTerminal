@@ -8,6 +8,7 @@
 namespace ultraterimal::server {
 enum class SessionFailure { kInvalid,
                             kDenied,
+                            kApprovalRequired,
                             kBusy,
                             kLimit,
                             kIncompatible };
@@ -24,6 +25,9 @@ struct SessionRequest {
     bool preempt = true;
     std::uint32_t desktopInputContract = 0;
     bool agentInputContractSupported = false;
+    std::string loginHash;
+    std::int64_t grantRevision = 0;
+    std::string approvalId;
 };
 struct IssuedChannel {
     std::string id;

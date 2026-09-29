@@ -1,62 +1,49 @@
 #include "database.service.h"
 
 #include "migration.schema.h"
+
 namespace ultraterimal::server {
-pqxx::connection openDatabase(const std::string& settings) {
-    pqxx::connection connection(settings);
-    pqxx::work transaction(connection);
-    transaction.exec("SET statement_timeout = '5s'; SET lock_timeout = '2s'; SET idle_in_transaction_session_timeout = '10s'; SET TIME ZONE 'UTC'");
-    transaction.commit();
-    return connection;
-}
-void migrateDatabase(const std::string& settings) {
+DatabaseConnection openDatabase(const DatabaseConfig& settings) { return DatabaseConnection(settings); }
+void migrateDatabase(const DatabaseConfig& settings) {
     auto connection = openDatabase(settings);
-    pqxx::work transaction(connection);
-    transaction.exec("SELECT pg_advisory_xact_lock(842105211)");
-    transaction.exec("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())");
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=1").empty()) {
-        transaction.exec(kInitialMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(1)");
+    if (!connection.exec("SELECT GET_LOCK(CONCAT(DATABASE(),':migration'),2)")[0][0].as<bool>()) {
+        throw std::runtime_error("Database migration is locked");
     }
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=2").empty()) {
-        transaction.exec(kSessionMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(2)");
+    connection.exec("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,completed BOOLEAN NOT NULL DEFAULT FALSE,applied_at DATETIME(6) NOT NULL DEFAULT now(6)) ENGINE=InnoDB");
+    const auto versions = connection.exec("SELECT version,completed FROM schema_migrations");
+    if (!versions.empty()) {
+        if (versions.size() != 1 || versions[0][0].as<int>() != 1 || !versions[0][1].as<bool>()) {
+            throw std::runtime_error("Unsupported or incomplete MariaDB migration; restore the backup before retrying");
+        }
+        return;
     }
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=3").empty()) {
-        transaction.exec(kAccountMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(3)");
+    // MariaDB DDL commits implicitly. A durable incomplete marker prevents a
+    // partial schema from being mistaken for a successful migration on restart.
+    connection.exec("INSERT INTO schema_migrations(version) VALUES(1)");
+    std::size_t offset = 0;
+    while (offset < kMariaDbMigration.size()) {
+        const auto end = kMariaDbMigration.find(';', offset);
+        const auto statement = kMariaDbMigration.substr(offset, end == std::string_view::npos ? kMariaDbMigration.size() - offset : end - offset);
+        if (statement.find_first_not_of(" \n\r\t") != std::string_view::npos) {
+            connection.exec(statement);
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        offset = end + 1;
     }
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=4").empty()) {
-        transaction.exec(kRestartMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(4)");
-    }
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=5").empty()) {
-        transaction.exec(kRestartResolutionMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(5)");
-    }
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=6").empty()) {
-        transaction.exec(kRestartDirectMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(6)");
-    }
-    if (transaction.exec("SELECT version FROM schema_migrations WHERE version=7").empty()) {
-        transaction.exec(kDeviceProvisioningMigration);
-        transaction.exec("INSERT INTO schema_migrations(version) VALUES(7)");
-    }
-    transaction.commit();
+    connection.exec("UPDATE schema_migrations SET completed=TRUE WHERE version=1");
 }
-pqxx::connection acquireGatewayLease(const std::string& settings) {
+DatabaseConnection acquireGatewayLease(const DatabaseConfig& settings) {
     auto connection = openDatabase(settings);
-    pqxx::work transaction(connection);
-    if (!transaction.exec("SELECT pg_try_advisory_lock(842105213)")[0][0].as<bool>()) {
+    if (!connection.exec("SELECT GET_LOCK(CONCAT(DATABASE(),':gateway'),0)")[0][0].as<bool>()) {
         throw std::runtime_error("A gateway already owns this database");
     }
-    transaction.commit();
     return connection;
 }
-bool gatewayLeaseAlive(pqxx::connection& lease) {
+bool gatewayLeaseAlive(DatabaseConnection& lease) {
     try {
-        pqxx::read_transaction transaction(lease);
-        return transaction.exec("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid=0 AND objid=842105213 AND granted)")[0][0].as<bool>();
+        return lease.exec("SELECT COALESCE(IS_USED_LOCK(CONCAT(DATABASE(),':gateway'))=CONNECTION_ID(),FALSE)")[0][0].as<bool>();
     } catch (...) {
         return false;
     }

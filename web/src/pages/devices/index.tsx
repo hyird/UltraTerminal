@@ -33,10 +33,18 @@ import {
   desktopState,
   listDevices,
   openDesktop,
+  observeDevices,
 } from "./device.service";
 import type { Device } from "./device.types";
 import { onboardingCommand } from "./device.install";
 import type { Enrollment } from "./device.service";
+import { DeviceGrants } from "./grants";
+import {
+  requestApproval,
+  cancelApproval,
+  loadApprovals,
+} from "../identity/identity.service";
+import type { Approval } from "../identity/identity.types";
 import { WindowsLogin } from "./windows_login";
 
 interface DesktopTab {
@@ -47,6 +55,16 @@ interface DesktopTab {
 
 export function DevicesPage() {
   const { message, modal } = App.useApp();
+  const [grantDevice, setGrantDevice] = useState<Device | null>(null);
+  const [approval, setApproval] = useState<{
+    id: string;
+    device: Device;
+    expiresAt: number;
+    writeControl: boolean;
+  } | null>(null);
+  const approvalRef = useRef(approval);
+  approvalRef.current = approval;
+  const [approvalStates, setApprovalStates] = useState<Approval[]>([]);
   const [renaming, setRenaming] = useState<Device | null>(null);
   const [deviceName, setDeviceName] = useState("");
   const [savingName, setSavingName] = useState(false);
@@ -89,12 +107,64 @@ export function DevicesPage() {
   }
   useEffect(() => {
     live.current = true;
-    void refresh();
+    const stop = observeDevices(
+      (items) => {
+        setDevices(items);
+        setLoading(false);
+      },
+      (item) => {
+        removed.current.delete(item.id);
+        setDevices((items) =>
+          items.some((d) => d.id === item.id)
+            ? items.map((d) => (d.id === item.id ? item : d))
+            : [...items, item],
+        );
+      },
+      (id) => {
+        removed.current.add(id);
+        setDevices((items) => items.filter((d) => d.id !== id));
+      },
+      setApprovalStates,
+      (text) => {
+        setError(text);
+        setLoading(false);
+      },
+    );
     return () => {
       live.current = false;
+      stop();
+      const waiting = approvalRef.current;
+      if (waiting) void cancelApproval(waiting.id).catch(() => {});
     };
   }, []);
-  async function connect(device: Device) {
+  useEffect(() => {
+    if (!approval) return;
+    const timer = setTimeout(
+      () => {
+        setApproval(null);
+        setError("连接申请已过期，请重新申请");
+      },
+      Math.max(0, approval.expiresAt * 1000 - Date.now()),
+    );
+    const current = approvalStates.find((item) => item.id === approval.id);
+    if (current?.state === "approved") {
+      setApproval(null);
+      void connect(approval.device, approval.id, approval.writeControl);
+    } else if (current && current.state !== "pending") {
+      setApproval(null);
+      setError(
+        current.state === "denied"
+          ? "设备所有者拒绝了连接申请"
+          : "连接申请已失效，请重新申请",
+      );
+    }
+    return () => clearTimeout(timer);
+  }, [approval, approvalStates]);
+  async function connect(
+    device: Device,
+    approvalId?: string,
+    approvedWrite?: boolean,
+  ) {
     if (opened.current.has(device.id)) {
       setTab(device.id);
       return;
@@ -104,7 +174,26 @@ export function DevicesPage() {
     setOpening([...pending.current]);
     setError("");
     try {
-      const ticket = await openDesktop(device.id);
+      if (device.requireApproval && !approvalId) {
+        if (approvalRef.current) {
+          setError("请先完成或取消当前连接申请");
+          return;
+        }
+        const requested = await requestApproval(device.id, device.writeControl);
+        if (!live.current) {
+          await cancelApproval(requested.id);
+          return;
+        }
+        setApproval({ ...requested, device });
+        setApprovalStates(await loadApprovals());
+        return;
+      }
+      const ticket = await openDesktop(
+        device.id,
+        approvedWrite ?? device.writeControl,
+        true,
+        approvalId,
+      );
       if (!live.current || removed.current.has(device.id)) {
         await closeDesktop(ticket.id);
         return;
@@ -246,7 +335,7 @@ export function DevicesPage() {
       <div className="device-actions">
         <Button
           type="link"
-          disabled={!device.enrolled}
+          disabled={!device.enrolled || !device.desktop}
           loading={opening.includes(device.id)}
           aria-label={`连接${device.name}（${device.online ? "在线" : "离线"}）`}
           onClick={() => void connect(device)}
@@ -258,10 +347,15 @@ export function DevicesPage() {
         <Dropdown
           menu={{
             items: [
-              { key: "credentials", label: "凭据", disabled: !device.enrolled },
+              {
+                key: "credentials",
+                label: "凭据",
+                disabled: !device.enrolled || !device.manageCredentials,
+              },
               ...(device.canManage
                 ? [
                     { key: "install", label: "安装命令" },
+                    { key: "grants", label: "设备授权" },
                     {
                       key: "update",
                       label: "更新 Agent",
@@ -273,7 +367,8 @@ export function DevicesPage() {
                 : []),
             ],
             onClick: ({ key }) => {
-              if (key === "credentials") setLoginDevice(device);
+              if (key === "grants") setGrantDevice(device);
+              else if (key === "credentials") setLoginDevice(device);
               else if (key === "update") {
                 modal.confirm({
                   title: "更新 Agent",
@@ -474,6 +569,27 @@ export function DevicesPage() {
         </div>
       ))}
 
+      {grantDevice && (
+        <DeviceGrants device={grantDevice} close={() => setGrantDevice(null)} />
+      )}
+      <Modal
+        open={!!approval}
+        title="等待设备所有者审批"
+        footer={null}
+        onCancel={() => {
+          const current = approval;
+          setApproval(null);
+          if (current)
+            void cancelApproval(current.id).catch(() =>
+              setError("取消申请失败"),
+            );
+        }}
+      >
+        <Typography.Paragraph>
+          已通过 Telegram 发送 {approval?.device.name}{" "}
+          的连接申请。所有者允许后会自动连接，本次申请 5 分钟内有效。
+        </Typography.Paragraph>
+      </Modal>
       <Modal
         open={!!renaming}
         title="修改设备名称"
@@ -610,6 +726,12 @@ function DesktopView({
       try {
         const state = await desktopState(ticket.id);
         if (cancelled) return;
+        if (state.state === "closed" && state.reason === "permission_revoked") {
+          setRecovering(false);
+          onError(`${name}：登录或设备授权已失效`);
+          close();
+          return;
+        }
         if (state.state === "closed" && state.reason === "session_failed") {
           setRecovering(false);
           onError(`${name}：远程桌面运行失败，请检查后台日志后重新连接`);
@@ -643,12 +765,14 @@ function DesktopView({
         if (cancelled) return;
         if (
           failure instanceof ApiError &&
-          [401, 403].includes(failure.status)
+          ([401, 403].includes(failure.status) ||
+            failure.code === "approval_required")
         ) {
           setRecovering(false);
           onError(
-            `${name}：${failure.status === 401 ? "登录已过期，请重新登录" : "远程控制授权已失效"}`,
+            `${name}：${failure.code === "approval_required" ? "重新连接需要再次审批，请回设备列表申请" : failure.status === 401 ? "登录已过期，请重新登录" : "远程控制授权已失效"}`,
           );
+          close();
           return;
         }
         timer = setTimeout(

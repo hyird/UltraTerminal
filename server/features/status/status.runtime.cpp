@@ -7,8 +7,12 @@ namespace ultraterimal::server {
 StatusSubscription::StatusSubscription(ruvia::WorkerHandle worker, std::string user)
     : userId(std::move(user)), queue_(ruvia::makeChannel<std::string>(std::move(worker), {.capacity = 64})) {}
 bool StatusSubscription::enqueue(std::string event) {
-    if (closed_ || event.empty() || event.size() > 130) return false;
-    if (pending_.contains(event)) return true;
+    if (closed_ || event.empty() || event.size() > 130) {
+        return false;
+    }
+    if (pending_.contains(event)) {
+        return true;
+    }
     if (pending_.size() >= 64) {
         close();
         return false;
@@ -22,7 +26,9 @@ bool StatusSubscription::enqueue(std::string event) {
 }
 ruvia::Task<std::optional<std::string>> StatusSubscription::receive(ruvia::StopToken stop) {
     auto result = co_await queue_.second.receive(std::move(stop));
-    if (!result.hasValue() || closed_) co_return std::nullopt;
+    if (!result.hasValue() || closed_) {
+        co_return std::nullopt;
+    }
     auto event = std::move(result).takeValue();
     pending_.erase(event);
     co_return event;
@@ -34,18 +40,28 @@ void StatusSubscription::close() {
 }
 std::shared_ptr<StatusSubscription> StatusHub::subscribe(ruvia::WorkerHandle worker, const std::string& user) {
     std::erase_if(subscribers_, [](const auto& weak) { const auto entry = weak.lock(); return !entry || entry->closed(); });
-    if (subscribers_.size() >= 128 || std::count_if(subscribers_.begin(), subscribers_.end(), [&](const auto& weak) { const auto entry = weak.lock(); return entry && entry->userId == user; }) >= 4) return {};
+    if (subscribers_.size() >= 128 || std::count_if(subscribers_.begin(), subscribers_.end(), [&](const auto& weak) { const auto entry = weak.lock(); return entry && entry->userId == user; }) >= 4) {
+        return {};
+    }
     auto subscription = std::make_shared<StatusSubscription>(std::move(worker), user);
     subscribers_.push_back(subscription);
     return subscription;
 }
 void StatusHub::publish(const std::string& event) {
-    if (event.size() < 3 || event.size() > 130 || (event[0] != 'd' && event[0] != 'u') || event[1] != ':') return;
+    if (event.size() < 3 || event.size() > 130 || (event[0] != 'd' && event[0] != 'u') || event[1] != ':') {
+        return;
+    }
     for (const auto& weak : subscribers_) {
-        if (const auto entry = weak.lock(); entry && (event[0] == 'd' || event.substr(2) == entry->userId)) entry->enqueue(event);
+        if (const auto entry = weak.lock(); entry && (event[0] == 'd' || event.substr(2) == "*" || event.substr(2) == entry->userId)) {
+            entry->enqueue(event);
+        }
     }
 }
 void StatusHub::invalidate() {
-    for (const auto& weak : subscribers_) if (const auto entry = weak.lock()) entry->close();
+    for (const auto& weak : subscribers_) {
+        if (const auto entry = weak.lock()) {
+            entry->close();
+        }
+    }
 }
 } // namespace ultraterimal::server
