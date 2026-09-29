@@ -259,11 +259,8 @@ function DesktopPanel({
           </>
         )}
         <div className="desktop-status">
-          <span>{status}</span>
           <span>
-            {sample
-              ? `${sample.width} × ${sample.height} · ${sample.framesPerSecond.toFixed(0)} FPS · ${(bitrate / 1000000).toFixed(1)} Mbps`
-              : "等待首帧"}
+            {`${(sample?.framesPerSecond ?? 0).toFixed(0)} FPS · ${(bitrate / 1000000).toFixed(1)} Mbps`}
           </span>
         </div>
         <div className="flex-1" />
