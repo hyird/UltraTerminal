@@ -208,7 +208,11 @@ function DesktopPanel({
         {entry.ticket.writeControl && (
           <>
             <Dropdown>
-              <Button variant="ghost" isDisabled={ended}>
+              <Button
+                variant="secondary"
+                className="desktop-shortcuts"
+                isDisabled={ended}
+              >
                 快捷键
                 <Icon name="chevron-down" className="size-4" />
               </Button>
@@ -256,6 +260,8 @@ function DesktopPanel({
         <div className="flex-1" />
         <IconButton
           label="切换全屏"
+          variant="tertiary"
+          className="desktop-tool-button"
           onPress={() => {
             const action = document.fullscreenElement
               ? document.exitFullscreen()
@@ -268,6 +274,8 @@ function DesktopPanel({
         {canRestart && (
           <IconButton
             label="重启 Windows"
+            variant="tertiary"
+            className="desktop-tool-button"
             isDisabled={ended}
             onPress={() => {
               restartKey.current = "";

@@ -240,9 +240,7 @@ function SecurityRow({
           </p>
         </div>
       </div>
-      <div className="flex shrink-0 flex-wrap items-center gap-3">
-        {children}
-      </div>
+      <div className="settings-actions">{children}</div>
     </div>
   );
 }
