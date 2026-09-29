@@ -6,4 +6,5 @@ inline constexpr std::string_view kControlOnlyMigration = R"migration(@ULTRATERI
 inline constexpr std::string_view kIdentityTelegramMigration = R"migration(@ULTRATERIMAL_IDENTITY_TELEGRAM_MIGRATION@)migration";
 inline constexpr std::string_view kGrantVerificationMigration = R"migration(@ULTRATERIMAL_GRANT_VERIFICATION_MIGRATION@)migration";
 inline constexpr std::string_view kSessionReconnectMigration = R"migration(@ULTRATERIMAL_SESSION_RECONNECT_MIGRATION@)migration";
+inline constexpr std::string_view kRequesterTelegramMigration = R"migration(@ULTRATERIMAL_REQUESTER_TELEGRAM_MIGRATION@)migration";
 }

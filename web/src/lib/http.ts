@@ -3,13 +3,12 @@ const errorMessages: Record<string, string> = {
   security_rejected: "身份验证失败，请检查当前密码和动态验证码",
   account_rejected:
     "用户操作未完成，请检查用户名是否重复、身份验证以及管理员保护限制",
-  telegram_rejected:
-    "Telegram 操作未完成，请检查 Bot 配置、双方绑定状态和审批权限",
+  telegram_rejected: "Telegram 操作未完成，请检查 Bot 配置、当前账号绑定状态",
   device_unavailable: "设备离线或暂不具备桌面采集能力，请检查 Agent 状态",
   agent_unavailable: "Agent 离线或不支持此操作",
   desktop_input_upgrade_required:
     "设备 Agent 版本不支持当前控制协议，请先升级 Agent",
-  approval_required: "此设备需要所有者批准后才能连接",
+  approval_required: "请使用当前账号绑定的 Telegram 确认本次连接",
   session_rejected: "设备已有活动会话或当前连接条件不满足",
 };
 export class ApiError extends Error {

@@ -80,7 +80,7 @@ export function SecurityPage() {
   return (
     <Page
       title="个人安全"
-      description="保护您的平台账号，并绑定用于设备连接审批的 Telegram。"
+      description="保护您的平台账号，并绑定用于设备连接验证的 Telegram。"
     >
       <Notice>{error}</Notice>
       {loading ? (
@@ -152,9 +152,9 @@ export function SecurityPage() {
             title="Telegram"
             description={
               telegram?.telegramId
-                ? `已绑定账号 ${telegram.telegramId}，设备审批将通过 Bot 通知。`
+                ? `已绑定账号 ${telegram.telegramId}，设备验证将通过 Bot 通知。`
                 : telegram?.botUsername
-                  ? `连接 @${telegram.botUsername}，接收并处理设备审批。`
+                  ? `连接 @${telegram.botUsername}，接收并处理设备验证。`
                   : "管理员配置平台 Bot 后，即可绑定 Telegram。"
             }
           >
@@ -396,7 +396,7 @@ function SecurityAction({
           <p className="text-warning text-sm">关闭后，账号将仅使用密码登录。</p>
         )}
         {action === "unbind" && (
-          <p className="text-warning text-sm">解绑会使待处理的连接审批失效。</p>
+          <p className="text-warning text-sm">解绑会使待处理的连接验证失效。</p>
         )}
         <ProofFields
           password={password}

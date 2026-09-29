@@ -47,7 +47,7 @@ export function telegramInfo(value: unknown): TelegramInfo {
 }
 
 export function approvalList(value: unknown): Approval[] {
-  if (!Array.isArray(value)) throw new Error("审批状态格式错误");
+  if (!Array.isArray(value)) throw new Error("验证状态格式错误");
 
   return value.map((entry: unknown) => {
     const item = record(entry);
@@ -57,7 +57,7 @@ export function approvalList(value: unknown): Approval[] {
       typeof item.expires_at !== "number" ||
       !Number.isSafeInteger(item.expires_at)
     )
-      throw new Error("审批字段格式错误");
+      throw new Error("验证字段格式错误");
 
     const state = text(item.state);
 
@@ -71,7 +71,7 @@ export function approvalList(value: unknown): Approval[] {
         "failed",
       ].includes(state)
     )
-      throw new Error("审批状态错误");
+      throw new Error("验证状态错误");
 
     return {
       id: text(item.id),
@@ -197,7 +197,7 @@ export async function requestApproval(
     typeof item.expires_at !== "number" ||
     typeof item.write_control !== "boolean"
   )
-    throw new Error("审批申请格式错误");
+    throw new Error("验证申请格式错误");
 
   return {
     id: text(item.id),

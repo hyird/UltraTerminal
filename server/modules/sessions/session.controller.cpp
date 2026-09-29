@@ -57,7 +57,7 @@ ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& conte
             co_return context.error({.status = ruvia::http_status::kForbidden, .code = issued.error() == SessionFailure::kVerificationRequired ? "connection_verification_required" : "connection_verification_failed", .message = "Authenticator verification required"});
         }
         if (issued.error() == SessionFailure::kApprovalRequired) {
-            co_return context.error({.status = ruvia::http_status::kConflict, .code = "approval_required", .message = "Device owner approval required"});
+            co_return context.error({.status = ruvia::http_status::kConflict, .code = "approval_required", .message = "Requester Telegram verification required"});
         }
         const auto status = issued.error() == SessionFailure::kDenied ? ruvia::http_status::kForbidden : issued.error() == SessionFailure::kInvalid ? ruvia::http_status::kBadRequest
                                                                                                                                                     : ruvia::http_status::kConflict;

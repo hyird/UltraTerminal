@@ -330,7 +330,7 @@ bool DeviceService::setGrant(std::string_view actorId, std::string_view deviceId
     if (!remove && target != ownerId && (grant.systemRestart || grant.manageCredentials)) {
         return false;
     }
-    if (!remove && grant.verificationMethod == "telegram" && tx.exec("SELECT 1 FROM telegram_settings s JOIN telegram_accounts a ON a.user_id=?", ownerId).empty()) {
+    if (!remove && grant.verificationMethod == "telegram" && tx.exec("SELECT 1 FROM telegram_settings s JOIN telegram_accounts a ON a.user_id=?", target).empty()) {
         return false;
     }
     if (!remove && grant.verificationMethod == "totp" && tx.exec("SELECT id FROM users WHERE id=? AND totp_secret<>''", target).empty()) {
@@ -341,7 +341,7 @@ bool DeviceService::setGrant(std::string_view actorId, std::string_view deviceId
     } else {
         tx.exec("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials,verification_method) VALUES(?,?,?,false,false,?,?,?,?) ON DUPLICATE KEY UPDATE desktop=?,vnc=false,ssh=false,write_control=?,system_restart=?,manage_credentials=?,verification_method=?,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, target, grant.desktop, grant.writeControl, target == ownerId, target == ownerId, grant.verificationMethod, grant.desktop, grant.writeControl, target == ownerId, target == ownerId, grant.verificationMethod);
     }
-    tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE device_id=? AND user_id=? AND state IN ('pending','approved')", deviceId, target);
+    tx.exec("UPDATE connection_verifications SET state='cancelled' WHERE device_id=? AND user_id=? AND state IN ('pending','approved')", deviceId, target);
     tx.exec("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,?,true,?)", actorId, deviceId, remove ? "device.grant.revoke" : "device.grant.save", target);
     tx.commit();
     return true;

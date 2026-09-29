@@ -96,7 +96,7 @@ export function GrantsDialog({
           {removing ? (
             <p className="text-sm leading-7">
               撤销 <strong>{removing.username}</strong>{" "}
-              对此设备的访问权限？相关连接审批和正在运行的远控会话会立即失效。
+              对此设备的访问权限？相关连接验证和正在运行的远控会话会立即失效。
             </p>
           ) : (
             grant && (
@@ -170,13 +170,13 @@ export function GrantsDialog({
                   }
                   items={[
                     { id: "direct", label: "直接连接" },
-                    { id: "telegram", label: "Telegram 审批" },
+                    { id: "telegram", label: "Telegram 验证" },
                     { id: "totp", label: "Google 验证器动态码" },
                   ]}
                 />
                 <p className="text-muted text-xs leading-5">
-                  Telegram 审批需要双方绑定
-                  Telegram，申请发送给设备所有者。动态码验证使用被授权用户的验证器；所有者也可配置自己的连接策略。保存后，旧授权下的会话会重新校验。
+                  Telegram
+                  验证和动态码验证都使用发起连接的用户自己绑定的账号或验证器，与设备所有者无关。保存后，旧授权下的会话会重新校验。
                 </p>
               </>
             )
@@ -230,7 +230,7 @@ export function GrantsDialog({
                       {
                         {
                           direct: "直接连接",
-                          telegram: "Telegram 审批",
+                          telegram: "Telegram 验证",
                           totp: "Google 验证器动态码",
                         }[item.verificationMethod]
                       }

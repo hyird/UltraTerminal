@@ -9,8 +9,8 @@ import { useDesktops } from "../../store/desktops";
 import { cancelApproval } from "./identity.service";
 import type { Approval } from "./identity.types";
 const labels: Record<string, string> = {
-  pending: "待审批",
-  approved: "已批准",
+  pending: "待验证",
+  approved: "已验证",
   denied: "已拒绝",
   consumed: "已使用",
   cancelled: "已取消",
@@ -135,7 +135,7 @@ export function RequestsPanel() {
       ) : (
         <Empty
           title="暂无连接申请"
-          description="设备连接申请的审批进度会在这里更新。"
+          description="设备连接申请的验证状态会在这里更新。"
         />
       )}
       {connecting && (
@@ -147,7 +147,7 @@ export function RequestsPanel() {
           <div className="form-stack">
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
-              此次连接将使用一次性批准。如果设备已有活动会话，继续连接将结束原有会话。
+              此次连接将使用一次性确认。如果设备已有活动会话，继续连接将结束原有会话。
             </p>
             <div className="flex justify-end gap-2">
               <Button

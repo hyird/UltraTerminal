@@ -31,7 +31,7 @@ export function SettingsPage() {
   return (
     <Page
       title="平台设置"
-      description="配置设备连接审批所需的平台服务。个人 Telegram 账号在个人安全中绑定。"
+      description="配置设备连接验证所需的平台服务。个人 Telegram 账号在个人安全中绑定。"
     >
       <Notice>{error}</Notice>
       {loading ? (
@@ -40,10 +40,10 @@ export function SettingsPage() {
         <div className="content-surface p-6 sm:p-8">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h2 className="text-lg font-semibold">Telegram 审批服务</h2>
+              <h2 className="text-lg font-semibold">Telegram 验证服务</h2>
               <p className="text-muted mt-2 max-w-2xl text-sm leading-6">
-                按设备授权配置直接连接或每次审批。申请人和设备所有者都需绑定
-                Telegram，审批通知发送给设备所有者。
+                按用户的设备授权配置直接连接或二级验证。Telegram
+                验证发送给发起连接的用户本人，仅申请人需要绑定 Telegram。
               </p>
             </div>
             <Chip color={bot ? "success" : "default"} variant="soft" size="sm">
@@ -58,8 +58,8 @@ export function SettingsPage() {
               </dd>
             </div>
             <div>
-              <dt className="text-muted text-xs">审批接收人</dt>
-              <dd className="mt-2 text-sm font-medium">设备所有者</dd>
+              <dt className="text-muted text-xs">验证接收人</dt>
+              <dd className="mt-2 text-sm font-medium">发起连接的当前账号</dd>
             </div>
           </dl>
           <div className="flex flex-wrap gap-3">
@@ -125,7 +125,7 @@ function BotEditor({
         code,
         telegram_proof: telegramProof,
       });
-      toast.success(disable ? "审批服务已停用" : "Bot 已配置");
+      toast.success(disable ? "验证服务已停用" : "Bot 已配置");
       onSaved();
     } catch (error) {
       setError(failureText(error));
@@ -135,7 +135,7 @@ function BotEditor({
   }
   return (
     <Dialog
-      title={disable ? "停用审批服务" : "配置 Telegram Bot"}
+      title={disable ? "停用验证服务" : "配置 Telegram Bot"}
       onClose={onClose}
       busy={busy}
     >
@@ -143,7 +143,7 @@ function BotEditor({
         <Notice>{error}</Notice>
         {disable ? (
           <p className="text-warning text-sm">
-            停用后，需要审批的设备连接将无法批准，未使用的审批会失效。
+            停用后，需要验证的设备连接将无法确认，未使用的验证会失效。
           </p>
         ) : (
           <Field

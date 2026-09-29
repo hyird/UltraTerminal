@@ -95,7 +95,7 @@ bool adminAllowed(DatabaseTransaction& tx, const UserIdentity& actor) {
 }
 void invalidateLogins(DatabaseTransaction& tx, std::string_view id, std::string_view keep) {
     tx.exec("DELETE FROM login_sessions WHERE user_id=? AND token_hash<>?", id, keep);
-    tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE (user_id=? OR owner_id=?) AND state IN ('pending','approved')", id, id);
+    tx.exec("UPDATE connection_verifications SET state='cancelled' WHERE user_id=? AND state IN ('pending','approved')", id);
 }
 } // namespace
 std::string randomToken() {
@@ -183,7 +183,7 @@ void IdentityService::logout(std::string_view token) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
     tx.exec("DELETE FROM login_sessions WHERE token_hash=?", tokenHash(token));
-    tx.exec("UPDATE connection_approvals SET state='cancelled' WHERE login_token_hash=? AND state IN ('pending','approved')", tokenHash(token));
+    tx.exec("UPDATE connection_verifications SET state='cancelled' WHERE login_token_hash=? AND state IN ('pending','approved')", tokenHash(token));
     tx.commit();
 }
 SecurityInfo IdentityService::security(std::string_view userId) const {

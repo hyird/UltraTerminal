@@ -89,7 +89,7 @@ export class DesktopReconnect {
           return;
         }
         if (error.code === "approval_required") {
-          this.status("重连需要设备所有者重新审批");
+          this.status("重连需要验证你绑定的 Telegram");
           this.verification("telegram");
           return;
         }

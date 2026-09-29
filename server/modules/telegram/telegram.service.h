@@ -27,7 +27,7 @@ struct ApprovalInfo {
 struct ApprovalDispatch {
     ApprovalInfo approval;
     std::string botToken, username, deviceName;
-    std::int64_t ownerTelegramId = 0;
+    std::int64_t requesterTelegramId = 0;
 };
 class TelegramService {
   public:

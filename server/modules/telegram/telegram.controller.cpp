@@ -199,9 +199,9 @@ ruvia::Task<ruvia::HttpResponse> TelegramController::request(ruvia::Context& con
         co_return rejected(context);
     }
     if (!dispatch->botToken.empty()) {
-        const auto text = "连接申请\n账号：" + dispatch->username + "\n设备：" + dispatch->deviceName + "\n权限：" + std::string("控制") + "\n申请在 5 分钟后失效。";
-        const boost::json::array buttons{boost::json::array{boost::json::object{{"text", "允许"}, {"callback_data", "y:" + dispatch->approval.id}}, boost::json::object{{"text", "拒绝"}, {"callback_data", "n:" + dispatch->approval.id}}}};
-        const auto sent = co_await telegramCall(context, dispatch->botToken, "sendMessage", {{"chat_id", dispatch->ownerTelegramId}, {"text", text}, {"reply_markup", boost::json::object{{"inline_keyboard", buttons}}}});
+        const auto text = "连接二级验证\n账号：" + dispatch->username + "\n设备：" + dispatch->deviceName + "\n权限：" + std::string("控制") + "\n请确认这是您本人发起的连接。验证在 5 分钟后失效。";
+        const boost::json::array buttons{boost::json::array{boost::json::object{{"text", "确认本人连接"}, {"callback_data", "y:" + dispatch->approval.id}}, boost::json::object{{"text", "拒绝"}, {"callback_data", "n:" + dispatch->approval.id}}}};
+        const auto sent = co_await telegramCall(context, dispatch->botToken, "sendMessage", {{"chat_id", dispatch->requesterTelegramId}, {"text", text}, {"reply_markup", boost::json::object{{"inline_keyboard", buttons}}}});
         if (!sent) {
             co_await context.runBlocking([service = runtime.telegram, id = dispatch->approval.id] { service.deliveryFailed(id); });
             runtime.status.publish("u:" + user.id);

@@ -39,7 +39,7 @@ export function OverviewPage() {
       id: "policy",
       header: "连接策略",
       cell: (d) =>
-        ({ direct: "直接连接", telegram: "Telegram 审批", totp: "动态码验证" })[
+        ({ direct: "直接连接", telegram: "Telegram 验证", totp: "动态码验证" })[
           d.verificationMethod
         ],
     },

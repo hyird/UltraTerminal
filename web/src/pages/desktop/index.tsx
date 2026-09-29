@@ -132,7 +132,7 @@ function DesktopPanel({
     const timer = setTimeout(
       () => {
         setApprovalId("");
-        setStatus("连接审批已过期，请重新申请");
+        setStatus("连接验证已过期，请重新申请");
       },
       Math.max(0, approvalExpiresAt * 1000 - Date.now()),
     );
@@ -147,7 +147,7 @@ function DesktopPanel({
     } else if (
       ["denied", "cancelled", "expired", "failed"].includes(approval.state)
     ) {
-      setStatus("连接审批未通过或已过期，请重新申请");
+      setStatus("连接验证未通过或已过期，请重新申请");
       setApprovalId("");
     }
   }, [approval]);
@@ -165,7 +165,7 @@ function DesktopPanel({
         const result = await requestApproval(entry.device.id, true);
         setApprovalId(result.id);
         setApprovalExpiresAt(result.expiresAt);
-        setStatus("等待设备所有者审批，通过后自动重连");
+        setStatus("请在你绑定的 Telegram 中确认，通过后自动重连");
       }
     } catch (error) {
       setError(failureText(error));
@@ -411,7 +411,7 @@ function DesktopPanel({
 
       {verification && (
         <Dialog
-          title={verification === "totp" ? "重连验证" : "重连审批"}
+          title={verification === "totp" ? "重连验证" : "重连验证"}
           onClose={() => {
             reconnect.current?.stop();
             setVerification(null);
@@ -445,8 +445,8 @@ function DesktopPanel({
                 verification === "totp"
                   ? "验证并连接"
                   : approvalId
-                    ? "等待审批"
-                    : "申请审批"
+                    ? "等待验证"
+                    : "发送验证"
               }
             />
           </form>

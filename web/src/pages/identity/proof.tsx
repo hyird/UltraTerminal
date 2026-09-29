@@ -103,7 +103,7 @@ export function ProofFields({
             <p className="text-muted text-sm">
               {telegram
                 ? telegramProof
-                  ? "已发送确认请求，请在 Telegram 中批准，然后点击下方确认继续。请求在 5 分钟后失效。"
+                  ? "已发送确认请求，请在 Telegram 中确认，然后点击下方确认继续。请求在 5 分钟后失效。"
                   : "向当前账号绑定的 Telegram 发送身份确认请求。"
                 : "请先在个人安全页面绑定 Telegram；平台管理员需先配置 Bot。"}
             </p>

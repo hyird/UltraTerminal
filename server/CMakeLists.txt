@@ -15,6 +15,8 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/004_grant_verification.sql" UL
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/004_grant_verification.sql)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/005_session_reconnect.sql" ULTRATERIMAL_SESSION_RECONNECT_MIGRATION)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/005_session_reconnect.sql)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/006_requester_telegram.sql" ULTRATERIMAL_REQUESTER_TELEGRAM_MIGRATION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/006_requester_telegram.sql)
 configure_file(migrations/migration.schema.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/migration.schema.h" @ONLY)
 add_library(ultraterimal-server-core STATIC
     config/server.config.cpp

@@ -113,7 +113,7 @@ function DeviceList({
     try {
       await requestApproval(approval.id, approval.writeControl);
       setApproval(null);
-      toast.success("连接申请已发送给设备所有者");
+      toast.success("连接验证已发送到你绑定的 Telegram");
       requests.setOpen(true);
     } catch (error) {
       setError(failureText(error));
@@ -203,7 +203,7 @@ function DeviceList({
             {personal
               ? {
                   direct: "直接连接",
-                  telegram: "Telegram 审批",
+                  telegram: "Telegram 验证",
                   totp: "动态码验证",
                 }[device.verificationMethod]
               : device.online
@@ -328,7 +328,7 @@ function DeviceList({
         personal
           ? "访问分配给你的设备，按授权范围发起远程连接。"
           : mode === "grants"
-            ? "按设备分配用户与操作权限，设置直接连接或每次审批。"
+            ? "按设备分配用户与操作权限，设置直接连接或二级验证。"
             : "管理设备接入、归属与运行状态。远程访问权限单独授予。"
       }
       actions={
@@ -465,14 +465,13 @@ function DeviceList({
           <form className="form-stack" onSubmit={submitApproval}>
             <Notice>{error}</Notice>
             <p className="text-sm leading-7">
-              本次申请远程控制
-              权限。审批会发送给设备所有者，批准后可在连接申请页面进入桌面。双方需先在个人安全中绑定
-              Telegram。
+              验证消息将发送到你在个人安全中绑定的
+              Telegram。请确认这是本人发起的连接，完成后从右上角连接申请通知中进入桌面。
             </p>
             <FormActions
               busy={busy}
               onCancel={() => setApproval(null)}
-              label="提交连接申请"
+              label="发送验证"
             />
           </form>
         </Dialog>
