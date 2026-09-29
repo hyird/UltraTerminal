@@ -255,11 +255,17 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
             return invalid();
         }
         break;
-    case wire::Envelope::kVideoFrame:
-        if (!m.generation() || !m.frame_id() || m.video_frame().data().empty()) {
+    case wire::Envelope::kVideoFrame: {
+        const auto& frame = m.video_frame();
+        if (!m.generation() || !m.frame_id() || frame.data().empty() ||
+            (frame.has_target_frames_per_second() != frame.has_target_bitrate()) ||
+            (frame.has_target_frames_per_second() &&
+             (frame.target_frames_per_second() < 10 || frame.target_frames_per_second() > 60 ||
+              frame.target_bitrate() < 64000 || frame.target_bitrate() > 100000000))) {
             return invalid();
         }
         break;
+    }
     case wire::Envelope::kFullFrame:
         if (!m.generation() || !m.frame_id() || !dimensions(m.full_frame().width(), m.full_frame().height()) || m.full_frame().rgba().size() != static_cast<std::uint64_t>(m.full_frame().width()) * m.full_frame().height() * 4) {
             return invalid();

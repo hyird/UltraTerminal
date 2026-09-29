@@ -102,13 +102,24 @@ int main() {
         auto videoBytes = protocol::encodeMessage(video);
         require(videoBytes.has_value(), "Legacy frame without encoding telemetry rejected");
         auto videoDecoded = protocol::decodeMessage(*videoBytes);
-        require(videoDecoded && videoDecoded->video_frame().encode_microseconds() == 0, "Legacy frame falsely reports encoding latency");
+        require(videoDecoded && videoDecoded->video_frame().encode_microseconds() == 0 &&
+                    !videoDecoded->video_frame().has_target_frames_per_second() && !videoDecoded->video_frame().has_target_bitrate(),
+                "Legacy frame falsely reports unavailable encoder telemetry");
+        video.mutable_video_frame()->set_target_frames_per_second(60);
+        video.mutable_video_frame()->set_target_bitrate(8000000);
         video.mutable_video_frame()->set_encode_microseconds(12345);
         video.mutable_video_frame()->set_hardware_encoding(true);
         videoBytes = protocol::encodeMessage(video);
         require(videoBytes.has_value(), "Measured video frame rejected");
         videoDecoded = protocol::decodeMessage(*videoBytes);
-        require(videoDecoded && videoDecoded->video_frame().encode_microseconds() == 12345 && videoDecoded->video_frame().hardware_encoding(), "Encoding telemetry lost in round trip");
+        require(videoDecoded && videoDecoded->video_frame().encode_microseconds() == 12345 && videoDecoded->video_frame().hardware_encoding() &&
+                    videoDecoded->video_frame().target_frames_per_second() == 60 && videoDecoded->video_frame().target_bitrate() == 8000000,
+                "Video encoder snapshot telemetry lost in round trip");
+        video.mutable_video_frame()->set_target_frames_per_second(9);
+        require(!protocol::encodeMessage(video), "Out-of-range video target FPS accepted");
+        video.mutable_video_frame()->set_target_frames_per_second(60);
+        video.mutable_video_frame()->set_target_bitrate(100000001);
+        require(!protocol::encodeMessage(video), "Out-of-range video target bitrate accepted");
         wire::Envelope resize;
         resize.set_protocol_version(1);
         resize.set_sequence(1);

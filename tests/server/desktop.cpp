@@ -241,16 +241,20 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(co_await session.forward(endpoints[3], frame));
         require(bool(co_await endpoints[2]->receive({})));
         require(session.diagnostics().encoding.summary().samples == 0); // Legacy Agent.
+        require(session.diagnostics().latestTargetFramesPerSecond == 0 && session.diagnostics().latestTargetBitrate == 0);
         frame.set_sequence(4);
         frame.set_frame_id(2);
         frame.mutable_video_frame()->set_timestamp_microseconds(2);
         frame.mutable_video_frame()->set_encode_microseconds(1234);
         frame.mutable_video_frame()->set_hardware_encoding(true);
+        frame.mutable_video_frame()->set_target_frames_per_second(30);
+        frame.mutable_video_frame()->set_target_bitrate(4000000);
         require(co_await session.forward(endpoints[3], frame));
         auto received = co_await endpoints[2]->receive({});
         require(received && received->bytes() == *protocol::encodeMessage(frame));
         received.reset();
         require(session.diagnostics().encoding.summary().samples == 1 && session.diagnostics().latestHardwareEncoding);
+        require(session.diagnostics().latestTargetFramesPerSecond == 30 && session.diagnostics().latestTargetBitrate == 4000000);
         config.set_sequence(5);
         config.set_generation(2);
         config.mutable_video_config()->set_width(32);
@@ -258,6 +262,7 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(bool(co_await endpoints[2]->receive({})));
         require(session.diagnostics().encoding.summary().samples == 0 && session.diagnostics().videoWidth == 32);
         require(session.diagnostics().latestKeyFrameEncodeMicroseconds == 0);
+        require(session.diagnostics().latestTargetFramesPerSecond == 0 && session.diagnostics().latestTargetBitrate == 0);
     }
     {
         server::DesktopSession session(worker, budget);

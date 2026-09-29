@@ -171,6 +171,8 @@ struct VideoWorker {
         update.frame.set_timestamp_microseconds(encoded->timestampMicroseconds);
         update.frame.set_encode_microseconds(static_cast<std::uint32_t>(std::clamp<std::int64_t>(encodeMicroseconds, 1, std::numeric_limits<std::uint32_t>::max())));
         update.frame.set_hardware_encoding(encoder->hardware());
+        update.frame.set_target_frames_per_second(rate.framesPerSecond);
+        update.frame.set_target_bitrate(rate.bitrate);
         return update;
     }
 };

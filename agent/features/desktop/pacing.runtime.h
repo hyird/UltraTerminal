@@ -95,11 +95,12 @@ class DesktopPacing {
         // Use the slower of the independent RTT probe and displayed-frame
         // baseline. Deliberately size the flight at the maximum 60 FPS, not the
         // adapted output rate, so lowering FPS does not contract an in-flight
-        // window that is still draining. Four jitter frames and the latency are bounded.
+        // window that is still draining. Keep the legacy 16-frame lower bound,
+        // then respect smaller explicit client limits and the hard maximum.
         const auto latency = std::max(roundTrip_.value_or(std::chrono::microseconds::zero()), baseline_);
         const auto microseconds = static_cast<std::uint64_t>(std::clamp(latency, std::chrono::microseconds::zero(), std::chrono::microseconds(std::chrono::seconds(2))).count());
         const auto frames = (microseconds * kMaximumFramesPerSecond + 999999) / 1000000 + kFrameWindowMargin;
-        const auto rttWindow = std::clamp<std::uint64_t>(frames, kFrameWindowMargin + 1, kMaximumInFlightFrames);
+        const auto rttWindow = std::clamp<std::uint64_t>(frames, kLegacyMaximumInFlightFrames, kMaximumInFlightFrames);
         return std::min({static_cast<std::size_t>(rttWindow), static_cast<std::size_t>(clientFrameLimit_), kMaximumInFlightFrames});
     }
     bool canEncode(Clock::time_point now) const {
@@ -245,18 +246,12 @@ class DesktopPacing {
         auto target = static_cast<std::uint64_t>(rate_.bitrate) * 3 / 4;
         target = std::min(target, availableBitrate(networkElapsed, delivered));
         target = std::min<std::uint64_t>(target, kMaximumVideoBitrate);
-        const auto currentFloor = minimumBitrate(rate_.framesPerSecond);
-        if (target < currentFloor) {
-            const auto sustainableFps = target < kMinimumVideoBitrate
-                                            ? kMinimumFramesPerSecond
-                                            : target * kMaximumFramesPerSecond / clearBitrateAt60();
-            rate_.framesPerSecond = std::min(rate_.framesPerSecond,
-                                             static_cast<std::uint32_t>(std::clamp<std::uint64_t>(sustainableFps, kMinimumFramesPerSecond, kMaximumFramesPerSecond)));
-        }
-        // At capacities below the 10 FPS floor, retain the per-frame quality
-        // budget and let bounded ACK/byte/age admission wait for the latest
-        // source image. This is not permission to queue above link capacity.
-        rate_.bitrate = std::max(minimumBitrate(rate_.framesPerSecond), static_cast<std::uint32_t>(target));
+        // Network estimates are not a reliable measure of maximum capacity when
+        // the application is frame- or content-limited. Lower bitrate only as
+        // far as the current per-frame clarity budget; bounded ACK/byte/age
+        // admission limits actual throughput on a narrower path.
+        target = std::max<std::uint64_t>(minimumBitrate(rate_.framesPerSecond), target);
+        rate_.bitrate = static_cast<std::uint32_t>(target);
     }
     void recoverRate() {
         const auto target = std::max(preferredBitrate(), clearBitrateAt60());

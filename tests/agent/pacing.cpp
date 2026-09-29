@@ -83,9 +83,9 @@ int main() {
                         minimumGeometry.rate().bitrate >= minimumGeometry.minimumBitrate(minimumGeometry.rate().framesPerSecond),
                     "Minimum-size congestion produced an encoder-illegal rate");
         }
-        require(minimumGeometry.rate().framesPerSecond == DesktopPacing::kMinimumFramesPerSecond &&
+        require(minimumGeometry.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond &&
                     minimumGeometry.rate().bitrate == DesktopPacing::kMinimumVideoBitrate,
-                "Sustained minimum-size congestion did not settle at legal encoder limits");
+                "Network congestion lowered FPS despite the minimum-size legal bitrate budget");
         for (int i = 0; i < 160; ++i) {
             now += 1s;
             minimumGeometry.sent(1, minimumFrame, now, 1024);
@@ -129,20 +129,32 @@ int main() {
         require(shrinkingWindow.pendingBytes() == 128 * 1024 && !shrinkingWindow.canEncode(now + 82ms),
                 "Shrunk window failed to apply backpressure to subsequent work");
 
+        DesktopPacing applicationLimited;
+        auto applicationTime = now;
+        applicationLimited.observeRoundTrip(20ms, applicationTime);
+        applicationLimited.sent(1, 1, applicationTime, 64);
+        applicationLimited.sent(1, 2, applicationTime + 1ms, 64);
+        require(applicationLimited.acknowledge(1, 1, 1000, 3, applicationTime + 20ms), "Application-limited first ACK rejected");
+        applicationLimited.sent(1, 3, applicationTime + 21ms, 64);
+        require(applicationLimited.acknowledge(1, 2, 1000, 3, applicationTime + 40ms), "Application-limited pipelined ACK rejected");
+        require(applicationLimited.acknowledge(1, 3, 1000, 3, applicationTime + 60ms), "Application-limited congestion ACK rejected");
+        require(applicationLimited.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond &&
+                    applicationLimited.rate().bitrate >= applicationLimited.minimumBitrate(DesktopPacing::kMaximumFramesPerSecond),
+                "Low application-limited throughput inferred a lower target FPS or clarity budget");
+
         DesktopPacing rate;
         require(rate.rate().framesPerSecond == 60 && rate.rate().bitrate >= rate.clearBitrateAt60(), "Initial mode missed its clarity target");
         std::uint64_t frame = 1;
         rate.sent(1, frame, now, 16384);
         require(rate.acknowledge(1, frame++, 1000, 0, now + 20ms), "Initial healthy ACK rejected");
-        // Sustained congestion reduces bitrate only down to the current FPS
-        // budget, then trades FPS for the same minimum bits/frame.
+        // Network congestion may lower bitrate, but only to the current FPS
+        // budget. Capacity estimates must never be converted into a target FPS.
         for (int i = 0; i < 60; ++i) {
             congestionSample(rate, now, frame);
-            require(rate.rate().bitrate >= rate.minimumBitrate(rate.rate().framesPerSecond), "Congestion broke the per-frame clarity budget");
+            require(rate.rate().framesPerSecond == 60 && rate.rate().bitrate >= rate.minimumBitrate(60),
+                    "Network congestion inferred a lower target FPS or broke its clarity budget");
         }
-        require(rate.rate().framesPerSecond < 60 && rate.rate().framesPerSecond >= DesktopPacing::kMinimumFramesPerSecond,
-                "Network congestion did not reduce FPS after reaching the 60 FPS bitrate budget");
-        require(rate.rate().bitrate > 512000, "Congestion incorrectly crushed the clear-frame budget to 512 Kbps");
+        require(rate.rate().bitrate == rate.minimumBitrate(60), "Congestion did not settle at the current-FPS clarity budget");
         const auto congested = rate.rate();
         for (int i = 0; i < 160; ++i) {
             now += 1s;
@@ -151,21 +163,21 @@ int main() {
             require(rate.rate().bitrate >= rate.minimumBitrate(rate.rate().framesPerSecond), "Recovery raised FPS before funding its frame budget");
         }
         require(rate.rate().framesPerSecond == 60 && rate.rate().bitrate >= rate.clearBitrateAt60(), "Stable recovery did not restore a funded 60 FPS target");
-        require(congested.framesPerSecond < 60, "Congested snapshot unexpectedly retained 60 FPS");
+        require(congested.framesPerSecond == 60, "Network congestion unexpectedly lowered the target FPS");
 
         DesktopPacing narrow;
         now += 1s;
         narrow.observeRoundTrip(20ms, now);
         std::uint64_t narrowFrame = 1;
         for (int i = 0; i < 100; ++i) {
-            congestionSample(narrow, now, narrowFrame, 7, 100000);
+            congestionSample(narrow, now, narrowFrame, 7, 1000);
             require(narrow.rate().framesPerSecond >= DesktopPacing::kMinimumFramesPerSecond &&
                         narrow.rate().bitrate >= narrow.minimumBitrate(narrow.rate().framesPerSecond),
                     "Very narrow link escaped bounded minimum-FPS backpressure");
             require(narrow.pendingFrames() == 0 && narrow.pendingBytes() == 0, "ACKed narrow-link data remained queued");
         }
-        require(narrow.rate().framesPerSecond == DesktopPacing::kMinimumFramesPerSecond,
-                "Decoder/network overload did not reach the bounded minimum FPS");
+        require(narrow.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond,
+                "Network pressure alone reduced the target FPS");
         require(narrow.rate().bitrate > 512000, "Narrow link discarded the minimum per-frame quality budget");
 
         DesktopPacing belowMinimumCapacity;
@@ -180,9 +192,9 @@ int main() {
         require(belowMinimumCapacity.acknowledge(1, 4, 1000, 3, now + 620ms), "Second narrow-capacity congestion ACK rejected");
         belowMinimumCapacity.sent(1, 5, now + 621ms, 1000);
         require(belowMinimumCapacity.acknowledge(1, 5, 1000, 3, now + 640ms), "Third narrow-capacity congestion ACK rejected");
-        require(belowMinimumCapacity.rate().framesPerSecond == DesktopPacing::kMinimumFramesPerSecond &&
-                    belowMinimumCapacity.rate().bitrate == belowMinimumCapacity.minimumBitrate(DesktopPacing::kMinimumFramesPerSecond),
-                "Sub-floor link should retain only the minimum-FPS frame budget");
+        require(belowMinimumCapacity.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond &&
+                    belowMinimumCapacity.rate().bitrate == belowMinimumCapacity.minimumBitrate(DesktopPacing::kMaximumFramesPerSecond),
+                "Narrow-link throughput estimate must not reduce FPS or clarity budget");
         belowMinimumCapacity.sent(1, 6, now + 641ms, 128 * 1024);
         require(!belowMinimumCapacity.canEncode(now + 642ms) && belowMinimumCapacity.pendingFrames() == 1 &&
                     belowMinimumCapacity.pendingFrames() <= DesktopPacing::kMaximumInFlightFrames,
@@ -238,6 +250,14 @@ int main() {
             hardLimit = true;
         }
         require(hardLimit, "Hard 128-frame safety limit was exceeded");
+
+        DesktopPacing lowLatencyWindow;
+        lowLatencyWindow.sent(1, 1, now, 1);
+        require(lowLatencyWindow.acknowledge(1, 1, 1000, 0, now + 1ms) &&
+                    lowLatencyWindow.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
+                "A low RTT must not contract the dynamic window below the legacy 16-frame baseline");
+        require(lowLatencyWindow.acknowledge(1, 1, 1000, 0, now + 2ms, false, 8) && lowLatencyWindow.frameWindow() == 8,
+                "The client-advertised frame limit below 16 must remain respected");
 
         DesktopPacing negotiatedCapacity;
         negotiatedCapacity.observeRoundTrip(600ms, now);
@@ -357,6 +377,66 @@ int main() {
         require(sentFrames == 376 && postNegotiationFrames == 360 && acknowledgedFrames > 300 && maximumInFlight > 16 &&
                     maximumInFlight <= DesktopPacing::kMaximumInFlightFrames && highLatency.rate().framesPerSecond == 60,
                 "Several-second high-RTT simulation did not sustain 60 FPS after capability negotiation");
+
+        // Serialize every packet through a finite 256 Kbps bottleneck. ACKs
+        // are caused by completed serialization plus propagation, never an
+        // idealized infinite-capacity timer.
+        DesktopPacing serializedLink;
+        auto linkTime = now + 10s;
+        serializedLink.observeRoundTrip(20ms, linkTime);
+        constexpr std::size_t serializedFrameBytes = 16 * 1024;
+        constexpr std::uint64_t linkBitsPerSecond = 256000;
+        const auto serialization = std::chrono::microseconds(serializedFrameBytes * 8 * 1000000ull / linkBitsPerSecond);
+        struct LinkAck {
+            DesktopPacing::Clock::time_point due;
+            std::uint64_t frame;
+        };
+        std::deque<LinkAck> linkAcks;
+        auto nextLinkSend = linkTime;
+        auto linkSerializationFree = linkTime;
+        const auto linkEnd = linkTime + 6s;
+        std::uint64_t linkFrame = 1, linkAcked = 0, linkDeliveredByEnd = 0;
+        std::size_t maxLinkFrames = 0, maxLinkBytes = 0;
+        while (nextLinkSend <= linkEnd || !linkAcks.empty()) {
+            const bool canSend = nextLinkSend <= linkEnd && serializedLink.canEncode(nextLinkSend);
+            if (canSend && (linkAcks.empty() || nextLinkSend < linkAcks.front().due)) {
+                const auto sentAt = nextLinkSend;
+                serializedLink.sent(1, linkFrame, sentAt, serializedFrameBytes);
+                linkSerializationFree = std::max(linkSerializationFree, sentAt) + serialization;
+                linkAcks.push_back({linkSerializationFree + 20ms, linkFrame});
+                ++linkFrame;
+                nextLinkSend += 16667us;
+                maxLinkFrames = std::max(maxLinkFrames, serializedLink.pendingFrames());
+                maxLinkBytes = std::max(maxLinkBytes, serializedLink.pendingBytes());
+                require(serializedLink.pendingFrames() <= serializedLink.frameWindow() &&
+                            serializedLink.pendingFrames() <= DesktopPacing::kMaximumInFlightFrames &&
+                            serializedLink.pendingBytes() <= serializedLink.byteWindow() + serializedFrameBytes &&
+                            serializedLink.pendingBytes() <= 2 * 1024 * 1024,
+                        "Serialized narrow path exceeded a bounded pacing window");
+            } else if (!linkAcks.empty()) {
+                const auto ack = linkAcks.front();
+                linkAcks.pop_front();
+                require(ack.frame == linkAcked + 1 && ack.due >= linkTime, "Serialized ACK was not causal or ordered");
+                require(serializedLink.acknowledge(1, ack.frame, 1000, 0, ack.due), "Serialized narrow-link ACK rejected");
+                linkAcked = ack.frame;
+                linkDeliveredByEnd += ack.due <= linkEnd;
+                nextLinkSend = std::max(nextLinkSend, ack.due);
+            } else {
+                break;
+            }
+        }
+        require(linkFrame - 1 < 60 * 6 && linkDeliveredByEnd < 60 * 6 && maxLinkFrames <= DesktopPacing::kMaximumInFlightFrames &&
+                    maxLinkBytes <= 2 * 1024 * 1024 && serializedLink.rate().framesPerSecond == 60 &&
+                    serializedLink.rate().bitrate >= serializedLink.minimumBitrate(60),
+                "Finite narrow-link service did not constrain actual output while retaining target quality/FPS");
+        const auto deliveredFrames = linkDeliveredByEnd;
+        const auto actualFpsMilli = deliveredFrames * 1000000000ull /
+                                    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(linkEnd - linkTime).count());
+        require(actualFpsMilli > 0 && actualFpsMilli < serializedLink.rate().framesPerSecond * 1000ull,
+                "Finite serialized capacity did not lower actual displayed FPS below the target");
+        std::cout << "finite-link bps=" << linkBitsPerSecond << " target_fps=" << serializedLink.rate().framesPerSecond
+                  << " target_bps=" << serializedLink.rate().bitrate << " actual_fps_milli=" << actualFpsMilli
+                  << " max_inflight=" << maxLinkFrames << " max_pending_bytes=" << maxLinkBytes << '\n';
 
         DesktopPacing ageBound;
         ageBound.sent(1, 1, now, 1024);

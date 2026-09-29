@@ -166,6 +166,7 @@ void verifyFrames() {
     frame.set_generation(1);
     frame.set_frame_id(1);
     frame.mutable_video_frame()->set_data("payload");
+    require(!frame.video_frame().has_target_frames_per_second() && !frame.video_frame().has_target_bitrate()); // Legacy Agent.
     require(rejected(video.accept(frame), DesktopMessageError::kFrameState));
     require(video.accept(config).has_value());
     require(rejected(video.accept(frame), DesktopMessageError::kFrameState));
@@ -175,7 +176,18 @@ void verifyFrames() {
     frame.set_frame_id(2);
     require(rejected(video.accept(frame), DesktopMessageError::kFrameState));
     frame.mutable_video_frame()->set_timestamp_microseconds(33333);
+    frame.mutable_video_frame()->set_target_frames_per_second(60);
+    frame.mutable_video_frame()->set_target_bitrate(8000000);
     require(video.accept(frame).has_value());
+    auto malformedRate = frame;
+    malformedRate.set_sequence(5);
+    malformedRate.set_frame_id(3);
+    malformedRate.mutable_video_frame()->set_target_bitrate(63000);
+    require(rejected(video.accept(malformedRate), DesktopMessageError::kMalformed));
+    malformedRate = frame;
+    malformedRate.set_sequence(5);
+    malformedRate.mutable_video_frame()->clear_target_bitrate();
+    require(rejected(video.accept(malformedRate), DesktopMessageError::kMalformed));
     auto full = envelope(5);
     full.set_generation(1);
     full.set_frame_id(3);

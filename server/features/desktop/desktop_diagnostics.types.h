@@ -65,6 +65,8 @@ struct DesktopDiagnostics {
     std::uint32_t videoWidth = 0;
     std::uint32_t videoHeight = 0;
     std::uint32_t latestKeyFrameEncodeMicroseconds = 0;
+    std::uint32_t latestTargetFramesPerSecond = 0;
+    std::uint32_t latestTargetBitrate = 0;
     bool latestHardwareEncoding = false;
 };
 } // namespace ultraterimal::server
