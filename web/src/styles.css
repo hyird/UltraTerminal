@@ -2,15 +2,41 @@
 @import "@heroui/styles";
 @import "@heroui-pro/react/css";
 
+@theme {
+  --field-border-width: 0px;
+}
+
 :root {
   font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
-  color-scheme: light;
-  --accent: oklch(0.54 0.21 263);
-  --accent-foreground: white;
   --radius: 0.25rem;
   --field-radius: 0.375rem;
   --radius-3xl: 0.5rem;
   --radius-4xl: 0.75rem;
+}
+:root,
+[data-theme="light"],
+.light {
+  color-scheme: light;
+  --muted: oklch(55.17% 0 253.83);
+  --accent: oklch(62.04% 0.1951 253.83);
+  --success: oklch(73.29% 0.1935 150.81);
+  --warning: oklch(78.19% 0.1585 72.33);
+  --danger: oklch(65.32% 0.2328 25.74);
+  --border: oklch(90% 0 253.83);
+  --focus: oklch(62.04% 0.1951 253.83);
+}
+[data-theme="dark"],
+.dark {
+  color-scheme: dark;
+  --muted: oklch(70.5% 0 253.83);
+  --accent: oklch(62.04% 0.1951 253.83);
+  --accent-foreground: var(--snow);
+  --success: oklch(73.29% 0.1935 150.81);
+  --warning: oklch(82.03% 0.1388 76.34);
+  --danger: oklch(59.4% 0.1967 24.63);
+  --segment: oklch(39.64% 0 253.83);
+  --border: oklch(28% 0 253.83);
+  --focus: oklch(62.04% 0.1951 253.83);
 }
 body {
   margin: 0;
