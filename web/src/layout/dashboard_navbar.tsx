@@ -6,7 +6,7 @@ import { RequestsPanel } from "../pages/identity/requests";
 export function DashboardNavbar({ title }: { title: string }) {
   const requests = useConnectionRequests();
   return (
-    <Navbar maxWidth="full">
+    <Navbar maxWidth="full" size="sm" height="var(--workspace-navbar-height)">
       <Navbar.Header>
         <AppLayout.MenuToggle aria-label="打开菜单" />
         <Sidebar.Trigger aria-label="收起侧栏" />

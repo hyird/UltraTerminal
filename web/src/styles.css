@@ -25,9 +25,6 @@ textarea {
 [hidden] {
   display: none !important;
 }
-.navbar {
-  --navbar-height: var(--workspace-navbar-height);
-}
 .page-workspace {
   max-width: 80rem;
   width: 100%;
