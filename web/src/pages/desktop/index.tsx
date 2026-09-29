@@ -279,7 +279,7 @@ function DesktopPanel({
       hidden={!visible}
     >
       <div
-        className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2 max-md:px-2 [&>.select]:w-fit! [&>.select]:min-w-0! [&>.select]:max-w-full! [&_.select__indicator]:hidden [&_.select__value]:flex-none [&_button]:flex [&_button]:h-8! [&_button]:min-h-8! [&_button]:items-center [&_button]:justify-center [&_button]:rounded-(--field-radius) [&_button]:px-8! [&_button]:py-0! [&_button]:text-center [&_button]:text-sm [&_button]:font-normal"
+        className="flex shrink-0 flex-wrap items-center gap-2 px-3 py-2 max-md:px-2 [&>.select]:w-fit! [&>.select]:min-w-0! [&>.select]:max-w-full! [&_.select__value]:flex-none [&_button]:flex [&_button]:h-8! [&_button]:min-h-8! [&_button]:items-center [&_button]:justify-center [&_button]:rounded-(--field-radius) [&_button]:px-8! [&_button]:py-0! [&_button]:text-center [&_button]:text-sm [&_button]:font-normal"
         hidden={fullscreen}
       >
         <Choice

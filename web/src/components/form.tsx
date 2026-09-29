@@ -89,9 +89,11 @@ export function Choice({
       {!compact && <Label>{label}</Label>}
       <Select.Trigger>
         <Select.Value />
-        <Select.Indicator />
+        {!compact && <Select.Indicator />}
       </Select.Trigger>
-      <Select.Popover className={compact ? "w-(--trigger-width)" : undefined}>
+      <Select.Popover
+        className={`${compact ? "w-(--trigger-width) " : ""}[scrollbar-width:none]! [&::-webkit-scrollbar]:hidden`}
+      >
         <ListBox items={items}>
           {(item) => (
             <ListBox.Item id={item.id} textValue={item.label}>
