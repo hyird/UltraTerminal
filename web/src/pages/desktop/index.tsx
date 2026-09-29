@@ -1,6 +1,6 @@
 import { IconButton } from "../../components/icon_button";
 import { useEffect, useRef, useState } from "react";
-import { Button, Chip, Dropdown, Label, toast } from "@heroui/react";
+import { Button, Dropdown, Label, toast } from "@heroui/react";
 import { useLocation } from "react-router";
 import {
   Choice,
@@ -47,6 +47,8 @@ export function DesktopWorkspace() {
             </Button>
             <IconButton
               label={`关闭 ${entry.device.name} 会话`}
+              variant="ghost"
+              className="session-close"
               onPress={() => close(entry.ticket.id)}
             >
               <Icon name="xmark" />
@@ -164,13 +166,6 @@ function DesktopPanel({
   return (
     <div ref={root} className="desktop-panel" hidden={!visible}>
       <div className="desktop-toolbar">
-        <Chip
-          size="sm"
-          variant="soft"
-          color={entry.ticket.writeControl ? "accent" : "default"}
-        >
-          {entry.ticket.writeControl ? "可控制" : "只读"}
-        </Chip>
         <Choice
           compact
           label="显示比例"

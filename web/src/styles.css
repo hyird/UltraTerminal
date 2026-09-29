@@ -263,7 +263,21 @@ textarea {
 .session-tab {
   display: flex;
   align-items: center;
+  gap: 0.125rem;
+  padding: 0.25rem;
+  border-radius: 0.75rem;
+}
+.session-tab > .button {
   border-radius: 0.5rem;
+}
+.session-tab .session-close {
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-radius: 0.5rem;
+  color: inherit;
 }
 .session-tab[data-active="true"] {
   background: var(--accent-soft);
