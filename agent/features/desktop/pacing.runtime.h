@@ -21,12 +21,13 @@ class DesktopPacing {
                          kSmooth,
                          kSharp };
     struct Rate {
-        std::uint32_t framesPerSecond = 60;
+        std::uint32_t framesPerSecond = 30;
         std::uint32_t bitrate = 24000000;
         bool sharp = true;
     };
     static constexpr std::uint32_t kMinimumFramesPerSecond = 10;
-    static constexpr std::uint32_t kMaximumFramesPerSecond = 60;
+    static constexpr std::uint32_t kMaximumFramesPerSecond = 30;
+    static constexpr std::uint32_t kReferenceFramesPerSecond = 60;
     // Keep the pacing floor aligned with VideoEncoder and SoftwareVideoEncoder.
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000;
     static constexpr std::uint32_t kMaximumVideoBitrate = 100000000;
@@ -45,7 +46,7 @@ class DesktopPacing {
     }
     std::uint32_t minimumBitrate(std::uint32_t framesPerSecond) const {
         const auto boundedFps = std::clamp(framesPerSecond, kMinimumFramesPerSecond, kMaximumFramesPerSecond);
-        const auto bits = (static_cast<std::uint64_t>(clearBitrateAt60()) * boundedFps + kMaximumFramesPerSecond - 1) / kMaximumFramesPerSecond;
+        const auto bits = (static_cast<std::uint64_t>(clearBitrateAt60()) * boundedFps + kReferenceFramesPerSecond - 1) / kReferenceFramesPerSecond;
         return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(bits, kMinimumVideoBitrate, kMaximumVideoBitrate));
     }
     // Geometry is discovered/updated by the encoding worker, then committed on
@@ -80,6 +81,8 @@ class DesktopPacing {
         quality_ = quality;
         rate_ = {kMaximumFramesPerSecond, std::max(preferredBitrate(), clearBitrateAt60()), quality == Quality::kSharp};
         congestionSamples_ = 0;
+        healthySince_.reset();
+        fpsAdjustAt_ = {};
         return true;
     }
     void reset(std::uint64_t generation) {
@@ -90,10 +93,12 @@ class DesktopPacing {
         acknowledged_ = 0;
         clientFrameLimit_ = kLegacyMaximumInFlightFrames;
         congestionSamples_ = 0;
+        healthySince_.reset();
+        fpsAdjustAt_ = {};
     }
     std::size_t frameWindow() const {
         // Use the slower of the independent RTT probe and displayed-frame
-        // baseline. Deliberately size the flight at the maximum 60 FPS, not the
+        // baseline. Deliberately size the flight at the maximum 30 FPS, not the
         // adapted output rate, so lowering FPS does not contract an in-flight
         // window that is still draining. Keep the legacy 16-frame lower bound,
         // then respect smaller explicit client limits and the hard maximum.
@@ -157,6 +162,7 @@ class DesktopPacing {
             clientFrameLimit_ = advertisedMaximumPendingFrames ? advertisedMaximumPendingFrames : kLegacyMaximumInFlightFrames;
             if (background != background_) {
                 congestionSamples_ = 0;
+                healthySince_.reset();
             }
             background_ = background;
             return true;
@@ -192,6 +198,7 @@ class DesktopPacing {
         background_ = background;
         if (background_) {
             congestionSamples_ = 0;
+            healthySince_.reset();
             return true;
         }
         // WebCodecs output includes browser scheduling jitter, so a single
@@ -201,6 +208,11 @@ class DesktopPacing {
         const auto networkBaseline = roundTrip_.value_or(baseline_);
         const bool transportBound = networkElapsed > networkBaseline + std::chrono::milliseconds(40) || queueDepth > 2;
         const bool congested = transportBound || decodeBound;
+        if (congested) {
+            healthySince_.reset();
+        } else if (!healthySince_) {
+            healthySince_ = now;
+        }
         // Browser scheduling and one-off decoder stalls are noisy. Observe
         // every new ACK, including the cooldown, before lowering the rate.
         congestionSamples_ = congested ? std::min(3u, congestionSamples_ + 1) : 0;
@@ -208,8 +220,9 @@ class DesktopPacing {
             return true;
         }
         if (congested) {
-            if (decodeBound) {
-                rate_.framesPerSecond = std::max(kMinimumFramesPerSecond, rate_.framesPerSecond * 3 / 4);
+            if (decodeBound && now >= fpsAdjustAt_) {
+                rate_.framesPerSecond = std::max(kMinimumFramesPerSecond, rate_.framesPerSecond > kMinimumFramesPerSecond + 3 ? rate_.framesPerSecond - 3 : kMinimumFramesPerSecond);
+                fpsAdjustAt_ = now + std::chrono::seconds(2);
             }
             if (transportBound) {
                 reduceForNetworkCongestion(networkElapsed, delivered);
@@ -217,6 +230,16 @@ class DesktopPacing {
             congestionSamples_ = 0;
         } else {
             recoverRate();
+            // Wait for sustained healthy display feedback before raising FPS;
+            // bitrate recovery alone must not make the visible cadence oscillate.
+            if (healthySince_ && now - *healthySince_ >= std::chrono::seconds(5) && now >= fpsAdjustAt_) {
+                const auto nextFps = std::min(kMaximumFramesPerSecond, rate_.framesPerSecond + 3);
+                if (rate_.bitrate >= minimumBitrate(nextFps)) {
+                    rate_.framesPerSecond = nextFps;
+                    fpsAdjustAt_ = now + std::chrono::seconds(5);
+                    healthySince_ = now;
+                }
+            }
         }
         adjustAt_ = now + std::chrono::milliseconds(500);
         return true;
@@ -257,10 +280,6 @@ class DesktopPacing {
         const auto target = std::max(preferredBitrate(), clearBitrateAt60());
         const auto increment = std::max(64000u, rate_.bitrate / 10);
         rate_.bitrate = std::min(target, rate_.bitrate > kMaximumVideoBitrate - increment ? kMaximumVideoBitrate : rate_.bitrate + increment);
-        const auto nextFps = std::min(kMaximumFramesPerSecond, rate_.framesPerSecond + 5);
-        if (nextFps > rate_.framesPerSecond && rate_.bitrate >= minimumBitrate(nextFps)) {
-            rate_.framesPerSecond = nextFps;
-        }
     }
 
     std::uint32_t width_ = 1920, height_ = 1080;
@@ -276,7 +295,8 @@ class DesktopPacing {
     Clock::time_point baselineExpiresAt_{}, lastAcknowledgedAt_{};
     std::optional<std::chrono::microseconds> roundTrip_;
     Clock::time_point roundTripExpiresAt_{};
-    Clock::time_point adjustAt_{};
+    Clock::time_point adjustAt_{}, fpsAdjustAt_{};
+    std::optional<Clock::time_point> healthySince_;
     bool background_ = false;
     unsigned congestionSamples_ = 0;
 };

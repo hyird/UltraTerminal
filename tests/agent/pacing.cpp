@@ -30,7 +30,7 @@ int main() {
 
         DesktopPacing geometry;
         require(geometry.clearBitrateAt60() == 8000000, "1080p60 clarity budget must be 8 Mbps");
-        require(geometry.minimumBitrate(60) == 8000000 && geometry.minimumBitrate(30) == 4000000 && geometry.minimumBitrate(10) == 1333334,
+        require(geometry.minimumBitrate(30) == 4000000 && geometry.minimumBitrate(60) == 4000000 && geometry.minimumBitrate(10) == 1333334,
                 "1080p per-frame budget did not scale with FPS");
         require(geometry.setGeometry(2560, 1080), "Accept 2560x1080 geometry");
         require(geometry.clearBitrateAt60() == 10666667 && geometry.minimumBitrate(30) == 5333334,
@@ -52,20 +52,20 @@ int main() {
         }
         for (const auto quality : {DesktopPacing::Quality::kSmooth, DesktopPacing::Quality::kBalanced, DesktopPacing::Quality::kSharp}) {
             require(geometry.setQuality(quality), "Quality mode change was not applied");
-            require(geometry.rate().framesPerSecond == 60 && geometry.rate().bitrate >= geometry.clearBitrateAt60() &&
+            require(geometry.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond && geometry.rate().bitrate >= geometry.clearBitrateAt60() &&
                         geometry.rate().bitrate <= DesktopPacing::kMaximumVideoBitrate,
-                    "Quality target violated 4K60 clarity or encoder limit");
+                    "Quality target violated 4K30 clarity or encoder limit");
         }
         require(geometry.setGeometry(2560, 1080), "Return to wide geometry");
         require(geometry.setQuality(DesktopPacing::Quality::kSmooth) && geometry.rate().bitrate == 10666667,
-                "Smooth preference must not undercut the 60 FPS clarity budget");
+                "Smooth preference must not undercut the 60 FPS reference clarity budget");
         require(geometry.setGeometry(1920, 1080) && geometry.rate().bitrate == 8000000,
                 "Returning to 1080p should restore the selected healthy bitrate target");
         DesktopPacing modeSwitch;
         for (const auto [quality, bitrate] : {std::pair{DesktopPacing::Quality::kSmooth, 8000000u},
                                               std::pair{DesktopPacing::Quality::kBalanced, 16000000u},
                                               std::pair{DesktopPacing::Quality::kSharp, 24000000u}}) {
-            require(modeSwitch.setQuality(quality) && modeSwitch.rate().bitrate == bitrate && modeSwitch.rate().framesPerSecond == 60,
+            require(modeSwitch.setQuality(quality) && modeSwitch.rate().bitrate == bitrate && modeSwitch.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond,
                     "Quality preference mode failed to restore its 1080p healthy target");
         }
 
@@ -143,7 +143,7 @@ int main() {
                 "Low application-limited throughput inferred a lower target FPS or clarity budget");
 
         DesktopPacing rate;
-        require(rate.rate().framesPerSecond == 60 && rate.rate().bitrate >= rate.clearBitrateAt60(), "Initial mode missed its clarity target");
+        require(rate.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond && rate.rate().bitrate >= rate.minimumBitrate(DesktopPacing::kMaximumFramesPerSecond), "Initial mode missed its clarity target");
         std::uint64_t frame = 1;
         rate.sent(1, frame, now, 16384);
         require(rate.acknowledge(1, frame++, 1000, 0, now + 20ms), "Initial healthy ACK rejected");
@@ -151,10 +151,10 @@ int main() {
         // budget. Capacity estimates must never be converted into a target FPS.
         for (int i = 0; i < 60; ++i) {
             congestionSample(rate, now, frame);
-            require(rate.rate().framesPerSecond == 60 && rate.rate().bitrate >= rate.minimumBitrate(60),
+            require(rate.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond && rate.rate().bitrate >= rate.minimumBitrate(DesktopPacing::kMaximumFramesPerSecond),
                     "Network congestion inferred a lower target FPS or broke its clarity budget");
         }
-        require(rate.rate().bitrate == rate.minimumBitrate(60), "Congestion did not settle at the current-FPS clarity budget");
+        require(rate.rate().bitrate == rate.minimumBitrate(DesktopPacing::kMaximumFramesPerSecond), "Congestion did not settle at the current-FPS clarity budget");
         const auto congested = rate.rate();
         for (int i = 0; i < 160; ++i) {
             now += 1s;
@@ -162,8 +162,8 @@ int main() {
             require(rate.acknowledge(1, frame++, 1000, 0, now + 20ms), "Healthy recovery ACK rejected");
             require(rate.rate().bitrate >= rate.minimumBitrate(rate.rate().framesPerSecond), "Recovery raised FPS before funding its frame budget");
         }
-        require(rate.rate().framesPerSecond == 60 && rate.rate().bitrate >= rate.clearBitrateAt60(), "Stable recovery did not restore a funded 60 FPS target");
-        require(congested.framesPerSecond == 60, "Network congestion unexpectedly lowered the target FPS");
+        require(rate.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond && rate.rate().bitrate >= rate.clearBitrateAt60(), "Stable recovery did not restore a funded 30 FPS target");
+        require(congested.framesPerSecond == DesktopPacing::kMaximumFramesPerSecond, "Network congestion unexpectedly lowered the target FPS");
 
         DesktopPacing narrow;
         now += 1s;
@@ -208,9 +208,37 @@ int main() {
             decoderBound.sent(1, decoderFrame, now, 16384);
             decoderBound.acknowledge(1, decoderFrame++, 100000, 0, now + 20ms);
         }
-        require(decoderBound.rate().framesPerSecond < initialRate.framesPerSecond &&
+        require(decoderBound.rate().framesPerSecond == initialRate.framesPerSecond - 3 &&
                     decoderBound.rate().bitrate >= decoderBound.minimumBitrate(decoderBound.rate().framesPerSecond),
-                "Decoder overload must reduce FPS without violating bits per frame");
+                "Sustained decoder overload must reduce FPS gradually without violating bits per frame");
+        const auto reducedFps = decoderBound.rate().framesPerSecond;
+        for (int i = 0; i < 4; ++i) {
+            now += 1s;
+            decoderBound.sent(1, decoderFrame, now, 16384);
+            require(decoderBound.acknowledge(1, decoderFrame++, 1000, 0, now + 20ms), "Recovery ACK rejected");
+            require(decoderBound.rate().framesPerSecond == reducedFps, "FPS recovered before five seconds of stable feedback");
+        }
+        now += 1s;
+        decoderBound.sent(1, decoderFrame, now, 16384);
+        require(decoderBound.acknowledge(1, decoderFrame++, 1000, 0, now + 20ms) &&
+                    decoderBound.rate().framesPerSecond == reducedFps,
+                "FPS recovered before the full healthy interval");
+        now += 1s;
+        decoderBound.sent(1, decoderFrame, now, 16384);
+        require(decoderBound.acknowledge(1, decoderFrame++, 1000, 0, now + 20ms) &&
+                    decoderBound.rate().framesPerSecond == initialRate.framesPerSecond,
+                "Stable feedback failed to restore the 30 FPS target");
+
+        DesktopPacing intermittentDecoder;
+        std::uint64_t intermittentFrame = 1;
+        for (int i = 0; i < 30; ++i) {
+            now += 1s;
+            intermittentDecoder.sent(1, intermittentFrame, now, 16384);
+            require(intermittentDecoder.acknowledge(1, intermittentFrame++, i % 3 == 0 ? 100000 : 1000, 0, now + 20ms),
+                    "Intermittent decoder feedback rejected");
+            require(intermittentDecoder.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond,
+                    "Isolated slow decodes caused target FPS jumps");
+        }
 
         DesktopPacing stale;
         stale.sent(1, 1, now, 1024);
@@ -273,7 +301,7 @@ int main() {
                 "Missing capability must retain legacy 16-frame behavior");
         const auto acknowledgedRate = negotiatedCapacity.rate();
         require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 601ms, false, 128) &&
-                    negotiatedCapacity.frameWindow() == 40 &&
+                    negotiatedCapacity.frameWindow() == 22 &&
                     negotiatedCapacity.rate().framesPerSecond == acknowledgedRate.framesPerSecond &&
                     negotiatedCapacity.rate().bitrate == acknowledgedRate.bitrate,
                 "Valid repeated ACK did not update capacity independently of rate adaptation");
@@ -289,7 +317,7 @@ int main() {
         require(negotiatedCapacity.acknowledge(1, 1, 1000, 0, now + 604ms, false, 128),
                 "Could not restore the advertised client frame capacity");
         for (std::uint64_t id = 2; id <= 20; ++id) {
-            const auto sentAt = now + 604ms + 16667us * (id - 2);
+            const auto sentAt = now + 604ms + 33334us * (id - 2);
             require(negotiatedCapacity.canEncode(sentAt), "Expanded client window did not admit the simulated flight");
             negotiatedCapacity.sent(1, id, sentAt, 512);
         }
@@ -304,7 +332,7 @@ int main() {
                     negotiatedCapacity.frameWindow() == DesktopPacing::kLegacyMaximumInFlightFrames,
                 "New generation did not return to the legacy window until it receives valid client feedback");
 
-        // Event-driven 600 ms RTT simulation. Sends occur every 16,667 us and
+        // Event-driven 600 ms RTT simulation. Sends occur every 33,334 us and
         // each display ACK is queued for send+600 ms. The scheduler always
         // processes the earliest event, with ACKs winning timestamp ties.
         // This is a pacing unit simulation, not a network measurement.
@@ -316,7 +344,7 @@ int main() {
             DesktopPacing::Clock::time_point due;
             std::uint64_t frame;
         };
-        constexpr auto frameInterval = 16667us;
+        constexpr auto frameInterval = 33334us;
         constexpr std::size_t frameBytes = 512;
         const auto simulationStart = now;
         const auto simulationEnd = simulationStart + 6600ms;
@@ -374,9 +402,9 @@ int main() {
                         acknowledgements.size() == highLatency.pendingFrames(),
                     "High-RTT simulation exceeded a bound or lost an in-flight frame");
         }
-        require(sentFrames == 376 && postNegotiationFrames == 360 && acknowledgedFrames > 300 && maximumInFlight > 16 &&
-                    maximumInFlight <= DesktopPacing::kMaximumInFlightFrames && highLatency.rate().framesPerSecond == 60,
-                "Several-second high-RTT simulation did not sustain 60 FPS after capability negotiation");
+        require(sentFrames > 160 && sentFrames <= 200 && postNegotiationFrames > 140 && acknowledgedFrames > 140 && maximumInFlight > 16 &&
+                    maximumInFlight <= DesktopPacing::kMaximumInFlightFrames && highLatency.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond,
+                "Several-second high-RTT simulation did not sustain 30 FPS after capability negotiation");
 
         // Serialize every packet through a finite 256 Kbps bottleneck. ACKs
         // are caused by completed serialization plus propagation, never an
@@ -405,7 +433,7 @@ int main() {
                 linkSerializationFree = std::max(linkSerializationFree, sentAt) + serialization;
                 linkAcks.push_back({linkSerializationFree + 20ms, linkFrame});
                 ++linkFrame;
-                nextLinkSend += 16667us;
+                nextLinkSend += 33334us;
                 maxLinkFrames = std::max(maxLinkFrames, serializedLink.pendingFrames());
                 maxLinkBytes = std::max(maxLinkBytes, serializedLink.pendingBytes());
                 require(serializedLink.pendingFrames() <= serializedLink.frameWindow() &&
@@ -425,9 +453,9 @@ int main() {
                 break;
             }
         }
-        require(linkFrame - 1 < 60 * 6 && linkDeliveredByEnd < 60 * 6 && maxLinkFrames <= DesktopPacing::kMaximumInFlightFrames &&
-                    maxLinkBytes <= 2 * 1024 * 1024 && serializedLink.rate().framesPerSecond == 60 &&
-                    serializedLink.rate().bitrate >= serializedLink.minimumBitrate(60),
+        require(linkFrame - 1 < 30 * 6 && linkDeliveredByEnd < 30 * 6 && maxLinkFrames <= DesktopPacing::kMaximumInFlightFrames &&
+                    maxLinkBytes <= 2 * 1024 * 1024 && serializedLink.rate().framesPerSecond == DesktopPacing::kMaximumFramesPerSecond &&
+                    serializedLink.rate().bitrate >= serializedLink.minimumBitrate(DesktopPacing::kMaximumFramesPerSecond),
                 "Finite narrow-link service did not constrain actual output while retaining target quality/FPS");
         const auto deliveredFrames = linkDeliveredByEnd;
         const auto actualFpsMilli = deliveredFrames * 1000000000ull /
