@@ -23,7 +23,13 @@ $log = Join-Path $env:TEMP ('ultraterimal-install-' + [guid]::NewGuid().ToString
 try {
     Write-Host 'Downloading Ultraterimal Agent...'
     Invoke-WebRequest -UseBasicParsing -Uri ($utOrigin + $manifest.file) -OutFile $msi
-    if ((Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash -ne $manifest.sha256) { throw 'MSI checksum mismatch' }
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($msi)
+        try { $downloadHash = ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $stream.Dispose() }
+    } finally { $sha256.Dispose() }
+    if ($downloadHash -ne $manifest.sha256.ToLowerInvariant()) { throw 'MSI checksum mismatch' }
     Write-Host 'Installing Windows service...'
     $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @('/i', ('"' + $msi + '"'), '/qn', '/norestart', '/l*v', ('"' + $log + '"')) -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -notin @(0,3010)) { throw "MSI installation failed: $($process.ExitCode). Log: $log" }
