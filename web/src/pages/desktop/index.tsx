@@ -376,6 +376,11 @@ function DesktopPanel({
           <span>
             {`${(sample?.framesPerSecond ?? 0).toFixed(0)} FPS · ${(bitrate / 1000000).toFixed(1)} Mbps`}
           </span>
+          {sample?.visibleGapP95Milliseconds != null && (
+            <span title="仅统计前台 rAF 观察到的不同画布帧，合成前计时；静止画面间隔不代表卡顿，也不是物理显示延迟。">
+              {`· rAF 间隔 P95 ${sample.visibleGapP95Milliseconds.toFixed(0)} ms · ≥100 ms ${sample.visibleGapsAtLeast100Milliseconds}/${sample.visibleGapSamples} 帧`}
+            </span>
+          )}
         </div>
         <div className="flex-1" />
         <Button

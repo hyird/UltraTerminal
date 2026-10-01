@@ -1,6 +1,7 @@
 import { ultraterimal } from "../../generated/session";
 import type { DesktopTicket, DesktopPerformance } from "./desktop.types";
 import { DesktopQualityPolicy, type DesktopQuality } from "./quality.session";
+import { DesktopVisibleFrameGaps } from "./visible_frames.session";
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
@@ -59,6 +60,7 @@ export class DesktopSession {
   private visibility = new AbortController();
   private displayedFrame = 0;
   private observedFrame = 0;
+  private readonly visibleFrameGaps = new DesktopVisibleFrameGaps();
   private observationAnimation: number | undefined;
   private visible = true;
   private scaleMode: "native" | "fit" = "fit";
@@ -111,7 +113,10 @@ export class DesktopSession {
       this.deadline = setTimeout(() => this.fail("桌面首帧超时", true), 60000);
       document.addEventListener(
         "visibilitychange",
-        () => this.reportDisplay(),
+        () => {
+          this.visibleFrameGaps.clear();
+          this.reportDisplay();
+        },
         {
           signal: this.visibility.signal,
         },
@@ -282,6 +287,7 @@ export class DesktopSession {
   setVisible(visible: boolean): void {
     if (this.stopped || this.visible === visible) return;
     this.visible = visible;
+    this.visibleFrameGaps.clear();
     if (!visible) this.input?.release();
     this.reportDisplay();
   }
@@ -311,7 +317,7 @@ export class DesktopSession {
   private observeCanvasFrame(): void {
     if (this.observationAnimation !== undefined || this.stopped) return;
     const generation = this.generation;
-    this.observationAnimation = requestAnimationFrame(() => {
+    this.observationAnimation = requestAnimationFrame((at) => {
       this.observationAnimation = undefined;
       if (
         this.stopped ||
@@ -323,6 +329,7 @@ export class DesktopSession {
       if (this.displayedFrame > this.observedFrame) {
         this.observedFrame = this.displayedFrame;
         this.presentedCount++;
+        this.visibleFrameGaps.observe(at);
       }
     });
   }
@@ -532,6 +539,7 @@ export class DesktopSession {
       this.observationAnimation = undefined;
       this.generation = generationId;
       this.displayedFrame = this.observedFrame = 0;
+      this.visibleFrameGaps.clear();
       this.frame = 0;
       this.timestamp = -1;
       this.canvas.width = this.overlay.width = video.width;
@@ -719,6 +727,10 @@ export class DesktopSession {
     const frames = this.displayedCount;
     const presentedFrames = this.presentedCount;
     const decodeMilliseconds = frames ? this.decodeTotal / frames : null;
+    // An unchanged desktop is not a stalled video stream. Avoid carrying its
+    // idle time into the next visible frame or retaining stale gap metrics.
+    if (!frames && !presentedFrames) this.visibleFrameGaps.clear();
+    const visibleGaps = this.visibleFrameGaps.summary();
     const previousQuality = this.quality.preference;
     this.quality.sample(frames, decodeMilliseconds ?? 0, this.pending.size);
     if (previousQuality !== this.quality.preference) this.reportDisplay();
@@ -727,6 +739,10 @@ export class DesktopSession {
       // Only count decoded images observed in a visible rAF, not every
       // drawImage submission that may be overwritten before a paint cycle.
       framesPerSecond: (presentedFrames * 1000) / elapsed,
+      visibleGapP95Milliseconds: visibleGaps.p95Milliseconds,
+      visibleGapP99Milliseconds: visibleGaps.p99Milliseconds,
+      visibleGapsAtLeast100Milliseconds: visibleGaps.gapsAtLeast100Milliseconds,
+      visibleGapSamples: visibleGaps.samples,
       decodeMilliseconds,
       pendingFrames: this.pending.size,
       bufferedBytes: this.channels.reduce(
@@ -904,6 +920,7 @@ export class DesktopSession {
     if (this.observationAnimation !== undefined)
       cancelAnimationFrame(this.observationAnimation);
     this.observationAnimation = undefined;
+    this.visibleFrameGaps.clear();
     this.canvas.style.removeProperty("--desktop-cursor");
     clearTimeout(this.deadline);
     clearTimeout(this.livenessDeadline);
