@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Button } from "@heroui/react";
 import { useNavigate } from "react-router";
 import { Field, Notice, failureText } from "../../components/form";
-import { Icon } from "../../components/icon";
 import { ApiError } from "../../lib/http";
 import { login } from "../identity/identity.service";
 import { useAuth } from "../../store/auth";
@@ -47,30 +46,23 @@ export function LoginPage() {
     }
   }
   return (
-    <main className="bg-surface-secondary flex min-h-dvh flex-col items-center justify-center px-6 py-12">
-      <div className="mb-5 flex items-center gap-3 text-lg font-[650]">
-        <span className="bg-accent text-accent-foreground flex size-8 items-center justify-center rounded-lg">
-          <Icon name="terminal" />
-        </span>
-        <span>Ultraterimal</span>
-      </div>
+    <main className="bg-surface-secondary flex min-h-dvh items-center justify-center px-6 py-12">
       <section className="bg-surface w-full max-w-[26rem] rounded-3xl border border-border p-6 max-md:p-7">
         <div className="mb-7">
-          <p className="text-muted mb-2 text-sm">远程访问平台</p>
           <h1 className="text-2xl font-semibold tracking-tight">
             {step === "password"
-              ? "登录工作台"
+              ? "登录"
               : step === "totp"
                 ? "验证您的身份"
                 : "使用恢复码"}
           </h1>
-          <p className="text-muted mt-3 text-sm leading-6">
-            {step === "password"
-              ? "使用平台账号，访问分配给您的设备。"
-              : step === "totp"
+          {step !== "password" && (
+            <p className="text-muted mt-3 text-sm leading-6">
+              {step === "totp"
                 ? "输入 Google 验证器中的六位动态验证码。"
                 : "输入绑定验证器时保存的一次性恢复码。"}
-          </p>
+            </p>
+          )}
         </div>
         <form className="flex flex-col gap-3" onSubmit={submit}>
           <Notice>{error}</Notice>
@@ -142,9 +134,6 @@ export function LoginPage() {
           )}
         </form>
       </section>
-      <p className="text-muted mt-7 text-center text-xs">
-        账号由管理员分配 · 访问权限由平台校验
-      </p>
     </main>
   );
 }
