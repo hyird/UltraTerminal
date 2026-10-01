@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
         std::vector<double> gaps;
         std::vector<double> sourceGaps;
         std::vector<double> encodeStartGaps;
-        unsigned longOutputGaps = 0, longSourceGaps = 0, longOutputWithShortSource = 0, longOutputWithShortEncodeStart = 0;
+        unsigned longOutputGaps = 0, longOutputGapsGe66ms = 0, longOutputGapsGe100ms = 0, longSourceGaps = 0, longOutputWithShortSource = 0, longOutputWithShortEncodeStart = 0;
         for (std::size_t index = 1; index < received.size(); ++index) {
             if (presentTicks[index] <= presentTicks[index - 1] || encodeStartedUs[index] <= encodeStartedUs[index - 1]) {
                 throw std::runtime_error("DXGI presentation or encoding timestamps did not advance with each frame");
@@ -226,6 +226,8 @@ int main(int argc, char** argv) {
             gaps.push_back(gap);
             sourceGaps.push_back(sourceGap);
             longOutputGaps += gap >= 45;
+            longOutputGapsGe66ms += gap >= 66;
+            longOutputGapsGe100ms += gap >= 100;
             longSourceGaps += sourceGap >= 45;
             longOutputWithShortSource += gap >= 45 && sourceGap < 35;
             longOutputWithShortEncodeStart += gap >= 45 && encodeStartGap < 35;
@@ -248,13 +250,15 @@ int main(int argc, char** argv) {
                   << ",\"pixel_capture_gaps\":" << captured.pixelCaptureGaps << ",\"pixel_capture_gaps_ge_45ms\":" << captured.pixelCaptureGapsGe45ms
                   << ",\"cpu_ms_including_warmup\":" << cpuMilliseconds << ",\"peak_working_set_kib\":" << memory.PeakWorkingSetSize / 1024
                   << ",\"private_bytes_kib\":" << memory.PrivateUsage / 1024
-                  << ",\"effective_fps\":" << (received.size() - 1) / elapsed << ",\"gap_p95_ms\":" << gaps[(gaps.size() * 95 + 99) / 100 - 1]
+                  << ",\"effective_fps\":" << (received.size() - 1) / elapsed << ",\"gap_p05_ms\":" << gaps[(gaps.size() * 5 + 99) / 100 - 1]
+                  << ",\"gap_p50_ms\":" << gaps[gaps.size() / 2] << ",\"gap_p95_ms\":" << gaps[(gaps.size() * 95 + 99) / 100 - 1]
                   << ",\"gap_p99_ms\":" << gaps[(gaps.size() * 99 + 99) / 100 - 1]
                   << ",\"source_gap_p95_ms\":" << sourceGaps[(sourceGaps.size() * 95 + 99) / 100 - 1]
                   << ",\"source_gap_p99_ms\":" << sourceGaps[(sourceGaps.size() * 99 + 99) / 100 - 1]
                   << ",\"encode_start_gap_p95_ms\":" << encodeStartGaps[(encodeStartGaps.size() * 95 + 99) / 100 - 1]
                   << ",\"encode_start_gap_p99_ms\":" << encodeStartGaps[(encodeStartGaps.size() * 99 + 99) / 100 - 1]
-                  << ",\"output_gaps_ge_45ms\":" << longOutputGaps << ",\"source_gaps_ge_45ms\":" << longSourceGaps
+                  << ",\"output_gaps_ge_45ms\":" << longOutputGaps << ",\"output_gaps_ge_66ms\":" << longOutputGapsGe66ms
+                  << ",\"output_gaps_ge_100ms\":" << longOutputGapsGe100ms << ",\"source_gaps_ge_45ms\":" << longSourceGaps
                   << ",\"output_gaps_ge_45ms_with_source_lt_35ms\":" << longOutputWithShortSource
                   << ",\"output_gaps_ge_45ms_with_encode_start_lt_35ms\":" << longOutputWithShortEncodeStart
                   << ",\"source_age_p50_ms\":" << sourceAges[sourceAges.size() / 2]
