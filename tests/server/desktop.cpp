@@ -1,6 +1,10 @@
 #include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 #include <ruvia/core/EventLoopPool.h>
 #include <ruvia/core/TaskScope.h>
@@ -10,6 +14,7 @@
 
 namespace {
 using namespace ultraterimal;
+constexpr std::size_t kSimulatedFrameBytes = 256 * 1024;
 void require(bool condition) {
     if (!condition) {
         throw std::runtime_error("Desktop pairing invariant failed");
@@ -35,6 +40,18 @@ ruvia::Task<void> awaitClose(server::DesktopEndpoint& endpoint, bool& finished) 
 ruvia::Task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, bool& finished) {
     for (std::uint64_t sequence = 10; sequence <= 100; ++sequence) {
         require(co_await session.forward(sender, refresh(sequence)));
+    }
+    finished = true;
+}
+ruvia::Task<void> forwardVideoBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, wire::Envelope frame, bool& finished) {
+    for (std::uint64_t index = 1; index <= 30; ++index) {
+        frame.set_sequence(index + 2);
+        frame.set_frame_id(index);
+        auto* video = frame.mutable_video_frame();
+        video->set_key_frame(index == 1);
+        video->set_data(std::string(kSimulatedFrameBytes, 'v'));
+        video->set_timestamp_microseconds(index * 33333);
+        require(co_await session.forward(sender, frame));
     }
     finished = true;
 }
@@ -165,6 +182,41 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(finished && session.ready() && budget->used == 0);
         require(session.diagnostics().backpressureEvents > 0);
         require(session.diagnostics().forwardedMessages == 99);
+    }
+    {
+        server::DesktopSession session(worker, budget);
+        auto endpoints = co_await pair(session);
+        auto configuration = refresh(2);
+        configuration.set_channel_id("video");
+        configuration.set_generation(1);
+        configuration.mutable_video_config()->set_width(16);
+        configuration.mutable_video_config()->set_height(16);
+        configuration.mutable_video_config()->set_codec("avc1.42C01E");
+        require(co_await session.forward(endpoints[3], configuration));
+        auto deliveredConfiguration = co_await endpoints[2]->receive({});
+        require(deliveredConfiguration && deliveredConfiguration->bytes() == *protocol::encodeMessage(configuration));
+        deliveredConfiguration.reset();
+        bool finished = false;
+        ruvia::TaskScope scope(worker);
+        scope.spawn(forwardVideoBurst(session, endpoints[3], configuration, finished));
+        co_await ruvia::sleepFor(worker, std::chrono::milliseconds(10));
+        require(session.ready() && !finished && budget->used > 1024 * 1024);
+        // A backed-up video route must not hold the separate input route.
+        const auto control = refresh(2);
+        require(co_await session.forward(endpoints[0], control));
+        auto controlDelivery = co_await endpoints[1]->receive({});
+        require(controlDelivery && controlDelivery->bytes() == *protocol::encodeMessage(control) && !finished);
+        controlDelivery.reset();
+        const std::string expectedFrame(kSimulatedFrameBytes, 'v');
+        for (std::uint64_t index = 1; index <= 30; ++index) {
+            auto delivery = co_await endpoints[2]->receive({});
+            const auto frame = delivery ? protocol::decodeMessage(delivery->bytes()) : std::unexpected(protocol::MessageError::kInvalidField);
+            require(frame && frame->frame_id() == index && frame->sequence() == index + 2 && frame->video_frame().timestamp_microseconds() == index * 33333 &&
+                    frame->video_frame().key_frame() == (index == 1) && frame->video_frame().data() == expectedFrame);
+            co_await ruvia::sleepFor(worker, std::chrono::milliseconds(10));
+        }
+        co_await scope.join();
+        require(finished && session.ready() && session.diagnostics().videoFrames == 30 && session.diagnostics().backpressureEvents > 0 && budget->used == 0);
     }
     for (bool cancel : {false, true}) {
         server::DesktopSession session(worker, budget);

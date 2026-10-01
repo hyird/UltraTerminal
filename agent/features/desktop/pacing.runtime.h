@@ -12,6 +12,23 @@
 #include <utility>
 
 namespace ultraterimal::agent {
+// Capture-worker cadence: tolerate at most 15 ms of timer/compositor jitter
+// when fresh pixels are ready, but anchor an early frame to its old deadline
+// so repeated early frames cannot silently exceed the requested FPS.
+struct DesktopEncodeCadence {
+    using Clock = std::chrono::steady_clock;
+    static constexpr auto kEarlyWindow = std::chrono::milliseconds(15);
+    static bool ready(Clock::time_point now, Clock::time_point deadline) {
+        return now + kEarlyWindow >= deadline;
+    }
+    static Clock::time_point nextDeadline(Clock::time_point now, Clock::time_point deadline, std::uint32_t framesPerSecond, bool reset) {
+        if (!framesPerSecond || framesPerSecond > 1000000) {
+            throw std::invalid_argument("Invalid desktop encode frame rate");
+        }
+        const auto base = !reset && now < deadline && ready(now, deadline) ? deadline : now;
+        return base + std::chrono::microseconds(1000000 / framesPerSecond);
+    }
+};
 // Event-loop owned. Display acknowledgements measure the complete path rather
 // than completion of a write into the local TCP buffer.
 class DesktopPacing {

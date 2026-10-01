@@ -30,13 +30,15 @@ struct VideoWorker {
     std::unique_ptr<VideoEncoder> encoder;
     std::optional<CapturedFrame> retained;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
-    std::uint64_t generation = 0, frameId = 0;
+    std::uint64_t generation = 0, frameId = 0, lastPresentTicks = 0;
+    std::chrono::steady_clock::time_point previousPixelCaptureAt{};
     std::uint32_t width = 0, height = 0;
     bool configurationPending = true;
     bool pixelsPending = false;
     std::chrono::steady_clock::time_point encodeAt{};
     DesktopCursor cursor;
     CaptureRecovery recovery;
+    DesktopVideoDiagnostics diagnostics;
 
     void discard() {
         retained.reset();
@@ -45,6 +47,8 @@ struct VideoWorker {
         cursor = DesktopCursor{};
         configurationPending = true;
         pixelsPending = false;
+        lastPresentTicks = 0;
+        previousPixelCaptureAt = {};
     }
     std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopPacing::Rate rate,
                                            std::uint32_t pacingWidth, std::uint32_t pacingHeight,
@@ -63,8 +67,22 @@ struct VideoWorker {
             // DXGI wakes as soon as a desktop or cursor update is available.
             // The bounded wait also lets cancellation and rate changes take effect.
             const bool readyToEncode = retained && allowEncode &&
-                                       (refresh || (pixelsPending && std::chrono::steady_clock::now() >= encodeAt));
-            pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode ? 0 : 8), retained ? &retained->bgra : nullptr);
+                                       (refresh || (pixelsPending && DesktopEncodeCadence::ready(std::chrono::steady_clock::now(), encodeAt)));
+            pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode ? 0 : 8), retained ? &retained->bgra : nullptr, nullptr, retained.has_value());
+            ++diagnostics.captureCalls;
+            if (!pixels) {
+                ++diagnostics.captureTimeouts;
+            } else if (pixels->bgra.empty()) {
+                ++diagnostics.cursorOnlyUpdates;
+            } else {
+                ++diagnostics.pixelUpdates;
+                const auto capturedAt = std::chrono::steady_clock::now();
+                if (previousPixelCaptureAt != std::chrono::steady_clock::time_point{}) {
+                    ++diagnostics.pixelCaptureGaps;
+                    diagnostics.pixelCaptureGapsGe45ms += capturedAt - previousPixelCaptureAt >= std::chrono::milliseconds(45);
+                }
+                previousPixelCaptureAt = capturedAt;
+            }
         } catch (const DesktopChanged& error) {
             // Never refresh from a snapshot belonging to the lost desktop.
             discard();
@@ -78,6 +96,9 @@ struct VideoWorker {
         }
         if (pixels) {
             pixelsPending = pixelsPending || pixels->captureTicks != 0;
+            if (pixels->captureTicks != 0) {
+                lastPresentTicks = pixels->captureTicks;
+            }
             if (pixels->bgra.empty()) {
                 if (!retained || retained->width != pixels->width || retained->height != pixels->height ||
                     retained->rotation != pixels->rotation || retained->desktopLeft != pixels->desktopLeft || retained->desktopTop != pixels->desktopTop) {
@@ -101,9 +122,16 @@ struct VideoWorker {
         DesktopVideoUpdate update;
         update.desktopLeft = source.desktopLeft;
         update.desktopTop = source.desktopTop;
+        update.sourcePresentTicks = lastPresentTicks;
         update.cursor = cursor.update(source, refresh || configurationPending);
         const auto now = std::chrono::steady_clock::now();
-        if (encoder && !configurationPending && ((!pixelsPending && !refresh) || !allowEncode || (!refresh && now < encodeAt))) {
+        if (encoder && !configurationPending && ((!pixelsPending && !refresh) || !allowEncode || (!refresh && !DesktopEncodeCadence::ready(now, encodeAt)))) {
+            if (!allowEncode) {
+                ++diagnostics.backpressuredCalls;
+            }
+            if (!refresh && pixelsPending && !DesktopEncodeCadence::ready(now, encodeAt)) {
+                ++diagnostics.pendingBeforeDeadlineCalls;
+            }
             if (update.cursor) {
                 return update;
             }
@@ -122,7 +150,8 @@ struct VideoWorker {
         }
         encoder->setRate(rate.framesPerSecond, rate.bitrate);
         encoder->setDetail(rate.sharp);
-        encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
+        const bool encodingEarly = !refresh && !configurationPending && now < encodeAt && DesktopEncodeCadence::ready(now, encodeAt);
+        encodeAt = DesktopEncodeCadence::nextDeadline(now, encodeAt, rate.framesPerSecond, refresh || configurationPending);
         const auto encodeStarted = std::chrono::steady_clock::now();
         const auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(encodeStarted - epoch).count();
         auto encoded = encoder->encode(source.bgra, static_cast<std::size_t>(width) * 4, static_cast<std::uint64_t>(timestamp), refresh || configurationPending);
@@ -173,6 +202,8 @@ struct VideoWorker {
         update.frame.set_hardware_encoding(encoder->hardware());
         update.frame.set_target_frames_per_second(rate.framesPerSecond);
         update.frame.set_target_bitrate(rate.bitrate);
+        ++diagnostics.encodedFrames;
+        diagnostics.earlyEncodedFrames += encodingEarly;
         return update;
     }
 };
@@ -188,6 +219,7 @@ struct DesktopVideoRuntime::State {
     bool reset = false;
     bool qualityRefresh = false;
     DesktopPacing pacing;
+    DesktopVideoDiagnostics diagnostics;
 
     State(ruvia::EventLoop owner, std::uint32_t index) : loop(std::move(owner)), pace(loop.executor()), display(index) {
         if (display >= 64) {
@@ -246,9 +278,10 @@ struct DesktopVideoRuntime::State {
         auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->pacing.rate(), pacingWidth, pacingHeight, allowEncode] {
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
             auto update = owned->next(display, refresh, reset, rate, pacingWidth, pacingHeight, geometryChanged, allowEncode);
-            return std::tuple{std::move(update), owned->recovery.nextAttempt(), geometryChanged};
+            return std::tuple{std::move(update), owned->recovery.nextAttempt(), geometryChanged, owned->diagnostics};
         });
-        auto [result, retryAt, geometryChanged] = co_await ruvia::asAwaitable(std::move(operation));
+        auto [result, retryAt, geometryChanged, diagnostics] = co_await ruvia::asAwaitable(std::move(operation));
+        self->diagnostics = diagnostics;
         if (qualityRefresh && (!result || result->frame.data().empty())) {
             self->qualityRefresh = true;
         }
@@ -314,6 +347,7 @@ void DesktopVideoRuntime::invalidate() { state_->reset = true; }
 void DesktopVideoRuntime::observeRoundTrip(std::chrono::microseconds elapsed) {
     state_->pacing.observeRoundTrip(elapsed, std::chrono::steady_clock::now());
 }
+DesktopVideoDiagnostics DesktopVideoRuntime::diagnostics() const { return state_->diagnostics; }
 void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
     const bool wasBackground = state_->pacing.background();
     if (!state_->pacing.acknowledge(feedback.displayed_generation(), feedback.displayed_frame(),

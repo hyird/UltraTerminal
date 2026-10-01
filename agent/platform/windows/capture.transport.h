@@ -14,6 +14,26 @@ class CaptureReset : public DesktopChanged {
   public:
     explicit CaptureReset(wire::DesktopFault::Code code = wire::DesktopFault::CAPTURE_RESET) : DesktopChanged("Desktop capture requires recreation", code) {}
 };
+// Optional synchronous diagnostics; zero when the corresponding stage was not run.
+// Copy dispatch is not GPU completion: Map includes the synchronization wait.
+struct CaptureTiming {
+    // Benchmark-only: force GPU staging, then optionally compare the produced
+    // pixels against a full-frame staging readback of the same acquired image.
+    bool forceStaging = false;
+    bool verifyWithStaging = false;
+    bool matchedStaging = false;
+    bool desktopImageInSystemMemory = false;
+    bool partialReadback = false;
+    std::uint32_t dirtyRectangles = 0, movedRectangles = 0;
+    std::uint64_t changedPixels = 0;
+    double metadataMilliseconds = 0;
+    double acquireMilliseconds = 0;
+    double copyDispatchMilliseconds = 0;
+    double mapMilliseconds = 0;
+    double rowCopyMilliseconds = 0;
+    double verificationStagingMapMilliseconds = 0;
+    double verificationStagingRowCopyMilliseconds = 0;
+};
 struct CapturedFrame {
     std::uint32_t width = 0, height = 0;
     std::int32_t desktopLeft = 0, desktopTop = 0;
@@ -39,9 +59,12 @@ class DesktopCapture {
     DesktopCapture& operator=(const DesktopCapture&) = delete;
     // No new frame returns nullopt; access loss is a failure requiring recreation.
     // The optional buffer is consumed only for a new complete pixel snapshot.
-    // Timeout and cursor-only updates leave it intact. The caller must finish
-    // using these pixels before calling; on failure discard its old snapshot.
-    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr);
+    // Set previousPixels only when it contains the immediately preceding image
+    // returned by this capture, including through cursor-only updates; this
+    // allows DXGI move/dirty regions to update that image in place. Timeouts
+    // and cursor-only updates leave it intact. Finish using pixels before
+    // calling; on failure discard the old snapshot.
+    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool previousPixels = false);
     std::vector<DisplayMode> displayModes() const;
     bool resize(std::uint32_t width, std::uint32_t height);
 

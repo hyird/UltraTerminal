@@ -52,11 +52,14 @@ export class DesktopSession {
   private cursorShape: ImageData | null = null;
   private hotspot = { x: 0, y: 0 };
   private cursor = { x: 0, y: 0, visible: false };
+  private drawnCursor: { x: number; y: number; shape: ImageData } | null = null;
   private context: CanvasRenderingContext2D;
   private cursorContext: CanvasRenderingContext2D;
   private viewportResize: ResizeObserver | undefined;
   private visibility = new AbortController();
   private displayedFrame = 0;
+  private observedFrame = 0;
+  private observationAnimation: number | undefined;
   private visible = true;
   private scaleMode: "native" | "fit" = "fit";
   private decodeMicroseconds = 0;
@@ -69,6 +72,7 @@ export class DesktopSession {
   private startedAt = performance.now();
   private firstFrameMilliseconds: number | null = null;
   private displayedCount = 0;
+  private presentedCount = 0;
   private decodeTotal = 0;
   private codec = "";
   private videoBytes = 0;
@@ -304,6 +308,24 @@ export class DesktopSession {
         },
       });
   }
+  private observeCanvasFrame(): void {
+    if (this.observationAnimation !== undefined || this.stopped) return;
+    const generation = this.generation;
+    this.observationAnimation = requestAnimationFrame(() => {
+      this.observationAnimation = undefined;
+      if (
+        this.stopped ||
+        generation !== this.generation ||
+        document.hidden ||
+        !this.visible
+      )
+        return;
+      if (this.displayedFrame > this.observedFrame) {
+        this.observedFrame = this.displayedFrame;
+        this.presentedCount++;
+      }
+    });
+  }
   private async receive(
     channel: Channel,
     message: Message,
@@ -505,12 +527,17 @@ export class DesktopSession {
       this.input = null;
       this.decoder = null;
       this.pending.clear();
+      if (this.observationAnimation !== undefined)
+        cancelAnimationFrame(this.observationAnimation);
+      this.observationAnimation = undefined;
       this.generation = generationId;
-      this.displayedFrame = 0;
+      this.displayedFrame = this.observedFrame = 0;
       this.frame = 0;
       this.timestamp = -1;
       this.canvas.width = this.overlay.width = video.width;
       this.canvas.height = this.overlay.height = video.height;
+      // Resizing a canvas clears it, including any previously drawn cursor.
+      this.drawnCursor = null;
       this.canvas.dataset.sourceWidth = String(video.width);
       this.canvas.dataset.sourceHeight = String(video.height);
       this.sizeDesktop();
@@ -571,6 +598,7 @@ export class DesktopSession {
             this.decodeTotal += this.decodeMicroseconds / 1000;
             this.recordVideoBytes(0);
             this.reportDisplay();
+            if (!document.hidden && this.visible) this.observeCanvasFrame();
           } catch {
             this.fail("桌面显示异常");
           } finally {
@@ -630,7 +658,9 @@ export class DesktopSession {
           new EncodedVideoChunk({
             type: image.keyFrame ? "key" : "delta",
             timestamp,
-            data: new Uint8Array(image.data),
+            // Protobuf already owns a Uint8Array; EncodedVideoChunk copies the
+            // bytes on construction. Avoid a second full encoded-frame copy.
+            data: image.data,
           }),
         );
       },
@@ -646,13 +676,32 @@ export class DesktopSession {
     }
   }
   private drawCursor(): void {
-    this.cursorContext.clearRect(0, 0, this.overlay.width, this.overlay.height);
-    if (!this.ticket.writeControl && this.cursor.visible && this.cursorShape)
-      this.cursorContext.putImageData(
-        this.cursorShape,
-        this.cursor.x - this.hotspot.x,
-        this.cursor.y - this.hotspot.y,
+    const shape =
+      !this.ticket.writeControl && this.cursor.visible
+        ? this.cursorShape
+        : null;
+    const x = this.cursor.x - this.hotspot.x;
+    const y = this.cursor.y - this.hotspot.y;
+    const previous = this.drawnCursor;
+    if (
+      previous &&
+      previous.shape === shape &&
+      previous.x === x &&
+      previous.y === y
+    )
+      return;
+    if (previous) {
+      this.cursorContext.clearRect(
+        previous.x,
+        previous.y,
+        previous.shape.width,
+        previous.shape.height,
       );
+      this.drawnCursor = null;
+    }
+    if (!shape) return;
+    this.cursorContext.putImageData(shape, x, y);
+    this.drawnCursor = { x, y, shape };
   }
   private recordVideoBytes(bytes: number): void {
     this.videoBytes += bytes;
@@ -668,13 +717,16 @@ export class DesktopSession {
     this.videoBytes = 0;
     const elapsed = Math.max(1, now - this.bitrateSince);
     const frames = this.displayedCount;
+    const presentedFrames = this.presentedCount;
     const decodeMilliseconds = frames ? this.decodeTotal / frames : null;
     const previousQuality = this.quality.preference;
     this.quality.sample(frames, decodeMilliseconds ?? 0, this.pending.size);
     if (previousQuality !== this.quality.preference) this.reportDisplay();
     this.bitrate((bytes * 8000) / elapsed);
     this.performanceSample({
-      framesPerSecond: (frames * 1000) / elapsed,
+      // Only count decoded images observed in a visible rAF, not every
+      // drawImage submission that may be overwritten before a paint cycle.
+      framesPerSecond: (presentedFrames * 1000) / elapsed,
       decodeMilliseconds,
       pendingFrames: this.pending.size,
       bufferedBytes: this.channels.reduce(
@@ -691,10 +743,10 @@ export class DesktopSession {
       codec: this.codec,
       quality: this.quality.preference,
     });
-    this.displayedCount = this.decodeTotal = 0;
+    this.displayedCount = this.presentedCount = this.decodeTotal = 0;
     this.bitrateSince = now;
     // Publish one zero sample after traffic/display stops, then remain idle.
-    if (bytes || frames)
+    if (bytes || frames || presentedFrames)
       this.bitrateTimer = setTimeout(() => this.publishBitrate(), 1000);
   }
   private sizeDesktop(): void {
@@ -849,6 +901,9 @@ export class DesktopSession {
     this.input = null;
     this.viewportResize?.disconnect();
     this.visibility.abort();
+    if (this.observationAnimation !== undefined)
+      cancelAnimationFrame(this.observationAnimation);
+    this.observationAnimation = undefined;
     this.canvas.style.removeProperty("--desktop-cursor");
     clearTimeout(this.deadline);
     clearTimeout(this.livenessDeadline);
@@ -867,5 +922,6 @@ export class DesktopSession {
     this.pending.clear();
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.cursorContext.clearRect(0, 0, this.overlay.width, this.overlay.height);
+    this.drawnCursor = null;
   }
 }

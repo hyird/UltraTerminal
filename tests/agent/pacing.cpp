@@ -9,6 +9,7 @@
 #include "features/desktop/pacing.runtime.h"
 
 namespace {
+using ultraterimal::agent::DesktopEncodeCadence;
 using ultraterimal::agent::DesktopPacing;
 void require(bool value, const char* message) {
     if (!value) {
@@ -27,6 +28,26 @@ int main() {
     using namespace std::chrono_literals;
     try {
         auto now = DesktopPacing::Clock::time_point{} + 1s;
+        require(!DesktopEncodeCadence::ready(now, now + 16ms) && DesktopEncodeCadence::ready(now, now + 15ms),
+                "Desktop early encode window exceeded fifteen milliseconds");
+        const auto firstDeadline = now + 33333us;
+        auto deadline = firstDeadline;
+        for (int frameIndex = 1; frameIndex <= 300; ++frameIndex) {
+            const auto earlyFrame = deadline - 1ms;
+            deadline = DesktopEncodeCadence::nextDeadline(earlyFrame, deadline, 30, false);
+            require(deadline == firstDeadline + frameIndex * 33333us, "Repeated early frames drifted above the 30 FPS target");
+        }
+        require(DesktopEncodeCadence::nextDeadline(now + 40ms, firstDeadline, 30, false) == now + 40ms + 33333us,
+                "Late frame did not reset its cadence from actual encoding time");
+        require(DesktopEncodeCadence::nextDeadline(firstDeadline - 1ms, firstDeadline, 30, true) == firstDeadline - 1ms + 33333us,
+                "Refresh did not reset the encode deadline");
+        bool rejectedZeroRate = false;
+        try {
+            DesktopEncodeCadence::nextDeadline(now, firstDeadline, 0, false);
+        } catch (const std::invalid_argument&) {
+            rejectedZeroRate = true;
+        }
+        require(rejectedZeroRate, "Zero target FPS was accepted");
 
         DesktopPacing geometry;
         require(geometry.clearBitrateAt60() == 8000000, "1080p60 clarity budget must be 8 Mbps");

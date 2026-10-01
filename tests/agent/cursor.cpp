@@ -1,8 +1,10 @@
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 #include "platform/windows/cursor.transport.h"
 
@@ -89,6 +91,28 @@ void color() {
     update = cursor.update(frame, true);
     require(update && update->rgba().size() == 16 && update->hotspot_x() == 1);
     valid(*update);
+    // A color shape is independent of the pixels behind the pointer.
+    frame.bgra.assign(frame.bgra.size(), 0);
+    require(!cursor.update(frame));
+    frame.pointerShape[0] = 11;
+    update = cursor.update(frame);
+    require(update && update->rgba().size() == 16);
+    pixel(*update, 0, {30, 20, 11, 128});
+    valid(*update);
+    frame.pointerPitch = 8;
+    update = cursor.update(frame);
+    require(update && update->rgba().size() == 16);
+    valid(*update);
+    bool cachedInvalidRejected = false;
+    auto invalidCached = frame;
+    invalidCached.bgra.clear();
+    try {
+        (void)cursor.update(invalidCached);
+    } catch (const std::runtime_error&) {
+        cachedInvalidRejected = true;
+    }
+    require(cachedInvalidRejected);
+    frame.pointerPitch = 12;
 
     auto bad = frame;
     bad.pointerShape.pop_back();
@@ -158,6 +182,24 @@ void monochrome() {
     bad.pointerPitch = 0;
     rejected(bad);
 }
+void benchmarkColorMovement() {
+    auto frame = screen();
+    frame.pointerType = 2;
+    frame.pointerWidth = frame.pointerHeight = 128;
+    frame.pointerPitch = 128 * 4;
+    frame.pointerShape.resize(128 * 128 * 4, 255);
+    agent::DesktopCursor cursor;
+    require(bool(cursor.update(frame)));
+    constexpr int samples = 10000;
+    const auto started = std::chrono::steady_clock::now();
+    for (int index = 1; index <= samples; ++index) {
+        frame.pointerX = index;
+        const auto update = cursor.update(frame);
+        require(update && update->visible() && update->rgba().empty() && update->x() == index);
+    }
+    const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    std::cout << "{\"workload\":\"color_cursor_movement\",\"pixels\":16384,\"samples\":" << samples << ",\"total_ms\":" << elapsed << "}\n";
+}
 void masked() {
     auto frame = screen();
     frame.pointerType = 4;
@@ -180,8 +222,12 @@ void masked() {
     require(hidden && !hidden->visible() && hidden->rgba().empty());
 }
 } // namespace
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--benchmark") {
+            benchmarkColorMovement();
+            return 0;
+        }
         color();
         monochrome();
         masked();

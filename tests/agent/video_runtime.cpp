@@ -88,6 +88,11 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
         }
     }
     require(first && first->configuration && first->generation == 1 && first->frameId == 1 && first->frame.key_frame(), "Missing first configured key frame");
+    const auto diagnostics = video.diagnostics();
+    require(diagnostics.captureCalls >= diagnostics.pixelUpdates && diagnostics.pixelUpdates >= 1 && diagnostics.encodedFrames == 1,
+            "Capture diagnostics did not reflect the first encoded frame");
+    require(diagnostics.pixelCaptureGaps <= diagnostics.pixelUpdates && diagnostics.pixelCaptureGapsGe45ms <= diagnostics.pixelCaptureGaps,
+            "Pixel-capture interval diagnostics exceed the actual updates");
     require(first->cursor.has_value(), "Missing initial cursor snapshot");
     require(ticks > 0, "Capture/encoding blocked the Ruvia event loop");
     const auto configuration = *first->configuration;

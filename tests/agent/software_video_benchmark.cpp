@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -7,7 +8,9 @@
 #include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
@@ -31,43 +34,73 @@ std::uint64_t cpuTicks() {
     const auto ticks = [](FILETIME value) { return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
     return ticks(kernel) + ticks(user);
 }
-void measureCapturePipeline() {
+void measureCapturePipeline(bool forceFull, bool verifyReadback, bool forceStaging) {
     using namespace ultraterimal;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     test::TestSurface surface;
     agent::DesktopCapture capture;
     std::unique_ptr<agent::SoftwareVideoEncoder> encoder;
     std::vector<std::uint8_t> pixels;
-    std::vector<double> painting, capturing, encoding;
+    std::vector<double> painting, capturing, encoding, paintToPresent, presentToCapture, acquire, metadata, copyDispatch, mapWait, rowCopy;
+    LARGE_INTEGER frequency{};
+    if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
+        throw std::runtime_error("Cannot measure DXGI present timestamps");
+    }
     constexpr unsigned warmup = 10, samples = 180;
     std::uint32_t width = 0, height = 0;
-    std::uint64_t bytes = 0;
-    unsigned captureCalls = 0;
+    std::uint64_t bytes = 0, copiedPixels = 0;
+    unsigned captureCalls = 0, pixelFrames = 0, presentedFrames = 0, partialFrames = 0, verifiedReadbacks = 0;
+    const auto cpu = cpuTicks();
     for (unsigned index = 0; index < warmup + samples; ++index) {
         const auto color = index % 2 ? RGB(208, 32, 32) : RGB(32, 208, 32);
         const auto started = Clock::now();
+        LARGE_INTEGER paintStartedTicks{};
+        QueryPerformanceCounter(&paintStartedTicks);
         surface.paint(color);
         const auto painted = Clock::now();
         std::optional<agent::CapturedFrame> frame;
+        agent::CaptureTiming captureTiming;
+        LARGE_INTEGER returnedTicks{};
         const auto deadline = painted + std::chrono::seconds(2);
         while (Clock::now() < deadline) {
-            auto candidate = capture.nextFrame(std::chrono::milliseconds(8), &pixels);
+            agent::CaptureTiming timing;
+            timing.forceStaging = forceStaging;
+            timing.verifyWithStaging = verifyReadback;
+            auto candidate = capture.nextFrame(std::chrono::milliseconds(8), &pixels, &timing, !forceFull && !pixels.empty());
+            if (candidate && !candidate->bgra.empty() && verifyReadback) {
+                if (!timing.matchedStaging) {
+                    throw std::runtime_error("Controlled DXGI frame could not be compared with full staging readback");
+                }
+                ++verifiedReadbacks;
+            }
+            QueryPerformanceCounter(&returnedTicks);
             ++captureCalls;
+            if (candidate && candidate->captureTicks) {
+                ++presentedFrames;
+            }
             if (!candidate || candidate->bgra.empty()) {
                 continue;
             }
+            ++pixelFrames;
             if (candidate->width <= 64 || candidate->height <= 64) {
                 throw std::runtime_error("Capture benchmark display is too small");
             }
             const auto offset = (static_cast<std::size_t>(64) * candidate->width + 64) * 4;
             if (candidate->bgra[offset] == GetBValue(color) && candidate->bgra[offset + 1] == GetGValue(color) && candidate->bgra[offset + 2] == GetRValue(color)) {
                 frame = std::move(candidate);
+                captureTiming = timing;
                 break;
             }
             pixels = std::move(candidate->bgra);
         }
         if (!frame) {
-            throw std::runtime_error("Capture benchmark did not observe its new test pixels");
+            throw std::runtime_error("Capture benchmark did not observe its new test pixels; capture_calls=" + std::to_string(captureCalls) +
+                                     " pixel_frames=" + std::to_string(pixelFrames) + " presented_frames=" + std::to_string(presentedFrames) +
+                                     " test_window_visible=" + (surface.visible() ? "true" : "false") + " test_window_on_top=" + (surface.centerOnTop() ? "true" : "false"));
+        }
+        if (!frame->captureTicks || static_cast<std::uint64_t>(returnedTicks.QuadPart) < frame->captureTicks ||
+            static_cast<std::uint64_t>(paintStartedTicks.QuadPart) > frame->captureTicks) {
+            throw std::runtime_error("DXGI present timestamp is outside the paint/capture interval");
         }
         const auto captured = Clock::now();
         if (!encoder) {
@@ -88,29 +121,209 @@ void measureCapturePipeline() {
         if (index >= warmup) {
             painting.push_back(std::chrono::duration<double, std::milli>(painted - started).count());
             capturing.push_back(std::chrono::duration<double, std::milli>(captured - painted).count());
+            const auto ticksToMilliseconds = 1000.0 / static_cast<double>(frequency.QuadPart);
+            // DXGI LastPresentTime uses QPC ticks. This interval includes the
+            // test's GDI paint, while the interval after present includes
+            // scheduling, AcquireNextFrame and the complete GPU readback.
+            paintToPresent.push_back((static_cast<double>(frame->captureTicks) - static_cast<double>(paintStartedTicks.QuadPart)) * ticksToMilliseconds);
+            presentToCapture.push_back((static_cast<double>(returnedTicks.QuadPart) - static_cast<double>(frame->captureTicks)) * ticksToMilliseconds);
             encoding.push_back(std::chrono::duration<double, std::milli>(encodedAt - encodeStarted).count());
+            acquire.push_back(captureTiming.acquireMilliseconds);
+            metadata.push_back(captureTiming.metadataMilliseconds);
+            copyDispatch.push_back(captureTiming.copyDispatchMilliseconds);
+            mapWait.push_back(captureTiming.mapMilliseconds);
+            rowCopy.push_back(captureTiming.rowCopyMilliseconds);
+            partialFrames += captureTiming.partialReadback;
+            copiedPixels += captureTiming.partialReadback ? captureTiming.changedPixels : static_cast<std::uint64_t>(width) * height;
             bytes += encoded->annexB.size();
         }
+    }
+    const auto cpuMilliseconds = (cpuTicks() - cpu) / 10000.0;
+    std::string_view readback = "dirty_regions";
+    if (forceStaging) {
+        readback = "staging_dirty_regions";
+    } else if (forceFull) {
+        readback = "full";
+    } else if (verifyReadback) {
+        readback = "dirty_regions_verified";
     }
     const auto report = [&](std::string_view stage, std::vector<double> values) {
         const auto mean = std::accumulate(values.begin(), values.end(), 0.0) / values.size();
         std::sort(values.begin(), values.end());
-        std::cout << "{\"workload\":\"real_desktop_64px_patch\",\"stage\":\"" << stage << "\",\"width\":" << width
-                  << ",\"height\":" << height << ",\"samples\":" << samples << ",\"mean_ms\":" << mean
-                  << ",\"p95_ms\":" << values[samples * 95 / 100 - 1] << ",\"p99_ms\":" << values[samples * 99 / 100 - 1]
+        std::cout << "{\"workload\":\"real_desktop_64px_patch\",\"readback\":\"" << readback
+                  << "\",\"stage\":\"" << stage << "\",\"width\":" << width
+                  << ",\"height\":" << height << ",\"samples\":" << samples << ",\"cpu_ms\":" << cpuMilliseconds
+                  << ",\"partial_frames\":" << partialFrames << ",\"verified_readbacks_including_warmup\":" << verifiedReadbacks
+                  << ",\"copied_pixels\":" << copiedPixels << ",\"mean_ms\":" << mean
+                  << ",\"p95_ms\":" << values[(samples * 95 + 99) / 100 - 1] << ",\"p99_ms\":" << values[(samples * 99 + 99) / 100 - 1]
                   << ",\"verified_frames_including_warmup\":" << warmup + samples << ",\"capture_calls_including_warmup\":" << captureCalls
                   << ",\"encoded_bytes_per_frame\":" << bytes / samples << "}\n";
     };
     report("test_paint_and_compositor_wait", std::move(painting));
     report("capture_until_verified_pixels", std::move(capturing));
+    report("acquire", std::move(acquire));
+    report("metadata", std::move(metadata));
+    report("copy_dispatch", std::move(copyDispatch));
+    report("map_wait", std::move(mapWait));
+    report("row_copy_and_unmap", std::move(rowCopy));
+    report("paint_start_to_dxgi_present", std::move(paintToPresent));
+    report("dxgi_present_to_capture_return", std::move(presentToCapture));
     report("conversion_and_encode", std::move(encoding));
 }
+void measureCaptureReadback(bool forceStaging, bool verifyWithStaging) {
+    using namespace ultraterimal;
+    constexpr std::size_t samples = 20;
+    std::array<std::vector<double>, 4> stages;
+    std::uint32_t width = 0, height = 0;
+    bool desktopImageInSystemMemory = false;
+    std::size_t verifiedFrames = 0;
+    for (std::size_t index = 0; index < samples; ++index) {
+        agent::DesktopCapture capture;
+        agent::CaptureTiming timing;
+        timing.forceStaging = forceStaging;
+        timing.verifyWithStaging = verifyWithStaging;
+        const auto frame = capture.nextFrame(std::chrono::milliseconds(1000), nullptr, &timing);
+        if (!frame || frame->bgra.empty()) {
+            throw std::runtime_error("DXGI duplication did not provide an initial pixel snapshot");
+        }
+        if (verifyWithStaging && !timing.matchedStaging) {
+            throw std::runtime_error("DXGI output does not support verified system-memory readback");
+        }
+        width = frame->width;
+        height = frame->height;
+        desktopImageInSystemMemory = timing.desktopImageInSystemMemory;
+        verifiedFrames += timing.matchedStaging;
+        stages[0].push_back(timing.acquireMilliseconds);
+        stages[1].push_back(timing.copyDispatchMilliseconds);
+        stages[2].push_back(timing.mapMilliseconds);
+        stages[3].push_back(timing.rowCopyMilliseconds);
+    }
+    constexpr std::array<std::string_view, 4> names = {"acquire", "copy_dispatch", "map_wait", "row_copy_and_unmap"};
+    for (std::size_t index = 0; index < stages.size(); ++index) {
+        auto& values = stages[index];
+        const auto mean = std::accumulate(values.begin(), values.end(), 0.0) / samples;
+        std::sort(values.begin(), values.end());
+        std::cout << "{\"workload\":\"initial_dxgi_readback\",\"path\":\"" << (forceStaging ? "staging" : "automatic") << "\",\"stage\":\"" << names[index] << "\",\"width\":" << width << ",\"height\":" << height
+                  << ",\"system_memory\":" << (desktopImageInSystemMemory ? "true" : "false") << ",\"verified_frames\":" << verifiedFrames << ",\"samples\":" << samples << ",\"mean_ms\":" << mean << ",\"p95_ms\":" << values[(samples * 95 + 99) / 100 - 1]
+                  << ",\"p99_ms\":" << values[(samples * 99 + 99) / 100 - 1] << "}\n";
+    }
+}
+void verifyLiveCaptureReadback() {
+    using namespace ultraterimal;
+    agent::DesktopCapture capture;
+    std::vector<std::uint8_t> pixels;
+    std::vector<double> mapWait, rowCopy, stagingMapWait, stagingRowCopy, acquire, metadata;
+    unsigned timeouts = 0, cursorOnly = 0, verified = 0, partial = 0, dirty = 0, moved = 0;
+    std::uint64_t copiedPixels = 0;
+    const auto started = Clock::now();
+    const auto cpu = cpuTicks();
+    while (Clock::now() - started < std::chrono::seconds(30)) {
+        agent::CaptureTiming timing;
+        timing.verifyWithStaging = true;
+        auto frame = capture.nextFrame(std::chrono::milliseconds(8), &pixels, &timing, !pixels.empty());
+        if (!frame) {
+            ++timeouts;
+            continue;
+        }
+        if (frame->bgra.empty()) {
+            ++cursorOnly;
+            continue;
+        }
+        if (!timing.matchedStaging) {
+            throw std::runtime_error("Live DXGI readback could not verify against staging");
+        }
+        ++verified;
+        partial += timing.partialReadback;
+        dirty += timing.dirtyRectangles;
+        moved += timing.movedRectangles;
+        copiedPixels += timing.partialReadback ? timing.changedPixels : static_cast<std::uint64_t>(frame->width) * frame->height;
+        metadata.push_back(timing.metadataMilliseconds);
+        acquire.push_back(timing.acquireMilliseconds);
+        mapWait.push_back(timing.mapMilliseconds);
+        rowCopy.push_back(timing.rowCopyMilliseconds);
+        stagingMapWait.push_back(timing.verificationStagingMapMilliseconds);
+        stagingRowCopy.push_back(timing.verificationStagingRowCopyMilliseconds);
+        pixels = std::move(frame->bgra);
+    }
+    if (!verified) {
+        throw std::runtime_error("No changing desktop pixels were captured for live readback verification");
+    }
+    const auto elapsed = std::chrono::duration<double>(Clock::now() - started).count();
+    const auto cpuMilliseconds = (cpuTicks() - cpu) / 10000.0;
+    const auto report = [&](std::string_view stage, std::vector<double> values) {
+        const auto mean = std::accumulate(values.begin(), values.end(), 0.0) / values.size();
+        std::sort(values.begin(), values.end());
+        const auto count = values.size();
+        std::cout << "{\"workload\":\"live_dxgi_readback_verify\",\"stage\":\"" << stage << "\",\"seconds\":" << elapsed
+                  << ",\"verified_frames\":" << verified << ",\"partial_frames\":" << partial
+                  << ",\"dirty_rectangles\":" << dirty << ",\"moved_rectangles\":" << moved << ",\"copied_pixels\":" << copiedPixels
+                  << ",\"cursor_only\":" << cursorOnly << ",\"timeouts\":" << timeouts << ",\"cpu_ms\":" << cpuMilliseconds << ",\"mean_ms\":" << mean
+                  << ",\"p95_ms\":" << values[(count * 95 + 99) / 100 - 1] << ",\"p99_ms\":" << values[(count * 99 + 99) / 100 - 1] << "}\n";
+    };
+    report("acquire", std::move(acquire));
+    report("metadata", std::move(metadata));
+    report("map_wait", std::move(mapWait));
+    report("row_copy_and_unmap", std::move(rowCopy));
+    report("verification_staging_map_wait", std::move(stagingMapWait));
+    report("verification_staging_row_copy_and_unmap", std::move(stagingRowCopy));
+}
+void verifyLiveScrollCapture(bool forceStaging) {
+    using namespace ultraterimal;
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    test::TestSurface surface;
+    surface.paint(RGB(208, 32, 32));
+    agent::DesktopCapture capture;
+    std::vector<std::uint8_t> pixels;
+    unsigned frames = 0, partial = 0, moves = 0, dirty = 0;
+    constexpr unsigned scrolls = 180;
+    for (unsigned index = 0; index < scrolls; ++index) {
+        const auto strip = index % 2 ? RGB(208, 32, 32) : RGB(32, 208, 32);
+        surface.scroll(strip);
+        const auto point = surface.stripPosition();
+        bool matched = false;
+        const auto deadline = Clock::now() + std::chrono::seconds(2);
+        while (Clock::now() < deadline) {
+            agent::CaptureTiming timing;
+            timing.forceStaging = forceStaging;
+            timing.verifyWithStaging = true;
+            auto frame = capture.nextFrame(std::chrono::milliseconds(8), &pixels, &timing, !pixels.empty());
+            if (!frame || frame->bgra.empty()) {
+                continue;
+            }
+            if (!timing.matchedStaging) {
+                throw std::runtime_error("Scrolled desktop differed from full staging readback");
+            }
+            ++frames;
+            partial += timing.partialReadback;
+            moves += timing.movedRectangles;
+            dirty += timing.dirtyRectangles;
+            const auto x = static_cast<std::int64_t>(point.x) - frame->desktopLeft;
+            const auto y = static_cast<std::int64_t>(point.y) - frame->desktopTop;
+            if (x < 0 || y < 0 || x >= frame->width || y >= frame->height) {
+                throw std::runtime_error("Scrolled test surface is outside the captured display");
+            }
+            const auto pixel = (static_cast<std::size_t>(y) * frame->width + static_cast<std::size_t>(x)) * 4;
+            matched = frame->bgra[pixel] == GetBValue(strip) && frame->bgra[pixel + 1] == GetGValue(strip) && frame->bgra[pixel + 2] == GetRValue(strip);
+            pixels = std::move(frame->bgra);
+            if (matched) {
+                break;
+            }
+        }
+        if (!matched) {
+            throw std::runtime_error("DXGI did not show scrolled test pixels; test_window_visible=" + std::string(surface.visible() ? "true" : "false") +
+                                     " test_window_on_top=" + (surface.centerOnTop() ? "true" : "false"));
+        }
+    }
+    std::cout << "{\"workload\":\"real_dxgi_scroll_verify\",\"path\":\"" << (forceStaging ? "staging" : "automatic")
+              << "\",\"scrolls\":" << scrolls << ",\"verified_frames\":" << frames
+              << ",\"partial_frames\":" << partial << ",\"move_rectangles\":" << moves << ",\"dirty_rectangles\":" << dirty << "}\n";
+}
 template <typename Encoder = ultraterimal::agent::SoftwareVideoEncoder>
-void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sharp = false, std::uint32_t bitrate = 8000000) {
+void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sharp = false, std::uint32_t bitrate = 8000000, bool motionStress = false, std::uint32_t frameRate = 60) {
     constexpr unsigned warmup = 10, samples = 180;
     const auto stride = static_cast<std::size_t>(width) * 4;
     std::vector<std::uint8_t> pixels(stride * height);
-    Encoder encoder({width, height, bitrate, 60, sharp});
+    Encoder encoder({width, height, bitrate, frameRate, sharp});
     ISVCDecoder* decoder = nullptr;
     if (WelsCreateDecoder(&decoder) != 0 || !decoder) {
         throw std::runtime_error("Cannot create benchmark decoder");
@@ -138,22 +351,33 @@ void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sha
         const auto left = frame * 13 % (width - 320);
         for (std::uint32_t y = 0; y < height; ++y) {
             for (std::uint32_t x = 0; x < width; ++x) {
-                const auto row = y + (scrolling ? frame * 7 : 0);
-                const bool text = row % 24 < 3 && x % 180 < 130;
-                const bool window = x >= left && x < left + 320 && y >= 100 && y < 340;
                 auto* pixel = pixels.data() + y * stride + x * 4;
-                pixel[0] = window ? 180 : text ? 30
-                                               : 240;
-                pixel[1] = window ? 90 : text ? 30
-                                              : 240;
-                pixel[2] = window ? 40 : text ? 30
-                                              : 240;
+                if (motionStress) {
+                    // Deterministic 8x8 moving texture: intentionally less
+                    // compressible than scrolling text, not actual video.
+                    std::uint32_t pattern = (x / 8 * 73856093u) ^ (y / 8 * 19349663u) ^ (frame * 83492791u);
+                    pattern ^= pattern >> 13;
+                    pattern *= 1274126177u;
+                    pattern ^= pattern >> 16;
+                    const auto shade = static_cast<std::uint8_t>(32 + pattern % 192);
+                    pixel[0] = pixel[1] = pixel[2] = shade;
+                } else {
+                    const auto row = y + (scrolling ? frame * 7 : 0);
+                    const bool text = row % 24 < 3 && x % 180 < 130;
+                    const bool window = x >= left && x < left + 320 && y >= 100 && y < 340;
+                    pixel[0] = window ? 180 : text ? 30
+                                                   : 240;
+                    pixel[1] = window ? 90 : text ? 30
+                                                  : 240;
+                    pixel[2] = window ? 40 : text ? 30
+                                                  : 240;
+                }
                 pixel[3] = 255;
             }
         }
         const auto cpuStart = cpuTicks();
         const auto started = Clock::now();
-        const auto encoded = encoder.encode(pixels, stride, frame * 16667ull);
+        const auto encoded = encoder.encode(pixels, stride, frame * (1000000ull / frameRate));
         const double milliseconds = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
         const auto cpuElapsed = cpuTicks() - cpuStart;
         if (!encoded || encoded->annexB.empty()) {
@@ -190,7 +414,8 @@ void measure(std::uint32_t width, std::uint32_t height, bool scrolling, bool sha
         !GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) {
         throw std::runtime_error("Cannot read benchmark resource usage");
     }
-    std::cout << "{\"width\":" << width << ",\"height\":" << height << ",\"bitrate\":" << bitrate << ",\"sharp\":" << (sharp ? "true" : "false") << ",\"workload\":\"" << (scrolling ? "scroll" : "window")
+    const auto workload = motionStress ? "motion_stress" : (scrolling ? "scroll" : "window");
+    std::cout << "{\"width\":" << width << ",\"height\":" << height << ",\"bitrate\":" << bitrate << ",\"nominal_fps\":" << frameRate << ",\"sharp\":" << (sharp ? "true" : "false") << ",\"workload\":\"" << workload
               << "\",\"samples\":" << samples << ",\"mean_ms\":" << total / samples
               << ",\"p95_ms\":" << elapsed[samples * 95 / 100 - 1] << ",\"p99_ms\":" << elapsed[samples * 99 / 100 - 1]
               << ",\"encoder_fps\":" << samples * 1000 / total << ",\"cpu_ms_per_frame\":" << cpu / 10000.0 / samples
@@ -240,8 +465,20 @@ void measureConversion(std::uint32_t width, std::uint32_t height, ultraterimal::
 } // namespace
 int main(int argc, char** argv) {
     try {
-        if (argc == 2 && std::string_view(argv[1]) == "--capture-pipeline") {
-            measureCapturePipeline();
+        if (argc == 2 && (std::string_view(argv[1]) == "--capture-pipeline" || std::string_view(argv[1]) == "--capture-pipeline-full" || std::string_view(argv[1]) == "--capture-pipeline-verify" || std::string_view(argv[1]) == "--capture-pipeline-staging")) {
+            measureCapturePipeline(std::string_view(argv[1]) == "--capture-pipeline-full", std::string_view(argv[1]) == "--capture-pipeline-verify", std::string_view(argv[1]) == "--capture-pipeline-staging");
+            return 0;
+        }
+        if (argc == 2 && (std::string_view(argv[1]) == "--capture-readback" || std::string_view(argv[1]) == "--capture-readback-staging" || std::string_view(argv[1]) == "--capture-readback-verify")) {
+            measureCaptureReadback(std::string_view(argv[1]) == "--capture-readback-staging", std::string_view(argv[1]) == "--capture-readback-verify");
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--capture-readback-live-verify") {
+            verifyLiveCaptureReadback();
+            return 0;
+        }
+        if (argc == 2 && (std::string_view(argv[1]) == "--capture-scroll-verify" || std::string_view(argv[1]) == "--capture-scroll-staging-verify")) {
+            verifyLiveScrollCapture(std::string_view(argv[1]) == "--capture-scroll-staging-verify");
             return 0;
         }
         if (argc == 2 && (std::string_view(argv[1]) == "--conversion" || std::string_view(argv[1]) == "--conversion-sse2" || std::string_view(argv[1]) == "--conversion-avx2")) {
@@ -256,6 +493,12 @@ int main(int argc, char** argv) {
                 measureConversion(1920, 1080, format, backend);
                 measureConversion(2560, 1600, format, backend);
             }
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--motion-stress") {
+            measure(1920, 1080, false, false, 8000000, true, 30);
+            measure(1920, 1080, false, true, 8000000, true, 30);
+            measure(1920, 1080, false, true, 24000000, true, 30);
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--detail-live-rate") {
@@ -280,7 +523,7 @@ int main(int argc, char** argv) {
                 }
                 return 0;
             }
-            throw std::invalid_argument("Usage: agent-software-video-benchmark [--conversion|--conversion-sse2|--conversion-avx2|--capture-pipeline|--detail|--detail-live-rate|--automatic]");
+            throw std::invalid_argument("Usage: agent-software-video-benchmark [--conversion|--conversion-sse2|--conversion-avx2|--capture-pipeline|--capture-pipeline-full|--capture-pipeline-verify|--capture-pipeline-staging|--capture-readback|--capture-readback-staging|--capture-readback-verify|--capture-readback-live-verify|--capture-scroll-verify|--capture-scroll-staging-verify|--detail|--detail-live-rate|--motion-stress|--automatic]");
         }
         for (const bool scrolling : {false, true}) {
             measure(1280, 720, scrolling);

@@ -19,7 +19,7 @@ std::int32_t coordinate(std::int32_t origin, std::int32_t hotspot) {
     }
     return static_cast<std::int32_t>(result);
 }
-wire::CursorUpdate convert(const CapturedFrame& frame) {
+void validateFrame(const CapturedFrame& frame) {
     const bool mono = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME;
     const bool color = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
     const bool masked = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR;
@@ -33,6 +33,11 @@ wire::CursorUpdate convert(const CapturedFrame& frame) {
         !frame.width || !frame.height || frame.width > 16384 || frame.height > 16384 || screenBytes > 64 * 1024 * 1024 || screenBytes > frame.bgra.size() || frame.rotation != 1) {
         throw std::runtime_error("Invalid desktop cursor shape or background");
     }
+}
+wire::CursorUpdate convert(const CapturedFrame& frame) {
+    const bool mono = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME;
+    const bool masked = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR;
+    const auto width = frame.pointerWidth, height = mono ? frame.pointerHeight / 2 : frame.pointerHeight;
     wire::CursorUpdate result;
     result.set_visible(true);
     result.set_x(coordinate(frame.pointerX, frame.hotspotX));
@@ -113,7 +118,36 @@ std::optional<wire::CursorUpdate> DesktopCursor::update(const CapturedFrame& fra
         hidden.set_y(previous_->y());
         return hidden;
     }
+    validateFrame(frame);
+    if (frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR && previous_ && !previous_->rgba().empty() &&
+        previous_->width() == frame.pointerWidth && previous_->height() == frame.pointerHeight &&
+        previous_->hotspot_x() == static_cast<std::uint32_t>(frame.hotspotX) && previous_->hotspot_y() == static_cast<std::uint32_t>(frame.hotspotY) &&
+        colorPitch_ == frame.pointerPitch && colorShape_ == frame.pointerShape) {
+        const auto x = coordinate(frame.pointerX, frame.hotspotX);
+        const auto y = coordinate(frame.pointerY, frame.hotspotY);
+        if (previous_->visible() && previous_->x() == x && previous_->y() == y && !force) {
+            return std::nullopt;
+        }
+        previous_->set_visible(true);
+        previous_->set_x(x);
+        previous_->set_y(y);
+        if (force) {
+            return *previous_;
+        }
+        wire::CursorUpdate position;
+        position.set_visible(true);
+        position.set_x(x);
+        position.set_y(y);
+        return position;
+    }
     auto current = convert(frame);
+    if (frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR) {
+        colorShape_ = frame.pointerShape;
+        colorPitch_ = frame.pointerPitch;
+    } else {
+        colorShape_.clear();
+        colorPitch_ = 0;
+    }
     const bool shapeChanged = !previous_ || current.width() != previous_->width() || current.height() != previous_->height() ||
                               current.hotspot_x() != previous_->hotspot_x() || current.hotspot_y() != previous_->hotspot_y() || current.rgba() != previous_->rgba();
     if (!shapeChanged && previous_->visible() && current.x() == previous_->x() && current.y() == previous_->y() && !force) {

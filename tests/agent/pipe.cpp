@@ -1,16 +1,27 @@
-#include <aclapi.h>
+#include <algorithm>
+#include <array>
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
+#include <asio/redirect_error.hpp>
 #include <asio/steady_timer.hpp>
+#include <asio/this_coro.hpp>
+#include <asio/use_awaitable.hpp>
 #include <asio/use_future.hpp>
+#include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <iostream>
-#include <sddl.h>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <utility>
 
 #include <windows.h>
+
+#include <aclapi.h>
+#include <sddl.h>
 
 #include "platform/windows/handle.types.h"
 #include "platform/windows/pipe.transport.h"
@@ -18,6 +29,7 @@
 namespace {
 using ultraterimal::agent::NamedPipeTransport;
 using ultraterimal::agent::UniqueHandle;
+constexpr unsigned kControlSamples = 24;
 void require(bool condition) {
     if (!condition) {
         throw std::runtime_error("Named pipe invariant failed");
@@ -29,6 +41,17 @@ std::string payload() {
         bytes[i] = static_cast<char>(i % 251);
     }
     return bytes;
+}
+struct PendingWrite {
+    asio::steady_timer complete;
+    std::exception_ptr failure;
+    bool started = false, done = false;
+    explicit PendingWrite(asio::any_io_executor executor) : complete(executor) {}
+};
+asio::awaitable<void> sendVideo(NamedPipeTransport& pipe, std::shared_ptr<PendingWrite> pending) {
+    auto bytes = payload();
+    pending->started = true;
+    co_await pipe.send(std::move(bytes));
 }
 struct Child {
     UniqueHandle job, process;
@@ -63,8 +86,24 @@ struct Child {
         require(GetExitCodeProcess(process.get(), &code) && code == 0);
     }
 };
-asio::awaitable<void> childExchange(NamedPipeTransport& pipe, bool echo, bool idle) {
-    if (echo) {
+asio::awaitable<void> childExchange(NamedPipeTransport& pipe, bool echo, bool idle, bool fullDuplex) {
+    if (fullDuplex) {
+        co_await pipe.send("ready");
+        asio::steady_timer pause(co_await asio::this_coro::executor);
+        pause.expires_after(std::chrono::milliseconds(300));
+        co_await pause.async_wait(asio::use_awaitable);
+        for (unsigned index = 0; index < kControlSamples; ++index) {
+            LARGE_INTEGER sent{};
+            require(QueryPerformanceCounter(&sent) && sent.QuadPart > 0);
+            co_await pipe.send("control:" + std::to_string(index) + ":" + std::to_string(sent.QuadPart));
+            if (index + 1 < kControlSamples) {
+                pause.expires_after(std::chrono::milliseconds(10));
+                co_await pause.async_wait(asio::use_awaitable);
+            }
+        }
+        require((co_await pipe.receive()) == payload());
+        require((co_await pipe.receive()) == "accepted");
+    } else if (echo) {
         co_await pipe.send(payload());
         require((co_await pipe.receive()) == "accepted");
     } else if (idle) {
@@ -109,7 +148,7 @@ int child(const wchar_t* name, DWORD parent, const std::wstring& mode) {
     if (mode == L"idle") {
         Sleep(10500);
     }
-    auto result = asio::co_spawn(io, childExchange(*pipe, mode == L"echo", mode == L"idle"), asio::use_future);
+    auto result = asio::co_spawn(io, childExchange(*pipe, mode == L"echo", mode == L"idle", mode == L"full_duplex"), asio::use_future);
     io.run();
     result.get();
     return 0;
@@ -124,13 +163,45 @@ asio::awaitable<void> serve(NamedPipeTransport& pipe, DWORD process, DWORD sessi
         } else if (mode == L"idle") {
             require((co_await pipe.receive()) == "idle");
             co_await pipe.send("accepted");
+        } else if (mode == L"full_duplex") {
+            require((co_await pipe.receive()) == "ready");
+            const auto executor = co_await asio::this_coro::executor;
+            auto pending = std::make_shared<PendingWrite>(executor);
+            asio::co_spawn(executor, sendVideo(pipe, pending), [pending](std::exception_ptr error) {
+                pending->failure = error;
+                pending->done = true;
+                pending->complete.cancel();
+            });
+            const auto began = std::chrono::steady_clock::now();
+            LARGE_INTEGER frequency{};
+            require(QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0);
+            std::array<double, kControlSamples> latencies{};
+            for (unsigned index = 0; index < kControlSamples; ++index) {
+                const auto received = co_await pipe.receive();
+                const auto prefix = "control:" + std::to_string(index) + ":";
+                LARGE_INTEGER arrived{};
+                require(pending->started && !pending->done && received.starts_with(prefix) && QueryPerformanceCounter(&arrived));
+                std::int64_t sent = 0;
+                const auto [end, error] = std::from_chars(received.data() + prefix.size(), received.data() + received.size(), sent);
+                require(error == std::errc{} && end == received.data() + received.size() && sent > 0 && arrived.QuadPart >= sent);
+                latencies[index] = 1000.0 * (arrived.QuadPart - sent) / frequency.QuadPart;
+            }
+            require(std::chrono::steady_clock::now() - began < std::chrono::seconds(1));
+            std::sort(latencies.begin(), latencies.end());
+            require(latencies[22] < 100 && latencies.back() < 250);
+            std::cout << "Full-duplex IPC control P50/P95/P99 ms=" << latencies[11] << '/' << latencies[22] << '/' << latencies.back() << '\n';
+            pending->complete.expires_after(std::chrono::seconds(2));
+            std::error_code ignored;
+            co_await pending->complete.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+            require(pending->done && !pending->failure);
+            co_await pipe.send("accepted");
         } else {
             (void)co_await pipe.receive();
         }
     } catch (const std::exception&) {
         failed = true;
     }
-    require(failed == (mode != L"echo" && mode != L"idle"));
+    require(failed == (mode != L"echo" && mode != L"idle" && mode != L"full_duplex"));
 }
 void verifySecurity() {
     asio::io_context io;
@@ -171,7 +242,7 @@ int wmain(int argc, wchar_t** argv) {
         verifySecurity();
         DWORD session = 0;
         require(ProcessIdToSessionId(GetCurrentProcessId(), &session) != FALSE);
-        for (const std::wstring mode : {L"echo", L"bad_client", L"bad_session", L"bad_server", L"bad_length", L"partial_header", L"idle", L"cancel_read", L"cancel_accept"}) {
+        for (const std::wstring mode : {L"echo", L"full_duplex", L"bad_client", L"bad_session", L"bad_server", L"bad_length", L"partial_header", L"idle", L"cancel_read", L"cancel_accept"}) {
             asio::io_context io;
             NamedPipeTransport server(io.get_executor(), ultraterimal::agent::currentLogonSid());
             asio::steady_timer timer(io);

@@ -183,7 +183,7 @@ std::uintptr_t expectColor(ultraterimal::agent::DesktopCapture& capture, std::ve
     while (std::chrono::steady_clock::now() < deadline) {
         const auto previousData = pixels.data();
         const auto previousSize = pixels.size();
-        auto frame = capture.nextFrame(std::chrono::milliseconds(100), &pixels);
+        auto frame = capture.nextFrame(std::chrono::milliseconds(100), &pixels, nullptr, !pixels.empty());
         if ((!frame || frame->bgra.empty()) && (pixels.data() != previousData || pixels.size() != previousSize)) {
             throw std::runtime_error("Unchanged snapshot lost retained pixels");
         }

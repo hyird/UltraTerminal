@@ -74,6 +74,7 @@ add_library(ultraterimal-agent-core STATIC
     platform/windows/login_install.transport.cpp
     platform/windows/capability.transport.cpp
     platform/windows/capture.transport.cpp
+    platform/windows/capture_regions.protocol.cpp
     platform/windows/cursor.transport.cpp
     platform/windows/pipe.transport.cpp
     platform/windows/desktop_process.transport.cpp

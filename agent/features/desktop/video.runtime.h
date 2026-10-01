@@ -11,6 +11,19 @@
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::agent {
+// Process-local counters for diagnosing capture/pacing without recording pixels.
+struct DesktopVideoDiagnostics {
+    std::uint64_t captureCalls = 0;
+    std::uint64_t pixelUpdates = 0;
+    std::uint64_t cursorOnlyUpdates = 0;
+    std::uint64_t captureTimeouts = 0;
+    std::uint64_t pendingBeforeDeadlineCalls = 0;
+    std::uint64_t backpressuredCalls = 0;
+    std::uint64_t encodedFrames = 0;
+    std::uint64_t earlyEncodedFrames = 0;
+    std::uint64_t pixelCaptureGaps = 0;
+    std::uint64_t pixelCaptureGapsGe45ms = 0;
+};
 struct DesktopVideoUpdate {
     std::optional<wire::VideoConfig> configuration;
     std::optional<wire::CursorUpdate> cursor;
@@ -18,6 +31,8 @@ struct DesktopVideoUpdate {
     wire::VideoFrame frame;
     std::uint64_t generation = 0;
     std::uint64_t frameId = 0;
+    // Local-only QPC tick of the most recent pixel snapshot (not serialized).
+    std::uint64_t sourcePresentTicks = 0;
     std::int32_t desktopLeft = 0, desktopTop = 0;
 };
 // One owner on the desktop process event loop. Capture and encoding run on a
@@ -36,6 +51,8 @@ class DesktopVideoRuntime {
     void invalidate(); // Discard an in-flight old frame and rebuild the source.
     void feedback(const wire::QualityFeedback& feedback);
     void observeRoundTrip(std::chrono::microseconds elapsed);
+    // Owning event loop only; most recent completed capture-worker snapshot.
+    DesktopVideoDiagnostics diagnostics() const;
 
   private:
     struct State;

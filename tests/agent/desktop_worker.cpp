@@ -51,7 +51,7 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     bool closed = false;
     bool closeRequested = false;
     unsigned probes = 0;
-    std::uint64_t probeSequence = 2;
+    std::uint64_t probeSequence = 1;
     auto firstProbeAt = std::chrono::steady_clock::time_point{};
     while (!closed) {
         std::string bytes;
@@ -135,7 +135,16 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
                     pipe.cancel();
                     co_return;
                 }
-                auto command = message(2);
+                if (mode == "normal") {
+                    // An IDR can exceed the initial 64 KiB byte window. The
+                    // browser acknowledges display before requesting a refresh.
+                    auto feedback = message(++probeSequence);
+                    feedback.set_channel_id("input");
+                    feedback.mutable_quality_feedback()->set_displayed_generation(packet->generation());
+                    feedback.mutable_quality_feedback()->set_displayed_frame(packet->frame_id());
+                    co_await send(pipe, feedback);
+                }
+                auto command = message(++probeSequence);
                 command.set_channel_id("input");
                 if (mode == "readonly_input" || mode == "writable") {
                     command.set_generation(videoGeneration);
@@ -151,13 +160,13 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
                 }
                 co_await send(pipe, command);
                 if (mode == "writable") {
-                    auto close = message(3);
+                    auto close = message(++probeSequence);
                     close.mutable_session_close()->set_reason("completed");
                     co_await send(pipe, close);
                 }
             } else if (mode == "normal" && !refreshed && packet->video_frame().key_frame()) {
                 refreshed = true;
-                auto close = message(3);
+                auto close = message(++probeSequence);
                 close.mutable_session_close()->set_reason("completed");
                 co_await send(pipe, close);
             }
@@ -166,7 +175,11 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
         }
     }
     if (mode == "normal") {
-        require(ready && firstFrame && refreshed && cursorReceived && closed, "Worker cursor/refresh/close path incomplete");
+        if (!(ready && firstFrame && refreshed && cursorReceived && closed)) {
+            std::cerr << "ready=" << ready << " first_frame=" << firstFrame << " refreshed=" << refreshed
+                      << " cursor=" << cursorReceived << " closed=" << closed << '\n';
+            throw std::runtime_error("Worker cursor/refresh/close path incomplete");
+        }
     }
     if (mode == "binding") {
         require(!ready, "Worker accepted wrong Windows session");
@@ -192,8 +205,11 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     } else if (mode == "probe_delayed_recover") {
         const auto elapsed = std::chrono::steady_clock::now() - firstProbeAt;
         if (!(probes >= 4 && closed && elapsed >= std::chrono::seconds(6) && elapsed < std::chrono::seconds(15))) {
+            DWORD exitCode = 0;
+            GetExitCodeProcess(child.process.get(), &exitCode);
             std::cerr << "delayed_probe_count=" << probes << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
-                      << " pipe_closed=" << (closed ? "yes" : "no") << '\n';
+                      << " pipe_closed=" << (closed ? "yes" : "no") << " ready=" << ready << " first_frame=" << firstFrame
+                      << " worker_exit_code=" << exitCode << '\n';
             throw std::runtime_error("Delayed reset probe did not recover after transient packet loss");
         }
     }
