@@ -200,7 +200,7 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         ruvia::TaskScope scope(worker);
         scope.spawn(forwardVideoBurst(session, endpoints[3], configuration, finished));
         co_await ruvia::sleepFor(worker, std::chrono::milliseconds(10));
-        require(session.ready() && !finished && budget->used > 1024 * 1024);
+        require(session.ready() && !finished && budget->used > 2 * kSimulatedFrameBytes && budget->used < 4 * kSimulatedFrameBytes);
         // A backed-up video route must not hold the separate input route.
         const auto control = refresh(2);
         require(co_await session.forward(endpoints[0], control));
@@ -338,12 +338,18 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
             frame.mutable_video_frame()->set_timestamp_microseconds(i);
             frame.mutable_video_frame()->set_encode_microseconds(static_cast<std::uint32_t>(i * 1000));
             require(co_await session.forward(endpoints[3], frame));
+            if (i == 1) {
+                // One active write plus two queued frames must all retain their
+                // budget; dequeuing is not completion of a network write.
+                received = co_await endpoints[2]->receive({});
+                require(bool(received));
+            }
         }
         require(budget->used > 24 * 1024 * 1024);
         frame.set_sequence(6);
         frame.set_frame_id(4);
         frame.mutable_video_frame()->set_timestamp_microseconds(4);
-        require(!(co_await session.forward(endpoints[3], frame))); // Per-session bytes, well below eight slots.
+        require(!(co_await session.forward(endpoints[3], frame))); // Byte budget includes the active write.
         require(!session.ready());
         require(session.closeReason() == server::DesktopCloseReason::kSessionBudgetExceeded);
         require(session.diagnostics().videoFrames == 3);
@@ -352,6 +358,7 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(session.diagnostics().videoWidth == 1920 && session.diagnostics().videoHeight == 1080);
         require(session.diagnostics().latestKeyFrameEncodeMicroseconds == 3000 && !session.diagnostics().latestHardwareEncoding);
         require(!(co_await endpoints[2]->receive({})));
+        received.reset();
         require(budget->used == 0);
     }
     {
