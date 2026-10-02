@@ -166,6 +166,15 @@ class DesktopWorker {
                     co_await send(std::move(cursor));
                 }
                 if (update->frame.data().empty()) {
+                    if (update->refinement) {
+                        wire::Envelope refinement;
+                        refinement.set_channel_id("video");
+                        refinement.set_generation(update->generation);
+                        refinement.set_frame_id(update->frameId);
+                        refinement.set_base_frame_id(update->frameId);
+                        *refinement.mutable_video_refinement() = std::move(*update->refinement);
+                        co_await send(std::move(refinement));
+                    }
                     refresh_ = refresh_ || refresh;
                     continue;
                 }

@@ -222,6 +222,62 @@ void verifyFrames() {
     DesktopChannelValidator browser({"session", "video", wire::DESKTOP_VIDEO, ChannelSource::kBrowser, true});
     require(rejected(browser.accept(config), DesktopMessageError::kDirection));
 }
+void verifyRefinement() {
+    DesktopChannelValidator video({"session", "video", wire::DESKTOP_VIDEO, ChannelSource::kAgent, true});
+    auto config = envelope(2);
+    config.set_generation(1);
+    config.mutable_video_config()->set_width(16);
+    config.mutable_video_config()->set_height(16);
+    config.mutable_video_config()->set_codec("avc1.42C01E");
+    require(video.accept(config).has_value());
+    auto frame = envelope(3);
+    frame.set_generation(1);
+    frame.set_frame_id(1);
+    frame.mutable_video_frame()->set_key_frame(true);
+    frame.mutable_video_frame()->set_data("frame");
+    require(video.accept(frame).has_value());
+    auto detail = envelope(4);
+    detail.set_generation(1);
+    detail.set_frame_id(1);
+    detail.set_base_frame_id(1);
+    auto* patch = detail.mutable_video_refinement()->add_patches();
+    patch->mutable_destination()->set_width(8);
+    patch->mutable_destination()->set_height(8);
+    std::string png("\211PNG\r\n\032\n", 8);
+    png.resize(33);
+    png[11] = 13;
+    png.replace(12, 4, "IHDR");
+    png[19] = png[23] = 8;
+    patch->set_png(png); // Header validation; actual PNG decoding is tested by agent.refinement.
+    auto bad = detail;
+    bad.mutable_video_refinement()->mutable_patches(0)->mutable_png()->at(11) = 12;
+    require(rejected(video.accept(bad), DesktopMessageError::kMalformed));
+    bad = detail;
+    bad.mutable_video_refinement()->mutable_patches(0)->mutable_png()->at(19) = 9;
+    require(rejected(video.accept(bad), DesktopMessageError::kMalformed));
+    bad = detail;
+    bad.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(9);
+    require(rejected(video.accept(bad), DesktopMessageError::kFrameState));
+    bad = detail;
+    bad.set_generation(2);
+    require(rejected(video.accept(bad), DesktopMessageError::kFrameState));
+    bad = detail;
+    bad.set_frame_id(2);
+    bad.set_base_frame_id(2);
+    require(rejected(video.accept(bad), DesktopMessageError::kFrameState));
+    require(video.accept(detail).has_value());
+    detail.set_sequence(5);
+    require(rejected(video.accept(detail), DesktopMessageError::kFrameState));
+    frame.set_sequence(5);
+    frame.set_frame_id(2);
+    frame.mutable_video_frame()->set_timestamp_microseconds(16667);
+    require(video.accept(frame).has_value());
+    detail.set_sequence(6);
+    require(rejected(video.accept(detail), DesktopMessageError::kFrameState));
+    detail.set_frame_id(2);
+    detail.set_base_frame_id(2);
+    require(video.accept(detail).has_value());
+}
 } // namespace
 int main() {
     try {
@@ -229,6 +285,7 @@ int main() {
         verifySecureAttention();
         verifyProbe();
         verifyFrames();
+        verifyRefinement();
         std::cout << "Desktop channel binding, direction, read-only access, replay and frame continuity passed\n";
         return 0;
     } catch (const std::exception& error) {

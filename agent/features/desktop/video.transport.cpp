@@ -55,8 +55,23 @@ struct VideoEncoder::State {
         software = std::make_unique<SoftwareVideoEncoder>(config);
         baselinePending = !codec.empty();
     }
+    std::optional<EncodedVideoFrame> acceptHardware(std::expected<MediaEncodedFrame, HRESULT> result, std::uint64_t timestamp, bool keyRequired) {
+        if (result && result->timestampMicroseconds == timestamp) {
+            auto description = describeAvcFrame(result->bytes, codec);
+            const bool needsValidation = !hardwareValidated || (description && codec != description->codec);
+            if (description && description->keyFrame == result->keyFrame && (!keyRequired || description->keyFrame) &&
+                (!needsValidation || (description->keyFrame && verifyHardwareBaseline(*result, config)))) {
+                hardwareValidated = true;
+                const bool changed = !codec.empty() && codec != description->codec;
+                codec = description->codec;
+                lastTimestamp = timestamp;
+                return EncodedVideoFrame{std::move(result->bytes), codec, timestamp, description->keyFrame, changed};
+            }
+        }
+        return std::nullopt;
+    }
 };
-VideoEncoder::VideoEncoder(VideoEncoderConfig config) : state_(std::make_unique<State>()) {
+VideoEncoder::VideoEncoder(VideoEncoderConfig config, ID3D11Device* device) : state_(std::make_unique<State>()) {
     const auto pixels = static_cast<std::uint64_t>(config.width) * config.height;
     if (config.width < 16 || config.height < 16 || config.width > 4096 || config.height > 4096 ||
         config.width % 2 || config.height % 2 || pixels > 4096 * 2160 || !config.framesPerSecond || config.framesPerSecond > 120 ||
@@ -64,15 +79,42 @@ VideoEncoder::VideoEncoder(VideoEncoderConfig config) : state_(std::make_unique<
         throw std::invalid_argument("Invalid video configuration");
     }
     state_->config = config;
+    if (device) {
+        try {
+            state_->media = std::make_unique<MediaEncoder>(MediaEncoderConfig{config.width, config.height, config.bitrate, config.framesPerSecond, config.sharp}, device);
+        } catch (const std::runtime_error&) {
+            // Some hardware MFTs accept CPU NV12 but not D3D11 surfaces.
+        }
+    }
     try {
-        state_->media = std::make_unique<MediaEncoder>(MediaEncoderConfig{config.width, config.height, config.bitrate, config.framesPerSecond, config.sharp});
-        state_->nv12.resize(static_cast<std::size_t>(pixels * 3 / 2));
+        if (!state_->media) {
+            state_->media = std::make_unique<MediaEncoder>(MediaEncoderConfig{config.width, config.height, config.bitrate, config.framesPerSecond, config.sharp});
+        }
+        if (!state_->media->gpu()) {
+            state_->nv12.resize(static_cast<std::size_t>(pixels * 3 / 2));
+        }
     } catch (const std::runtime_error&) {
         state_->fallback();
     }
 }
 VideoEncoder::~VideoEncoder() = default;
 bool VideoEncoder::hardware() const { return state_->media != nullptr; }
+bool VideoEncoder::gpu() const { return state_->media && state_->media->gpu(); }
+std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodeTexture(ID3D11Texture2D* bgra, std::uint64_t timestamp, bool forceKeyFrame) {
+    auto& state = *state_;
+    if (!gpu()) {
+        return std::unexpected(VideoEncodeError::kGpuUnavailable);
+    }
+    if (timestamp > static_cast<std::uint64_t>(std::numeric_limits<long long>::max()) / 10 || (state.lastTimestamp && timestamp <= *state.lastTimestamp)) {
+        return std::unexpected(VideoEncodeError::kInvalidTimestamp);
+    }
+    const bool keyRequired = forceKeyFrame || state.codec.empty();
+    if (auto result = state.acceptHardware(state.media->encodeTexture(bgra, timestamp, keyRequired), timestamp, keyRequired)) {
+        return std::move(*result);
+    }
+    state.fallback();
+    return std::unexpected(VideoEncodeError::kGpuUnavailable); // Caller reads back and re-encodes this same snapshot.
+}
 void VideoEncoder::setRate(std::uint32_t framesPerSecond, std::uint32_t bitrate) {
     if (!framesPerSecond || framesPerSecond > 120 || bitrate < 64000 || bitrate > 100000000) {
         throw std::invalid_argument("Invalid adaptive video rate");
@@ -112,18 +154,8 @@ std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encode(std::spa
             return std::unexpected(VideoEncodeError::kInvalidPixels);
         }
         const bool keyRequired = forceKeyFrame || state.codec.empty();
-        auto result = state.media->encode(state.nv12, timestampMicroseconds, keyRequired);
-        if (result && result->timestampMicroseconds == timestampMicroseconds) {
-            auto description = describeAvcFrame(result->bytes, state.codec);
-            const bool needsValidation = !state.hardwareValidated || (description && state.codec != description->codec);
-            if (description && description->keyFrame == result->keyFrame && (!keyRequired || description->keyFrame) &&
-                (!needsValidation || (description->keyFrame && verifyHardwareBaseline(*result, state.config)))) {
-                state.hardwareValidated = true;
-                const bool changed = !state.codec.empty() && state.codec != description->codec;
-                state.codec = description->codec;
-                state.lastTimestamp = timestampMicroseconds;
-                return EncodedVideoFrame{std::move(result->bytes), state.codec, timestampMicroseconds, description->keyFrame, changed};
-            }
+        if (auto result = state.acceptHardware(state.media->encode(state.nv12, timestampMicroseconds, keyRequired), timestampMicroseconds, keyRequired)) {
+            return std::move(*result);
         }
         // Discard the failed codec's private output, never a transmitted delta.
         // Re-encode these same pixels as an independent software baseline.

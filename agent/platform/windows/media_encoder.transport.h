@@ -7,6 +7,11 @@
 
 #include <windows.h>
 
+struct ID3D11Device;
+struct ID3D11Texture2D;
+struct IMFMediaBuffer;
+struct IMFAsyncCallback;
+
 namespace ultraterimal::agent {
 struct MediaEncoderConfig {
     std::uint32_t width;
@@ -25,16 +30,19 @@ struct MediaEncodedFrame {
 // frame/rate failures return HRESULT and require recreating the encoder.
 class MediaEncoder {
   public:
-    explicit MediaEncoder(MediaEncoderConfig config);
+    explicit MediaEncoder(MediaEncoderConfig config, ID3D11Device* device = nullptr);
     ~MediaEncoder();
     MediaEncoder(const MediaEncoder&) = delete;
     MediaEncoder& operator=(const MediaEncoder&) = delete;
     std::expected<MediaEncodedFrame, HRESULT> encode(std::span<const std::uint8_t> nv12, std::uint64_t timestampMicroseconds, bool forceKeyFrame);
+    std::expected<MediaEncodedFrame, HRESULT> encodeTexture(ID3D11Texture2D* bgra, std::uint64_t timestampMicroseconds, bool forceKeyFrame);
+    bool gpu() const;
     std::expected<void, HRESULT> setRate(std::uint32_t framesPerSecond, std::uint32_t bitrate);
     std::expected<void, HRESULT> setDetail(bool sharp);
 
   private:
     struct State;
     std::unique_ptr<State> state_;
+    std::expected<MediaEncodedFrame, HRESULT> encodeBuffer(IMFMediaBuffer* buffer, std::uint64_t timestampMicroseconds, bool forceKeyFrame, IMFAsyncCallback* released = nullptr);
 };
 } // namespace ultraterimal::agent

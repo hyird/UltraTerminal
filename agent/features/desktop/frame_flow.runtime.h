@@ -32,6 +32,7 @@ class DesktopFrameFlow {
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
     Rate rate() const { return rate_; }
     bool background() const { return background_; }
+    bool detailAllowed() const { return quality_ != Quality::kSmooth; }
     std::pair<std::uint32_t, std::uint32_t> geometry() const { return {width_, height_}; }
     bool setGeometry(std::uint32_t width, std::uint32_t height) {
         if (width < 16 || height < 16 || width > 4096 || height > 4096 || (width & 1) || (height & 1) || static_cast<std::uint64_t>(width) * height > 4096ull * 2160) {
@@ -164,6 +165,16 @@ class DesktopFrameFlow {
             healthySince_ = now;
         }
         if (now >= adjustAt_ && congestionSamples_ >= 3) {
+            const bool failedRestore = restoredAt_ && now - *restoredAt_ < std::chrono::seconds(5);
+            if (!recoveryRate_) {
+                recoveryRate_ = rate_;
+            } else if (failedRestore) {
+                // A failed probe pauses fast restoration without permanently
+                // erasing the bounded pre-congestion capacity ceiling.
+                restoreBlockedUntil_ = now + std::chrono::seconds(5);
+            }
+            recoveryExpiresAt_ = now + std::chrono::seconds(30);
+            restoredAt_.reset();
             if (networkPressure) {
                 auto target = static_cast<std::uint64_t>(rate_.bitrate) * 4 / 5;
                 if (deliveryBytesPerSecond_) {
@@ -178,9 +189,22 @@ class DesktopFrameFlow {
             congestionSamples_ = 0;
             adjustAt_ = now + std::chrono::milliseconds(500);
         } else if (now >= adjustAt_ && healthySince_ && now - *healthySince_ >= std::chrono::seconds(2)) {
-            rate_.bitrate = std::min(preferredBitrate(), rate_.bitrate + std::max(64000u, rate_.bitrate / 20));
-            receiverFrameRate_ = std::min(kMaximumFramesPerSecond, receiverFrameRate_ + 2);
-            updateFrameRate(true);
+            if (recoveryRate_ && now >= recoveryExpiresAt_) {
+                recoveryRate_.reset();
+            }
+            const auto bitrateLimit = recoveryRate_ ? std::min(preferredBitrate(), recoveryRate_->bitrate) : preferredBitrate();
+            const bool restoring = recoveryRate_ && now >= restoreBlockedUntil_;
+            const auto step = restoring ? std::max(4u, rate_.framesPerSecond / 4) : 2u;
+            rate_.bitrate = std::min(bitrateLimit, rate_.bitrate + std::max(64000u, rate_.bitrate / (restoring ? 4 : 20)));
+            receiverFrameRate_ = std::min(kMaximumFramesPerSecond, receiverFrameRate_ + step);
+            updateFrameRate(true, step);
+            if (restoring) {
+                restoredAt_ = now;
+            }
+            if (recoveryRate_ && rate_.bitrate >= bitrateLimit && rate_.framesPerSecond >= recoveryRate_->framesPerSecond) {
+                recoveryRate_.reset();
+                restoredAt_ = now;
+            }
             adjustAt_ = now + std::chrono::seconds(1);
         }
         return true;
@@ -208,7 +232,7 @@ class DesktopFrameFlow {
         }
         background_ = background;
     }
-    void updateFrameRate(bool recover = false) {
+    void updateFrameRate(bool recover = false, std::uint32_t recoveryStep = 2) {
         // Prefer fewer readable frames on a narrow path. The bitrate remains
         // bounded by capacity even below the per-frame clarity budget.
         const auto bitsPerFrame = std::max<std::uint64_t>(1, 8000000ull * width_ * height_ / (1920ull * 1080 * 60));
@@ -220,7 +244,7 @@ class DesktopFrameFlow {
             fps = std::min<std::uint64_t>(fps, 800000ull / decodeMicroseconds_);
         }
         const auto target = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(fps, kMinimumFramesPerSecond, kMaximumFramesPerSecond));
-        rate_.framesPerSecond = target < rate_.framesPerSecond ? target : recover ? std::min(target, rate_.framesPerSecond + 2)
+        rate_.framesPerSecond = target < rate_.framesPerSecond ? target : recover ? std::min(target, rate_.framesPerSecond + recoveryStep)
                                                                                   : rate_.framesPerSecond;
     }
     Rate rate_;
@@ -234,6 +258,9 @@ class DesktopFrameFlow {
     std::optional<std::chrono::microseconds> roundTrip_, baseline_;
     Clock::time_point roundTripExpiresAt_{}, baselineExpiresAt_{}, lastAcknowledgedAt_{}, adjustAt_{};
     std::optional<Clock::time_point> healthySince_;
+    std::optional<Rate> recoveryRate_;
+    std::optional<Clock::time_point> restoredAt_;
+    Clock::time_point recoveryExpiresAt_{}, restoreBlockedUntil_{};
     unsigned congestionSamples_ = 0;
     bool background_ = false;
 };

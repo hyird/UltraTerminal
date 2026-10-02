@@ -101,8 +101,11 @@ int main() {
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Narrow link failed to adapt both bitrate and capture cadence");
         require(narrow.peakFrames <= 128 && narrow.peakBytes <= 4 * 1024 * 1024 + 50000, "Narrow link exceeded bounded flight");
         const auto reduced = narrow.flow.rate();
-        narrow.run(90s, 10000000, 40ms);
-        require(narrow.flow.rate().bitrate > reduced.bitrate * 2 && narrow.flow.rate().framesPerSecond > reduced.framesPerSecond, "Capacity recovery did not resume capture");
+        narrow.run(25s, 10000000, 40ms);
+        std::cout << "recovery_25s_bitrate=" << narrow.flow.rate().bitrate << " fps=" << narrow.flow.rate().framesPerSecond << '\n';
+        require(narrow.flow.rate().bitrate > reduced.bitrate * 8 && narrow.flow.rate().framesPerSecond >= 45, "Capacity recovery remained too slow");
+        narrow.run(30s, 125000, 40ms);
+        require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Recovery ignored renewed congestion");
         DesktopFrameFlow stalled;
         stalled.sent(1, 1, now, 1000);
         require(!stalled.canEncode(now + 1s), "Missing ACK did not stop further encoding");

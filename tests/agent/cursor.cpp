@@ -103,9 +103,15 @@ void color() {
     update = cursor.update(frame);
     require(update && update->rgba().size() == 16);
     valid(*update);
+    auto gpuFrame = frame;
+    gpuFrame.bgra.clear();
+    require(!cursor.update(gpuFrame));
+    update = cursor.update(gpuFrame, true);
+    require(update && update->rgba().size() == 16);
+    valid(*update);
     bool cachedInvalidRejected = false;
     auto invalidCached = frame;
-    invalidCached.bgra.clear();
+    invalidCached.bgra.resize(1);
     try {
         (void)cursor.update(invalidCached);
     } catch (const std::runtime_error&) {
@@ -136,7 +142,7 @@ void color() {
     bad.pointerType = 3;
     rejected(bad);
     bad = frame;
-    bad.bgra.clear();
+    bad.bgra.resize(1);
     rejected(bad);
     bad = frame;
     bad.pointerPitch = std::numeric_limits<std::uint32_t>::max();

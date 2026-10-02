@@ -28,7 +28,7 @@ std::expected<void, DesktopMessageError> DesktopChannelValidator::accept(const w
             }
         }
     } else if (binding_.purpose == wire::DESKTOP_VIDEO && binding_.source == ChannelSource::kAgent) {
-        allowed = message.has_video_config() || message.has_video_frame() || message.has_full_frame() || message.has_diff_batch();
+        allowed = message.has_video_config() || message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_video_refinement();
     }
     if (!allowed) {
         return std::unexpected(DesktopMessageError::kDirection);
@@ -53,6 +53,7 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         width_ = message.video_config().width();
         height_ = message.video_config().height();
         mode_ = Mode::kVideo;
+        refined_ = false;
         return true;
     }
     if (message.has_video_frame()) {
@@ -62,6 +63,20 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         }
         frame_ = message.frame_id();
         timestamp_ = message.video_frame().timestamp_microseconds();
+        refined_ = false;
+        return true;
+    }
+    if (message.has_video_refinement()) {
+        if (mode_ != Mode::kVideo || refined_ || message.generation() != generation_ || !frame_ || message.frame_id() != frame_ || message.base_frame_id() != frame_) {
+            return false;
+        }
+        for (const auto& patch : message.video_refinement().patches()) {
+            const auto& rectangle = patch.destination();
+            if (rectangle.width() > width_ || rectangle.height() > height_ || rectangle.x() > width_ - rectangle.width() || rectangle.y() > height_ - rectangle.height()) {
+                return false;
+            }
+        }
+        refined_ = true;
         return true;
     }
     if (message.has_full_frame()) {

@@ -180,7 +180,27 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
         close(validationReason(valid.error()), origin);
         co_return false;
     }
-    auto bytes = protocol::encodeMessage(message);
+    // Browser diagnostics terminate here; they never consume worker IPC or
+    // influence Agent QoS. Strip only the infrequent report, not every frame.
+    std::optional<wire::Envelope> forwarded;
+    if (message.has_quality_feedback() && message.quality_feedback().has_render_report()) {
+        const auto& feedback = message.quality_feedback();
+        const auto now = std::chrono::steady_clock::now();
+        if (!feedback.background() && feedback.displayed_generation() == diagnostics_.videoGeneration &&
+            feedback.displayed_frame() && feedback.displayed_frame() <= diagnostics_.latestVideoFrame &&
+            (diagnostics_.renderReportedAt == std::chrono::steady_clock::time_point{} || now - diagnostics_.renderReportedAt >= std::chrono::seconds(4))) {
+            const auto& report = feedback.render_report();
+            ++diagnostics_.renderReports;
+            diagnostics_.rafSamples = report.samples();
+            diagnostics_.rafP95Microseconds = report.p95_microseconds();
+            diagnostics_.rafP99Microseconds = report.p99_microseconds();
+            diagnostics_.rafGapsGe100ms = report.long_gaps();
+            diagnostics_.renderReportedAt = now;
+        }
+        forwarded = message;
+        forwarded->mutable_quality_feedback()->clear_render_report();
+    }
+    auto bytes = protocol::encodeMessage(forwarded ? *forwarded : message);
     if (!bytes) {
         close(DesktopCloseReason::kMalformedMessage, origin);
         co_return false;
@@ -210,6 +230,9 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
             diagnostics_.videoFrames += message.has_video_frame() || message.has_full_frame() || message.has_diff_batch();
             diagnostics_.inputEvents += message.has_input_event();
             if (message.has_video_config()) {
+                diagnostics_.videoGeneration = message.generation();
+                diagnostics_.latestVideoFrame = 0;
+                diagnostics_.renderReportedAt = {};
                 diagnostics_.encoding.clear();
                 diagnostics_.videoWidth = message.video_config().width();
                 diagnostics_.videoHeight = message.video_config().height();
@@ -217,11 +240,14 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.latestTargetFramesPerSecond = 0;
                 diagnostics_.latestTargetBitrate = 0;
                 diagnostics_.latestHardwareEncoding = false;
+                diagnostics_.latestGpuEncoding = false;
             }
             if (message.has_video_frame()) {
+                diagnostics_.latestVideoFrame = message.frame_id();
                 const auto& frame = message.video_frame();
                 diagnostics_.encoding.observe(frame.encode_microseconds());
                 diagnostics_.latestHardwareEncoding = frame.hardware_encoding();
+                diagnostics_.latestGpuEncoding = frame.gpu_encoding();
                 diagnostics_.latestTargetFramesPerSecond = frame.target_frames_per_second();
                 diagnostics_.latestTargetBitrate = frame.target_bitrate();
                 if (frame.key_frame()) {
@@ -235,6 +261,13 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.maximumBrowserQueueDepth = std::max(diagnostics_.maximumBrowserQueueDepth, feedback.queue_depth());
                 diagnostics_.latestBrowserQueueDepth = feedback.queue_depth();
                 diagnostics_.latestBackground = feedback.background();
+                if (feedback.background()) {
+                    diagnostics_.renderReportedAt = {};
+                }
+            }
+            if (message.has_video_refinement()) {
+                ++diagnostics_.refinementMessages;
+                diagnostics_.refinementBytes += size;
             }
             co_return true;
         }
@@ -282,6 +315,7 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
     }
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_).count();
     const auto encoding = diagnostics_.encoding.summary();
+    const auto rafAge = diagnostics_.renderReportedAt == std::chrono::steady_clock::time_point{} ? -1 : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostics_.renderReportedAt).count();
     const auto encoder = !encoding.samples ? "unknown" : diagnostics_.latestHardwareEncoding ? "hardware"
                                                                                              : "software";
     spdlog::info("{} session_id={} device_id={} reason={} origin={} ready={} duration_ms={} messages={} bytes={} frames={} inputs={} feedback={} backpressure_events={} backpressure_ms={} pending_bytes={} peak_pending_bytes={} max_decode_us={} max_browser_queue_depth={} latest_browser_queue_depth={} background={} video_width={} video_height={} encoder={} encode_samples={} mean_encode_us={} p95_encode_us={} p99_encode_us={} max_encode_us={} last_keyframe_encode_us={} target_fps={} target_bps={}",
@@ -293,5 +327,10 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
                  diagnostics_.videoWidth, diagnostics_.videoHeight, encoder, encoding.samples, encoding.meanMicroseconds,
                  encoding.p95Microseconds, encoding.p99Microseconds, encoding.maximumMicroseconds, diagnostics_.latestKeyFrameEncodeMicroseconds,
                  diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate);
+    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} report_age_ms={} background={} gpu_encoding={} refinement_messages={} refinement_bytes={}",
+                 identity_.sessionId, identity_.deviceId, diagnostics_.renderReports, rafAge >= 0 ? diagnostics_.rafSamples : 0,
+                 rafAge >= 0 ? diagnostics_.rafP95Microseconds : 0, rafAge >= 0 ? diagnostics_.rafP99Microseconds : 0,
+                 rafAge >= 0 ? diagnostics_.rafGapsGe100ms : 0, rafAge, diagnostics_.latestBackground,
+                 diagnostics_.latestGpuEncoding, diagnostics_.refinementMessages, diagnostics_.refinementBytes);
 }
 } // namespace ultraterimal::server

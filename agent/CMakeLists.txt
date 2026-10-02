@@ -59,6 +59,8 @@ add_library(ultraterimal-agent-core STATIC
     features/desktop/video_color_avx2.protocol.cpp
     features/desktop/desktop.transport.cpp
     features/desktop/video.runtime.cpp
+    features/desktop/refinement.protocol.cpp
+    platform/windows/image_encoder.transport.cpp
     features/desktop/worker.runtime.cpp
     features/desktop/bridge.runtime.cpp
     features/desktop/relay.runtime.cpp
@@ -95,7 +97,7 @@ set_target_properties(ultraterimal-agent-core PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(ultraterimal-agent-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(ultraterimal-agent-core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 target_compile_options(ultraterimal-agent-core PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc)
-target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi x264::x264 OpenH264::OpenH264
+target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 windowscodecs mfuuid strmiids msi x264::x264 OpenH264::OpenH264
     PUBLIC ultraterimal::protocol ruvia::core Boost::json OpenSSL::SSL OpenSSL::Crypto)
 add_executable(ultraterimal-agent main.cpp)
 target_link_libraries(ultraterimal-agent PRIVATE ultraterimal-agent-core)

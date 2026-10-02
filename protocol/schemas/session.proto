@@ -187,6 +187,7 @@ message VideoFrame {
   // unavailable (older Agent); values do not claim delivered rate.
   optional uint32 target_frames_per_second = 6;
   optional uint32 target_bitrate = 7;
+  bool gpu_encoding = 8; // No full-frame CPU readback or CPU color conversion.
 }
 message Rectangle { uint32 x = 1; uint32 y = 2; uint32 width = 3; uint32 height = 4; }
 message FullFrame { uint32 width = 1; uint32 height = 2; bytes rgba = 3; }
@@ -216,7 +217,23 @@ message QualityFeedback {
   // Maximum received, not-yet-displayed video frames the client can accept.
   // Zero/omitted means the legacy limit of 16; valid explicit values are 1..128.
   uint32 maximum_pending_video_frames = 7;
+  // Opt-in: video bottom layer with bounded, frame-bound PNG detail patches.
+  bool video_refinement = 8;
+  // Browser-only diagnostics, consumed by the gateway. At most once per 5 s.
+  BrowserRenderReport render_report = 9;
 }
+// Rolling, at most 120 distinct canvas frames observed by visible rAF callbacks.
+// This is before composition, not physical presentation or end-to-end latency.
+// Fewer than 20 samples have zero percentiles; idle/background clears the window.
+message BrowserRenderReport {
+  uint32 samples = 1;
+  uint32 p95_microseconds = 2;
+  uint32 p99_microseconds = 3;
+  uint32 long_gaps = 4;
+}
+// Applied only to the matching video frame, never to a newer canvas or baseline.
+// Envelope frame_id == base_frame_id == the latest video frame ID.
+message VideoRefinement { repeated PatchRect patches = 1; }
 message RequestRefresh {}
 // Agent issues monotonically increasing nonces on the input channel and retains
 // a bounded number in flight for delayed acknowledgments; browser echoes each
@@ -290,5 +307,6 @@ message Envelope {
     AgentLogAck agent_log_ack = 40;
     AgentUpdate agent_update = 41;
     DesktopSecureAttentionResult desktop_secure_attention_result = 42;
+    VideoRefinement video_refinement = 43;
   }
 }

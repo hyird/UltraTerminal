@@ -28,12 +28,15 @@ export class DesktopVisibleFrameGaps {
     p99Milliseconds: number | null;
     gapsAtLeast100Milliseconds: number;
   } {
+    const longGaps = Array.from(this.gaps.subarray(0, this.count)).filter(
+      (gap) => gap >= 100,
+    ).length;
     if (this.count < 20)
       return {
         samples: this.count,
         p95Milliseconds: null,
         p99Milliseconds: null,
-        gapsAtLeast100Milliseconds: 0,
+        gapsAtLeast100Milliseconds: longGaps,
       };
     const sorted = Array.from(this.gaps.subarray(0, this.count)).sort(
       (left, right) => left - right,
@@ -42,7 +45,7 @@ export class DesktopVisibleFrameGaps {
       samples: this.count,
       p95Milliseconds: sorted[Math.ceil(this.count * 0.95) - 1],
       p99Milliseconds: sorted[Math.ceil(this.count * 0.99) - 1],
-      gapsAtLeast100Milliseconds: sorted.filter((gap) => gap >= 100).length,
+      gapsAtLeast100Milliseconds: longGaps,
     };
   }
 }

@@ -55,7 +55,7 @@ struct MediaEncoder::State {
     std::vector<std::uint8_t> pixels = std::vector<std::uint8_t>(64 * 64 * 4, 90);
     explicit State(MediaEncoderConfig config) : encoder({config.width, config.height, config.bitrate, config.framesPerSecond}) {}
 };
-MediaEncoder::MediaEncoder(MediaEncoderConfig config) {
+MediaEncoder::MediaEncoder(MediaEncoderConfig config, ID3D11Device*) {
     ++creations;
     if (fault == Fault::kUnavailable) {
         throw std::runtime_error("Optional media unavailable");
@@ -63,6 +63,8 @@ MediaEncoder::MediaEncoder(MediaEncoderConfig config) {
     state_ = std::make_unique<State>(config);
 }
 MediaEncoder::~MediaEncoder() { ++destructions; }
+bool MediaEncoder::gpu() const { return false; }
+std::expected<MediaEncodedFrame, HRESULT> MediaEncoder::encodeTexture(ID3D11Texture2D*, std::uint64_t, bool) { return std::unexpected(E_NOTIMPL); }
 std::expected<void, HRESULT> MediaEncoder::setRate(std::uint32_t, std::uint32_t) {
     return fault == Fault::kRate ? std::expected<void, HRESULT>(std::unexpected(E_FAIL)) : std::expected<void, HRESULT>();
 }

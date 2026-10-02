@@ -1,4 +1,5 @@
 #pragma once
+#include <evr.h>
 #include <mfapi.h>
 #include <mfidl.h>
 
@@ -14,6 +15,10 @@ struct MediaRuntime {
     decltype(&MFCreateMediaType) createType = nullptr;
     decltype(&MFCreateSample) createSample = nullptr;
     decltype(&MFCreateMemoryBuffer) createBuffer = nullptr;
+    decltype(&MFCreateDXGIDeviceManager) createDeviceManager = nullptr;
+    decltype(&MFCreateDXGISurfaceBuffer) createSurfaceBuffer = nullptr;
+    HMODULE videoSamples = nullptr;
+    decltype(&MFCreateVideoSampleFromSurface) createVideoSample = nullptr;
     HRESULT status = E_NOTIMPL;
     bool started = false;
 
@@ -36,6 +41,8 @@ struct MediaRuntime {
         createType = reinterpret_cast<decltype(createType)>(GetProcAddress(library, "MFCreateMediaType"));
         createSample = reinterpret_cast<decltype(createSample)>(GetProcAddress(library, "MFCreateSample"));
         createBuffer = reinterpret_cast<decltype(createBuffer)>(GetProcAddress(library, "MFCreateMemoryBuffer"));
+        createDeviceManager = reinterpret_cast<decltype(createDeviceManager)>(GetProcAddress(library, "MFCreateDXGIDeviceManager"));
+        createSurfaceBuffer = reinterpret_cast<decltype(createSurfaceBuffer)>(GetProcAddress(library, "MFCreateDXGISurfaceBuffer"));
         if (!startup || !shutdown || !enumerate || !createType || !createSample || !createBuffer) {
             return;
         }
@@ -49,9 +56,21 @@ struct MediaRuntime {
         if (library) {
             FreeLibrary(library);
         }
+        if (videoSamples) {
+            FreeLibrary(videoSamples);
+        }
         if (SUCCEEDED(com)) {
             CoUninitialize();
         }
+    }
+    bool prepareVideoSamples() {
+        if (!videoSamples) {
+            videoSamples = LoadLibraryExW(L"evr.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if (videoSamples) {
+                createVideoSample = reinterpret_cast<decltype(createVideoSample)>(GetProcAddress(videoSamples, "MFCreateVideoSampleFromSurface"));
+            }
+        }
+        return createDeviceManager && createSurfaceBuffer && createVideoSample;
     }
 };
 } // namespace ultraterimal::agent

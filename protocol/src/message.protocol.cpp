@@ -257,10 +257,10 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kVideoFrame: {
         const auto& frame = m.video_frame();
-        if (!m.generation() || !m.frame_id() || frame.data().empty() ||
+        if (!m.generation() || !m.frame_id() || frame.data().empty() || (frame.gpu_encoding() && !frame.hardware_encoding()) ||
             (frame.has_target_frames_per_second() != frame.has_target_bitrate()) ||
             (frame.has_target_frames_per_second() &&
-             (frame.target_frames_per_second() < 10 || frame.target_frames_per_second() > 60 ||
+             (frame.target_frames_per_second() < 5 || frame.target_frames_per_second() > 60 ||
               frame.target_bitrate() < 64000 || frame.target_bitrate() > 100000000))) {
             return invalid();
         }
@@ -291,7 +291,46 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
             m.quality_feedback().maximum_pending_video_frames() > 128) {
             return invalid();
         }
+        if (m.quality_feedback().has_render_report()) {
+            const auto& report = m.quality_feedback().render_report();
+            if (report.samples() > 120 || report.long_gaps() > report.samples() ||
+                report.p95_microseconds() > report.p99_microseconds() || report.p99_microseconds() > 60000000 ||
+                (report.samples() < 20 && (report.p95_microseconds() || report.p99_microseconds()))) {
+                return invalid();
+            }
+        }
         break;
+    case wire::Envelope::kVideoRefinement: {
+        const auto& refinement = m.video_refinement();
+        if (!m.generation() || !m.frame_id() || m.base_frame_id() != m.frame_id() || !refinement.patches_size() || refinement.patches_size() > 32) {
+            return invalid();
+        }
+        std::size_t bytes = 0;
+        std::uint64_t pixels = 0;
+        for (const auto& patch : refinement.patches()) {
+            const auto& area = patch.destination();
+            const auto& png = patch.png();
+            if (!rectangle(area) || area.width() > 128 || area.height() > 64 || png.size() < 33 || png.compare(0, 8, "\211PNG\r\n\032\n", 8) != 0 || png.compare(12, 4, "IHDR") != 0) {
+                return invalid();
+            }
+            const auto dimension = [&](std::size_t offset) {
+                std::uint32_t value = 0;
+                for (std::size_t index = offset; index < offset + 4; ++index) {
+                    value = value * 256 + static_cast<unsigned char>(png[index]);
+                }
+                return value;
+            };
+            if (dimension(8) != 13 || dimension(16) != area.width() || dimension(20) != area.height()) {
+                return invalid();
+            }
+            bytes += png.size();
+            pixels += static_cast<std::uint64_t>(area.width()) * area.height();
+        }
+        if (bytes > 256 * 1024 || pixels > 256 * 1024) {
+            return invalid();
+        }
+        break;
+    }
     case wire::Envelope::kInputEvent:
         if (!m.generation() || m.frame_id() || m.base_frame_id() || !validateInputEvent(m.input_event())) {
             return invalid();

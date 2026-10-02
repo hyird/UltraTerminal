@@ -340,7 +340,28 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
     current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
     return ChangeDisplaySettingsExW(state_->displayName.c_str(), &current, nullptr, CDS_UPDATEREGISTRY | CDS_GLOBAL, nullptr) == DISP_CHANGE_SUCCESSFUL;
 }
-std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels, bool readPixels) {
+ID3D11Device* DesktopCapture::device() const { return state_->device.Get(); }
+ID3D11Texture2D* DesktopCapture::texture() const { return state_->latest.Get(); }
+void DesktopCapture::readTexture(CapturedFrame& frame) {
+    if (!state_->latest || requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    D3D11_TEXTURE2D_DESC description{};
+    state_->latest->GetDesc(&description);
+    if (description.Width != frame.width || description.Height != frame.height) {
+        throw CaptureReset();
+    }
+    frame.bgra.resize(static_cast<std::size_t>(frame.width) * frame.height * 4);
+    state_->copyStagingPixels(state_->latest, description, frame, nullptr);
+    state_->deferred.reset();
+    state_->pixelsCaptured = true;
+    state_->lastPixelsWidth = frame.width;
+    state_->lastPixelsHeight = frame.height;
+    if (requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+}
+std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels, bool readPixels, bool retainTexture) {
     if (timeout.count() < 0 || timeout.count() > 5000) {
         throw std::invalid_argument("Capture wait must be between 0 and 5000 milliseconds");
     }
@@ -402,7 +423,18 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     frame.captureTicks = static_cast<std::uint64_t>(info.LastPresentTime.QuadPart);
     // DXGI reports cursor changes independently. Avoid a GPU readback, map
     // synchronization and a full-frame allocation/copy for those updates.
-    const bool desktopUpdated = !state_->pixelsCaptured || info.LastPresentTime.QuadPart != 0;
+    const bool desktopUpdated = (!state_->pixelsCaptured && !state_->deferred) || info.LastPresentTime.QuadPart != 0;
+    if ((!readPixels || retainTexture) && desktopUpdated) {
+        if (!state_->latest) {
+            auto latestDescription = description;
+            latestDescription.Usage = D3D11_USAGE_DEFAULT;
+            latestDescription.BindFlags = 0; // Video processor input permits an unbound DEFAULT texture.
+            latestDescription.CPUAccessFlags = 0;
+            latestDescription.MiscFlags = 0;
+            require(state_->device->CreateTexture2D(&latestDescription, nullptr, &state_->latest), "Create latest desktop texture");
+        }
+        state_->context->CopyResource(state_->latest.Get(), source.Get());
+    }
     if (readPixels && (desktopUpdated || state_->deferred)) {
         if (state_->deferred && !frame.captureTicks) {
             frame.captureTicks = state_->deferred->captureTicks;
@@ -415,15 +447,6 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     } else if (!readPixels && desktopUpdated) {
         // ReleaseFrame invalidates the acquired resource. Own exactly one GPU
         // snapshot before releasing it; replace raw pixels, never encoded AVC.
-        if (!state_->latest) {
-            auto latestDescription = description;
-            latestDescription.Usage = D3D11_USAGE_DEFAULT;
-            latestDescription.BindFlags = 0;
-            latestDescription.CPUAccessFlags = 0;
-            latestDescription.MiscFlags = 0;
-            require(state_->device->CreateTexture2D(&latestDescription, nullptr, &state_->latest), "Create latest desktop texture");
-        }
-        state_->context->CopyResource(state_->latest.Get(), source.Get());
         state_->pixelsCaptured = false;
     }
     // Always return a complete snapshot for the video encoder; move/dirty

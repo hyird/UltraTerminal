@@ -61,6 +61,14 @@ export class DesktopSession {
   private displayedFrame = 0;
   private observedFrame = 0;
   private readonly visibleFrameGaps = new DesktopVisibleFrameGaps();
+  private renderReportAt = 0;
+  private refinementWait:
+    | {
+        frame: number;
+        resolve: (ready: boolean) => void;
+        timer: ReturnType<typeof setTimeout>;
+      }
+    | undefined;
   private observationAnimation: number | undefined;
   private visible = true;
   private scaleMode: "native" | "fit" = "fit";
@@ -291,7 +299,9 @@ export class DesktopSession {
     if (!visible) this.input?.release();
     this.reportDisplay();
   }
-  private reportDisplay(): void {
+  private reportDisplay(
+    renderReport?: ultraterimal.wire.IBrowserRenderReport,
+  ): void {
     if (this.stopped || !this.displayedFrame) return;
     const channel = this.channels.find(
       (entry) => entry.purpose === 2 && entry.ready,
@@ -307,6 +317,8 @@ export class DesktopSession {
             (this.videoChannel?.budget.queuedMessageCount ?? 0),
           background: document.hidden || !this.visible,
           maximumPendingVideoFrames,
+          videoRefinement: true,
+          ...(renderReport ? { renderReport } : {}),
           preference:
             this.quality.preference === "sharp"
               ? wire.QualityFeedback.Preference.SHARP
@@ -584,6 +596,14 @@ export class DesktopSession {
             this.canvas.dataset.generation = String(generation);
             const firstDisplay = !this.displayedFrame;
             this.displayedFrame = pending.id;
+            if (
+              this.refinementWait &&
+              pending.id >= this.refinementWait.frame
+            ) {
+              clearTimeout(this.refinementWait.timer);
+              this.refinementWait.resolve(true);
+              this.refinementWait = undefined;
+            }
             if (firstDisplay) {
               this.completeStartup();
               this.bindInput();
@@ -624,6 +644,92 @@ export class DesktopSession {
       this.status("已收到视频配置，等待解码首帧…");
       this.decoder.configure(configuration);
       channel.receive.completeVideoGeneration(generationId);
+      return;
+    }
+    if (message.body === "videoRefinement" && message.videoRefinement) {
+      if (
+        generationId !== this.generation ||
+        !frameId ||
+        frameId !== this.frame ||
+        baseFrameId !== frameId ||
+        !this.decoder
+      )
+        throw new Error("Invalid video refinement baseline");
+      const patches = message.videoRefinement.patches ?? [];
+      if (!patches.length || patches.length > 32)
+        throw new Error("Invalid refinement count");
+      let bytes = 0,
+        pixels = 0;
+      const areas = patches.map((patch) => {
+        const area = patch.destination;
+        const png = patch.png;
+        if (!area || !png || png.length < 33)
+          throw new Error("Missing refinement pixels");
+        const x = integer(area.x ?? 0),
+          y = integer(area.y ?? 0);
+        const width = integer(area.width ?? 0, 1),
+          height = integer(area.height ?? 0, 1);
+        const header = new DataView(png.buffer, png.byteOffset, png.byteLength);
+        if (
+          width > 128 ||
+          height > 64 ||
+          x + width > this.canvas.width ||
+          y + height > this.canvas.height ||
+          header.getUint32(0) !== 0x89504e47 ||
+          header.getUint32(4) !== 0x0d0a1a0a ||
+          header.getUint32(8) !== 13 ||
+          header.getUint32(12) !== 0x49484452 ||
+          header.getUint32(16) !== width ||
+          header.getUint32(20) !== height
+        )
+          throw new Error("Invalid refinement geometry");
+        bytes += png.length;
+        pixels += width * height;
+        return { x, y, width, height, png };
+      });
+      if (bytes > 256 * 1024 || pixels > 256 * 1024)
+        throw new Error("Refinement budget exceeded");
+      const generation = this.generation;
+      if (this.displayedFrame < frameId) {
+        const ready = await new Promise<boolean>((resolve) => {
+          this.refinementWait = {
+            frame: frameId,
+            resolve,
+            timer: setTimeout(() => {
+              this.refinementWait = undefined;
+              resolve(false);
+            }, videoDecodeSlotTimeoutMilliseconds),
+          };
+        });
+        if (!ready && !this.stopped)
+          throw new Error("Refinement baseline was not displayed");
+      }
+      const decoded: { area: (typeof areas)[number]; image: ImageBitmap }[] =
+        [];
+      try {
+        for (const area of areas) {
+          if (this.stopped || generation !== this.generation) return;
+          const image = await createImageBitmap(
+            new Blob([new Uint8Array(area.png)], { type: "image/png" }),
+          );
+          decoded.push({ area, image });
+          if (image.width !== area.width || image.height !== area.height)
+            throw new Error("Refinement image mismatch");
+        }
+        if (
+          this.stopped ||
+          generation !== this.generation ||
+          this.displayedFrame !== frameId
+        )
+          return;
+        // Decode and validate the entire batch before atomically patching its
+        // exact video bottom layer. A later video frame replaces every patch.
+        for (const { area, image } of decoded)
+          this.context.drawImage(image, area.x, area.y);
+        this.recordVideoBytes(bytes);
+      } finally {
+        for (const { image } of decoded) image.close();
+      }
       return;
     }
     const image = message.videoFrame
@@ -733,6 +839,21 @@ export class DesktopSession {
     // idle time into the next visible frame or retaining stale gap metrics.
     if (!frames && !presentedFrames) this.visibleFrameGaps.clear();
     const visibleGaps = this.visibleFrameGaps.summary();
+    if (now - this.renderReportAt >= 5000 && this.visible && !document.hidden) {
+      this.reportDisplay({
+        samples: visibleGaps.samples,
+        p95Microseconds: Math.min(
+          60000000,
+          Math.round((visibleGaps.p95Milliseconds ?? 0) * 1000),
+        ),
+        p99Microseconds: Math.min(
+          60000000,
+          Math.round((visibleGaps.p99Milliseconds ?? 0) * 1000),
+        ),
+        longGaps: visibleGaps.gapsAtLeast100Milliseconds,
+      });
+      this.renderReportAt = now;
+    }
     const previousQuality = this.quality.preference;
     this.quality.sample(frames, decodeMilliseconds ?? 0, this.pending.size);
     if (previousQuality !== this.quality.preference) this.reportDisplay();
@@ -741,10 +862,6 @@ export class DesktopSession {
       // Only count decoded images observed in a visible rAF, not every
       // drawImage submission that may be overwritten before a paint cycle.
       framesPerSecond: (presentedFrames * 1000) / elapsed,
-      visibleGapP95Milliseconds: visibleGaps.p95Milliseconds,
-      visibleGapP99Milliseconds: visibleGaps.p99Milliseconds,
-      visibleGapsAtLeast100Milliseconds: visibleGaps.gapsAtLeast100Milliseconds,
-      visibleGapSamples: visibleGaps.samples,
       decodeMilliseconds,
       pendingFrames: this.pending.size,
       bufferedBytes: this.channels.reduce(
@@ -913,6 +1030,11 @@ export class DesktopSession {
     if (this.stopped || this.stopping) return;
     this.stopping = true;
     this.stopped = true;
+    if (this.refinementWait) {
+      clearTimeout(this.refinementWait.timer);
+      this.refinementWait.resolve(false);
+      this.refinementWait = undefined;
+    }
     for (const writer of this.writers.values()) writer.stop();
     this.writers.clear();
     this.input?.dispose();

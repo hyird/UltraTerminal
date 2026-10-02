@@ -15,7 +15,8 @@ enum class VideoEncodeError { kInvalidPixels,
                               kInvalidTimestamp,
                               kCodecFailure,
                               kFrameSkipped,
-                              kFrameTooLarge };
+                              kFrameTooLarge,
+                              kGpuUnavailable };
 struct EncodedVideoFrame {
     std::vector<std::uint8_t> annexB;
     std::string codec; // WebCodecs AVC codec string derived from the emitted SPS.

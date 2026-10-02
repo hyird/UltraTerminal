@@ -33,7 +33,7 @@ std::uint64_t cpuTicks() {
     return ticks(kernel) + ticks(user);
 }
 asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, std::chrono::seconds duration, bool sharp, std::vector<Clock::time_point>& received, std::vector<double>& sourceAges, std::vector<std::uint64_t>& presentTicks, std::vector<std::uint64_t>& encodeStartedUs, std::int64_t qpcFrequency, unsigned& sourceWidth, unsigned& sourceHeight, unsigned& lastTargetRate,
-                              unsigned& hardwareFrames, std::uint64_t& totalEncodeMicroseconds, std::uint64_t& totalEncodedBytes, unsigned& calls, unsigned& noUpdate, unsigned& cursorOnly,
+                              unsigned& hardwareFrames, unsigned& gpuFrames, std::uint64_t& totalEncodeMicroseconds, std::uint64_t& totalEncodedBytes, unsigned& calls, unsigned& noUpdate, unsigned& cursorOnly,
                               ultraterimal::agent::DesktopVideoDiagnostics& captured) {
     using namespace ultraterimal;
     std::optional<agent::DesktopVideoUpdate> first;
@@ -92,6 +92,7 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
             }
             lastTargetRate = update->frame.target_frames_per_second();
             hardwareFrames += update->frame.hardware_encoding();
+            gpuFrames += update->frame.gpu_encoding();
             totalEncodeMicroseconds += update->frame.encode_microseconds();
             totalEncodedBytes += update->frame.data().size();
         }
@@ -182,11 +183,11 @@ int main(int argc, char** argv) {
         if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
             throw std::runtime_error("Cannot measure DXGI present age");
         }
-        unsigned sourceWidth = 0, sourceHeight = 0, targetRate = 0, hardwareFrames = 0, calls = 0, noUpdate = 0, cursorOnly = 0;
+        unsigned sourceWidth = 0, sourceHeight = 0, targetRate = 0, hardwareFrames = 0, gpuFrames = 0, calls = 0, noUpdate = 0, cursorOnly = 0;
         std::uint64_t totalEncodeMicroseconds = 0, totalEncodedBytes = 0;
         ultraterimal::agent::DesktopVideoDiagnostics captured;
         std::exception_ptr failure;
-        asio::co_spawn(io, measure(video, duration, sharp, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured), [&](std::exception_ptr error) {
+        asio::co_spawn(io, measure(video, duration, sharp, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured), [&](std::exception_ptr error) {
             failure = error;
             video.stop();
             attachment.stop();
@@ -241,7 +242,7 @@ int main(int argc, char** argv) {
                   << "\",\"surface_action\":\"" << action << "\",\"paint_size\":" << paintSize << ",\"source_width\":" << sourceWidth << ",\"source_height\":" << sourceHeight
                   << ",\"duration_seconds\":" << duration.count() << ",\"paint_calls\":" << paints
                   << ",\"target_fps\":" << targetRate << ",\"encoded_frames\":" << received.size() << ",\"measured_seconds\":" << elapsed
-                  << ",\"hardware_frames\":" << hardwareFrames << ",\"mean_encode_us\":" << totalEncodeMicroseconds / received.size() << ",\"mean_encoded_bytes\":" << totalEncodedBytes / received.size() << ",\"encoded_bps\":" << totalEncodedBytes * 8 / elapsed
+                  << ",\"hardware_frames\":" << hardwareFrames << ",\"gpu_frames\":" << gpuFrames << ",\"mean_encode_us\":" << totalEncodeMicroseconds / received.size() << ",\"mean_encoded_bytes\":" << totalEncodedBytes / received.size() << ",\"encoded_bps\":" << totalEncodedBytes * 8 / elapsed
                   << ",\"video_next_calls\":" << calls << ",\"no_update_calls\":" << noUpdate << ",\"cursor_only_calls\":" << cursorOnly
                   << ",\"dxgi_calls\":" << captured.captureCalls << ",\"pixel_updates\":" << captured.pixelUpdates << ",\"dxgi_timeouts\":" << captured.captureTimeouts
                   << ",\"pending_before_deadline_calls\":" << captured.pendingBeforeDeadlineCalls << ",\"backpressured_calls\":" << captured.backpressuredCalls

@@ -30,7 +30,7 @@ void validateFrame(const CapturedFrame& frame) {
     if ((!mono && !color && !masked) || !width || !height || width > 1024 || height > 1024 || (mono && frame.pointerHeight % 2) ||
         frame.hotspotX < 0 || frame.hotspotY < 0 || static_cast<std::uint32_t>(frame.hotspotX) >= width || static_cast<std::uint32_t>(frame.hotspotY) >= height ||
         frame.pointerPitch < minimumPitch || required > 4 * 1024 * 1024 || required > frame.pointerShape.size() ||
-        !frame.width || !frame.height || frame.width > 16384 || frame.height > 16384 || screenBytes > 64 * 1024 * 1024 || screenBytes > frame.bgra.size() || frame.rotation != 1) {
+        !frame.width || !frame.height || frame.width > 16384 || frame.height > 16384 || screenBytes > 64 * 1024 * 1024 || ((!color || !frame.bgra.empty()) && screenBytes > frame.bgra.size()) || frame.rotation != 1) {
         throw std::runtime_error("Invalid desktop cursor shape or background");
     }
 }

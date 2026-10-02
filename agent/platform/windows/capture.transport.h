@@ -7,6 +7,9 @@
 
 #include "desktop.transport.h"
 
+struct ID3D11Device;
+struct ID3D11Texture2D;
+
 namespace ultraterimal::agent {
 // A recoverable invalidation. Callers must discard retained pixels, encoder
 // references and cursor state before creating a new capture instance.
@@ -67,7 +70,11 @@ class DesktopCapture {
     // readPixels=false retains only the latest GPU image and pointer metadata.
     // A later readPixels=true materializes it even if DXGI has no new update;
     // skipped CPU baselines force a complete readback before partial updates.
-    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool previousPixels = false, bool readPixels = true);
+    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool previousPixels = false, bool readPixels = true, bool retainTexture = false);
+    // Borrowed on the capture worker only; finish encoding before nextFrame().
+    ID3D11Device* device() const;
+    ID3D11Texture2D* texture() const;
+    void readTexture(CapturedFrame& frame);
     std::vector<DisplayMode> displayModes() const;
     bool resize(std::uint32_t width, std::uint32_t height);
 

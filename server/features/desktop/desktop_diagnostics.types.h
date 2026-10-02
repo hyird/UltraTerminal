@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
@@ -68,5 +69,10 @@ struct DesktopDiagnostics {
     std::uint32_t latestTargetFramesPerSecond = 0;
     std::uint32_t latestTargetBitrate = 0;
     bool latestHardwareEncoding = false;
+    bool latestGpuEncoding = false;
+    std::uint64_t refinementMessages = 0, refinementBytes = 0;
+    std::uint64_t videoGeneration = 0, latestVideoFrame = 0, renderReports = 0;
+    std::uint32_t rafSamples = 0, rafP95Microseconds = 0, rafP99Microseconds = 0, rafGapsGe100ms = 0;
+    std::chrono::steady_clock::time_point renderReportedAt{};
 };
 } // namespace ultraterimal::server

@@ -1,16 +1,20 @@
 #include "media_encoder.transport.h"
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <codecapi.h>
 #include <cstring>
-#include <icodecapi.h>
 #include <limits>
 #include <mferror.h>
 #include <mftransform.h>
 #include <optional>
 #include <stdexcept>
+#include <strmif.h>
 #include <system_error>
 
+#include <d3d10_1.h>
+#include <d3d11.h>
 #include <wrl/client.h>
 
 #include "media_events.transport.h"
@@ -30,6 +34,41 @@ HRESULT codecValue(ICodecAPI& codec, const GUID& property, ULONG value) {
     setting.ulVal = value;
     return codec.SetValue(&property, &setting);
 }
+// MF owns callbacks until tracked input samples are released. No callback
+// touches the encoder or D3D context; only an independently owned atomic slot.
+class SurfaceRelease final : public IMFAsyncCallback {
+  public:
+    explicit SurfaceRelease(std::shared_ptr<std::atomic_bool> available) : available_(std::move(available)) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** output) noexcept override {
+        if (!output) {
+            return E_POINTER;
+        }
+        *output = nullptr;
+        if (id != __uuidof(IUnknown) && id != __uuidof(IMFAsyncCallback)) {
+            return E_NOINTERFACE;
+        }
+        *output = static_cast<IMFAsyncCallback*>(this);
+        AddRef();
+        return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() noexcept override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() noexcept override {
+        const auto remaining = --references_;
+        if (!remaining) {
+            delete this;
+        }
+        return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE GetParameters(DWORD*, DWORD*) noexcept override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Invoke(IMFAsyncResult*) noexcept override {
+        available_->store(true, std::memory_order_release);
+        return S_OK;
+    }
+
+  private:
+    std::atomic<ULONG> references_{1};
+    std::shared_ptr<std::atomic_bool> available_;
+};
 } // namespace
 struct MediaEncoder::State {
     MediaRuntime runtime;
@@ -43,8 +82,21 @@ struct MediaEncoder::State {
     std::optional<std::uint64_t> lastTimestamp;
     bool failed = false;
     bool refreshRequired = true;
+    ComPtr<ID3D11Device> device;
+    ComPtr<IMFDXGIDeviceManager> deviceManager;
+    ComPtr<ID3D11VideoDevice> videoDevice;
+    ComPtr<ID3D11VideoContext> videoContext;
+    ComPtr<ID3D11VideoProcessorEnumerator> processorEnumerator;
+    ComPtr<ID3D11VideoProcessor> processor;
+    struct Surface {
+        ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11VideoProcessorOutputView> view;
+        std::shared_ptr<std::atomic_bool> available = std::make_shared<std::atomic_bool>(true);
+        ComPtr<IMFAsyncCallback> released;
+    };
+    std::array<Surface, 4> surfaces;
 
-    explicit State(MediaEncoderConfig settings) : config(settings) {
+    explicit State(MediaEncoderConfig settings, ID3D11Device* graphicsDevice) : config(settings), device(graphicsDevice) {
         if (settings.width < 16 || settings.height < 16 || settings.width % 2 || settings.height % 2 ||
             settings.width > 4096 || settings.height > 4096 || static_cast<std::uint64_t>(settings.width) * settings.height > 4096 * 2160 || !settings.framesPerSecond || settings.framesPerSecond > 120 ||
             settings.bitrate < 64000 || settings.bitrate > 100000000) {
@@ -91,6 +143,21 @@ struct MediaEncoder::State {
         require(transform->GetAttributes(&attributes));
         require(attributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE));
         require(attributes->SetUINT32(MF_LOW_LATENCY, TRUE));
+        if (device) {
+            UINT32 aware = 0;
+            require(attributes->GetUINT32(MF_SA_D3D11_AWARE, &aware));
+            if (!aware || !runtime.prepareVideoSamples()) {
+                require(E_NOTIMPL);
+            }
+            UINT token = 0;
+            require(runtime.createDeviceManager(&token, &deviceManager));
+            require(deviceManager->ResetDevice(device.Get(), token));
+            ComPtr<ID3D10Multithread> multithread;
+            require(device.As(&multithread));
+            multithread->SetMultithreadProtected(TRUE);
+            require(transform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(deviceManager.Get())));
+            initializeGpu();
+        }
         require(transform.As(&codec));
         require(codec->IsSupported(&CODECAPI_AVEncVideoForceKeyFrame));
         if (config.sharp) {
@@ -133,6 +200,49 @@ struct MediaEncoder::State {
         require(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0));
         require(transform->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0));
     }
+    void initializeGpu() {
+        require(device.As(&videoDevice));
+        ComPtr<ID3D11DeviceContext> context;
+        device->GetImmediateContext(&context);
+        require(context.As(&videoContext));
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
+        content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        content.InputFrameRate = content.OutputFrameRate = {config.framesPerSecond, 1};
+        content.InputWidth = content.OutputWidth = config.width;
+        content.InputHeight = content.OutputHeight = config.height;
+        content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+        require(videoDevice->CreateVideoProcessorEnumerator(&content, &processorEnumerator));
+        UINT inputSupport = 0, outputSupport = 0;
+        require(processorEnumerator->CheckVideoProcessorFormat(DXGI_FORMAT_B8G8R8A8_UNORM, &inputSupport));
+        require(processorEnumerator->CheckVideoProcessorFormat(DXGI_FORMAT_NV12, &outputSupport));
+        if (!(inputSupport & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT) || !(outputSupport & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) {
+            require(E_NOTIMPL);
+        }
+        require(videoDevice->CreateVideoProcessor(processorEnumerator.Get(), 0, &processor));
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE inputColor{}, outputColor{};
+        inputColor.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        outputColor.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        // Full RGB -> BT.601 limited NV12, matching the CPU and stream metadata.
+        videoContext->VideoProcessorSetStreamColorSpace(processor.Get(), 0, &inputColor);
+        videoContext->VideoProcessorSetOutputColorSpace(processor.Get(), &outputColor);
+        videoContext->VideoProcessorSetStreamFrameFormat(processor.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+        D3D11_TEXTURE2D_DESC description{};
+        description.Width = config.width;
+        description.Height = config.height;
+        description.MipLevels = description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_NV12;
+        description.SampleDesc.Count = 1;
+        description.Usage = D3D11_USAGE_DEFAULT;
+        description.BindFlags = D3D11_BIND_RENDER_TARGET;
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC view{};
+        view.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        for (auto& surface : surfaces) {
+            require(device->CreateTexture2D(&description, nullptr, &surface.texture));
+            require(videoDevice->CreateVideoProcessorOutputView(surface.texture.Get(), processorEnumerator.Get(), &view, &surface.view));
+            auto callback = std::make_unique<SurfaceRelease>(surface.available);
+            surface.released.Attach(callback.release());
+        }
+    }
     MediaEventType next(std::chrono::steady_clock::time_point deadline) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
@@ -153,8 +263,9 @@ struct MediaEncoder::State {
         return type;
     }
 };
-MediaEncoder::MediaEncoder(MediaEncoderConfig config) : state_(std::make_unique<State>(config)) { state_->initialize(); }
+MediaEncoder::MediaEncoder(MediaEncoderConfig config, ID3D11Device* device) : state_(std::make_unique<State>(config, device)) { state_->initialize(); }
 MediaEncoder::~MediaEncoder() = default;
+bool MediaEncoder::gpu() const { return state_->device != nullptr; }
 std::expected<void, HRESULT> MediaEncoder::setDetail(bool sharp) {
     auto& state = *state_;
     if (state.failed) {
@@ -166,7 +277,7 @@ std::expected<void, HRESULT> MediaEncoder::setDetail(bool sharp) {
     try {
         auto config = state.config;
         config.sharp = sharp;
-        MediaEncoder replacement(config);
+        MediaEncoder replacement(config, state.device.Get());
         replacement.state_->lastTimestamp = state.lastTimestamp;
         state_.swap(replacement.state_);
         return {};
@@ -195,9 +306,74 @@ std::expected<void, HRESULT> MediaEncoder::setRate(std::uint32_t framesPerSecond
     return {};
 }
 std::expected<MediaEncodedFrame, HRESULT> MediaEncoder::encode(std::span<const std::uint8_t> nv12, std::uint64_t timestampMicroseconds, bool forceKeyFrame) {
+    if (nv12.size() != static_cast<std::size_t>(state_->config.width) * state_->config.height * 3 / 2 || gpu()) {
+        return std::unexpected(E_INVALIDARG);
+    }
+    ComPtr<IMFMediaBuffer> memory;
+    const auto size = static_cast<DWORD>(nv12.size());
+    auto status = state_->runtime.createBuffer(size, &memory);
+    BYTE* data = nullptr;
+    if (SUCCEEDED(status)) {
+        status = memory->Lock(&data, nullptr, nullptr);
+    }
+    if (FAILED(status)) {
+        return std::unexpected(status);
+    }
+    std::memcpy(data, nv12.data(), size);
+    status = memory->Unlock();
+    if (SUCCEEDED(status)) {
+        status = memory->SetCurrentLength(size);
+    }
+    if (FAILED(status)) {
+        return std::unexpected(status);
+    }
+    return encodeBuffer(memory.Get(), timestampMicroseconds, forceKeyFrame);
+}
+std::expected<MediaEncodedFrame, HRESULT> MediaEncoder::encodeTexture(ID3D11Texture2D* bgra, std::uint64_t timestampMicroseconds, bool forceKeyFrame) {
     auto& state = *state_;
-    const auto size = static_cast<DWORD>(state.config.width * state.config.height * 3 / 2);
-    if (state.failed || nv12.size() != size || timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<LONGLONG>::max()) / 10 ||
+    if (!bgra || !gpu() || state.failed || timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<LONGLONG>::max()) / 10 ||
+        (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
+        return std::unexpected(E_INVALIDARG);
+    }
+    D3D11_TEXTURE2D_DESC description{};
+    bgra->GetDesc(&description);
+    ComPtr<ID3D11Device> sourceDevice;
+    bgra->GetDevice(&sourceDevice);
+    if (description.Width != state.config.width || description.Height != state.config.height || description.Format != DXGI_FORMAT_B8G8R8A8_UNORM || sourceDevice.Get() != state.device.Get()) {
+        return std::unexpected(E_INVALIDARG);
+    }
+    for (auto& surface : state.surfaces) {
+        if (!surface.available->exchange(false, std::memory_order_acquire)) {
+            continue;
+        }
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputDescription{};
+        inputDescription.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        ComPtr<ID3D11VideoProcessorInputView> view;
+        auto status = state.videoDevice->CreateVideoProcessorInputView(bgra, state.processorEnumerator.Get(), &inputDescription, &view);
+        D3D11_VIDEO_PROCESSOR_STREAM stream{};
+        stream.Enable = TRUE;
+        stream.pInputSurface = view.Get();
+        if (SUCCEEDED(status)) {
+            status = state.videoContext->VideoProcessorBlt(state.processor.Get(), surface.view.Get(), 0, 1, &stream);
+        }
+        ComPtr<IMFMediaBuffer> buffer;
+        if (SUCCEEDED(status)) {
+            status = state.runtime.createSurfaceBuffer(__uuidof(ID3D11Texture2D), surface.texture.Get(), 0, FALSE, &buffer);
+        }
+        if (SUCCEEDED(status)) {
+            status = buffer->SetCurrentLength(state.config.width * state.config.height * 3 / 2);
+        }
+        if (FAILED(status)) {
+            surface.available->store(true, std::memory_order_release);
+            return std::unexpected(status);
+        }
+        return encodeBuffer(buffer.Get(), timestampMicroseconds, forceKeyFrame, surface.released.Get());
+    }
+    return std::unexpected(MF_E_NOTACCEPTING); // Bounded pool, never overwrite a live MFT input.
+}
+std::expected<MediaEncodedFrame, HRESULT> MediaEncoder::encodeBuffer(IMFMediaBuffer* buffer, std::uint64_t timestampMicroseconds, bool forceKeyFrame, IMFAsyncCallback* released) {
+    auto& state = *state_;
+    if (state.failed || !buffer || timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<LONGLONG>::max()) / 10 ||
         (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
         return std::unexpected(E_INVALIDARG);
     }
@@ -213,15 +389,14 @@ std::expected<MediaEncodedFrame, HRESULT> MediaEncoder::encode(std::span<const s
             require(codecValue(*state.codec.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1));
         }
         ComPtr<IMFSample> input;
-        ComPtr<IMFMediaBuffer> memory;
-        require(state.runtime.createSample(&input));
-        require(state.runtime.createBuffer(size, &memory));
+        require(released ? state.runtime.createVideoSample(nullptr, &input) : state.runtime.createSample(&input));
+        if (released) {
+            ComPtr<IMFTrackedSample> tracked;
+            require(input.As(&tracked));
+            require(tracked->SetAllocator(released, nullptr));
+        }
         BYTE* data = nullptr;
-        require(memory->Lock(&data, nullptr, nullptr));
-        std::memcpy(data, nv12.data(), size);
-        require(memory->Unlock());
-        require(memory->SetCurrentLength(size));
-        require(input->AddBuffer(memory.Get()));
+        require(input->AddBuffer(buffer));
         require(input->SetSampleTime(static_cast<LONGLONG>(timestampMicroseconds * 10)));
         require(input->SetSampleDuration(10000000 / state.config.framesPerSecond));
         require(state.transform->ProcessInput(state.inputId, input.Get(), 0));

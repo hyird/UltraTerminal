@@ -26,6 +26,7 @@ struct DesktopVideoDiagnostics {
 struct DesktopVideoUpdate {
     std::optional<wire::VideoConfig> configuration;
     std::optional<wire::CursorUpdate> cursor;
+    std::optional<wire::VideoRefinement> refinement;
     // Empty data means a cursor-only update; it does not advance the video ID.
     wire::VideoFrame frame;
     std::uint64_t generation = 0;

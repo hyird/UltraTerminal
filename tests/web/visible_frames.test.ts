@@ -55,3 +55,15 @@ test("does not mistake invalid or duplicate callback timestamps for frame gaps",
   gaps.clear();
   expect(gaps.summary().samples).toBe(0);
 });
+
+test("retains long gap counts while percentile sample size is insufficient", () => {
+  const gaps = new DesktopVisibleFrameGaps();
+  gaps.observe(0);
+  gaps.observe(258);
+  expect(gaps.summary()).toEqual({
+    samples: 1,
+    p95Milliseconds: null,
+    p99Milliseconds: null,
+    gapsAtLeast100Milliseconds: 1,
+  });
+});
