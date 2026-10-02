@@ -2,7 +2,8 @@ export const maximumPendingVideoFrames = 128;
 export const maximumVideoQueueMessages = maximumPendingVideoFrames + 2;
 export const maximumDesktopMessageBytes = 16 * 1024 * 1024;
 export const maximumDesktopReceiveBytes = 32 * 1024 * 1024;
-export const maximumSubmittedDecodeFrames = 16;
+// Keep AVC dependencies buffered on the wire, with a small decoder pipeline.
+export const maximumSubmittedDecodeFrames = 4;
 export const videoDecodeSlotTimeoutMilliseconds = 5000;
 
 export class DesktopVideoDecodeTimeoutError extends Error {

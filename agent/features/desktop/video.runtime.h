@@ -20,7 +20,6 @@ struct DesktopVideoDiagnostics {
     std::uint64_t pendingBeforeDeadlineCalls = 0;
     std::uint64_t backpressuredCalls = 0;
     std::uint64_t encodedFrames = 0;
-    std::uint64_t earlyEncodedFrames = 0;
     std::uint64_t pixelCaptureGaps = 0;
     std::uint64_t pixelCaptureGapsGe45ms = 0;
 };

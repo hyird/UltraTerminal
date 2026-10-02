@@ -302,7 +302,9 @@ export class DesktopSession {
           displayedGeneration: this.generation,
           displayedFrame: this.displayedFrame,
           decodeMicroseconds: this.decodeMicroseconds,
-          queueDepth: this.pending.size,
+          queueDepth:
+            this.pending.size +
+            (this.videoChannel?.budget.queuedMessageCount ?? 0),
           background: document.hidden || !this.visible,
           maximumPendingVideoFrames,
           preference:

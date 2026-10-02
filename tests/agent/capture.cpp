@@ -19,6 +19,11 @@
 #include "platform/windows/capture.transport.h"
 
 namespace {
+void require(bool value, const char* reason) {
+    if (!value) {
+        throw std::runtime_error(reason);
+    }
+}
 const char* describeColors(const std::array<COLORREF, 4>& samples) {
     constexpr std::array<COLORREF, 4> colors{RGB(208, 32, 32), RGB(32, 208, 32), RGB(32, 32, 208), RGB(208, 208, 32)};
     const auto matches = [](COLORREF left, COLORREF right) {
@@ -239,6 +244,27 @@ int main(int argc, char** argv) {
         }
         expectInactiveDesktopRejected();
         ultraterimal::test::TestSurface surface;
+        {
+            ultraterimal::agent::DesktopCapture capture;
+            std::vector<std::uint8_t> pixels;
+            surface.paint(RGB(237, 19, 71));
+            const auto allocation = expectColor(capture, pixels, RGB(237, 19, 71));
+            const auto original = pixels;
+            surface.paint(RGB(17, 211, 139));
+            bool deferred = false;
+            for (int attempt = 0; attempt < 30; ++attempt) {
+                ultraterimal::agent::CaptureTiming timing;
+                const auto update = capture.nextFrame(std::chrono::milliseconds(16), &pixels, &timing, true, false);
+                require(pixels == original && timing.mapMilliseconds == 0 && timing.rowCopyMilliseconds == 0, "Deferred capture performed CPU readback or consumed the previous baseline");
+                if (update && update->captureTicks) {
+                    require(update->bgra.empty(), "Closed receiver window materialized pixels");
+                    deferred = true;
+                    break;
+                }
+            }
+            require(deferred, "DXGI did not retain a deferred desktop update");
+            expectColor(capture, pixels, RGB(17, 211, 139), allocation);
+        }
         for (int attempt = 0; attempt < 2; ++attempt) {
             ultraterimal::agent::DesktopCapture capture;
             std::vector<std::uint8_t> pixels;

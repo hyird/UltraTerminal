@@ -1,4 +1,4 @@
 #pragma once
 namespace ultraterimal::agent {
-inline constexpr char kAgentVersion[] = "1.0.22";
+inline constexpr char kAgentVersion[] = "1.0.23";
 }

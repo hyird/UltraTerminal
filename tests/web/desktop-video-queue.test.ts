@@ -96,7 +96,7 @@ test("accepts a valid initial video timestamp of zero", async () => {
   channel.close();
 });
 
-test("serial channel admits only 16 decode submissions during a 40-frame burst", async () => {
+test("serial channel limits decode submissions and preserves a 40-frame burst", async () => {
   const channel = new DesktopVideoReceiveChannel(true);
   const state = {
     submitted: [] as number[],
@@ -114,24 +114,32 @@ test("serial channel admits only 16 decode submissions during a 40-frame burst",
       (_, index) => index + 1,
     ),
   );
-  expect(channel.budget.pendingFrameCount).toBe(16);
-  expect(channel.budget.pendingFrameBytes).toBe(16 * 512);
-  expect(channel.budget.queuedMessageCount).toBe(24);
-  expect(channel.budget.queuedMessageBytes).toBe(24 * 1024);
+  expect(channel.budget.pendingFrameCount).toBe(maximumSubmittedDecodeFrames);
+  expect(channel.budget.pendingFrameBytes).toBe(
+    maximumSubmittedDecodeFrames * 512,
+  );
+  expect(channel.budget.queuedMessageCount).toBe(
+    40 - maximumSubmittedDecodeFrames,
+  );
+  expect(channel.budget.queuedMessageBytes).toBe(
+    (40 - maximumSubmittedDecodeFrames) * 1024,
+  );
   expect(
     channel.budget.pendingFrameBytes + channel.budget.queuedMessageBytes,
   ).toBeLessThanOrEqual(maximumDesktopReceiveBytes);
 
-  for (let next = 17; next <= 40; next++) {
+  for (let next = maximumSubmittedDecodeFrames + 1; next <= 40; next++) {
     const displayed = next - maximumSubmittedDecodeFrames;
     expect(channel.finishFrame(displayed, state.leases.get(displayed)!)).toBe(
       true,
     );
     await waitUntil(() => state.submitted.length === next);
     expect(state.submitted.at(-1)).toBe(next);
-    expect(channel.budget.pendingFrameCount).toBeLessThanOrEqual(16);
+    expect(channel.budget.pendingFrameCount).toBeLessThanOrEqual(
+      maximumSubmittedDecodeFrames,
+    );
   }
-  for (let id = 25; id <= 40; id++)
+  for (let id = 41 - maximumSubmittedDecodeFrames; id <= 40; id++)
     expect(channel.finishFrame(id, state.leases.get(id)!)).toBe(true);
   await channel.whenIdle();
   expect(state.submitted).toEqual(
@@ -182,10 +190,15 @@ test("transfers the current message reservation without double-counting at the b
     channel.budget.pendingFrameBytes + channel.budget.queuedMessageBytes,
   ).toBeLessThanOrEqual(maximumDesktopReceiveBytes);
 
-  expect(channel.finishFrame(1, leases.get(1)!)).toBe(true);
+  for (let id = 1; id <= 17 - maximumSubmittedDecodeFrames; id++) {
+    expect(channel.finishFrame(id, leases.get(id)!)).toBe(true);
+    await waitUntil(
+      () => submitted.length === id + maximumSubmittedDecodeFrames,
+    );
+  }
   await waitUntil(() => submitted.length === 17);
   expect(channel.budget.pendingFrameBytes).toBe(
-    15_000_000 + maximumDesktopMessageBytes,
+    (maximumSubmittedDecodeFrames - 1) * 1_000_000 + maximumDesktopMessageBytes,
   );
   expect(channel.budget.queuedMessageBytes).toBe(760_000);
   expect(
@@ -223,7 +236,7 @@ test("reconfiguration interrupts a waiter and drains retired frames before its c
     ),
   ).toBe(true);
   await channel.whenIdle();
-  expect(state.submitted).toHaveLength(16);
+  expect(state.submitted).toHaveLength(maximumSubmittedDecodeFrames);
   expect(channel.decodeWaiterCount).toBe(0);
   expect(channel.budget.pendingFrameCount).toBe(0);
   expect(channel.budget.queuedMessageCount).toBe(0);
@@ -247,7 +260,7 @@ test("stop and decoder failure close the gate and release a waiting receive", as
     state.stopped = true;
     channel.close();
     await channel.whenIdle();
-    expect(state.submitted).toHaveLength(16);
+    expect(state.submitted).toHaveLength(maximumSubmittedDecodeFrames);
     expect(channel.decodeWaiterCount).toBe(0);
     expect(channel.budget.pendingFrameCount).toBe(0);
     expect(channel.budget.queuedMessageCount).toBe(0);
@@ -272,7 +285,7 @@ test("decode-slot timeout fails explicitly and releases channel accounting", asy
   for (let id = 1; id <= 17; id++)
     expect(enqueueFrame(channel, id, state, 5)).toBe(true);
   await channel.whenIdle();
-  expect(state.submitted).toHaveLength(16);
+  expect(state.submitted).toHaveLength(maximumSubmittedDecodeFrames);
   expect(state.failures).toEqual(["timeout"]);
   expect(channel.decodeWaiterCount).toBe(0);
   expect(channel.budget.pendingFrameCount).toBe(0);

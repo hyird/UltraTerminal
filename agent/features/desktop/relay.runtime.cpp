@@ -29,7 +29,7 @@ struct DesktopRelay::State {
     wire::Envelope terminal;
     bool stopped = false;
     State(ruvia::EventLoop owner, DesktopTransport& remote)
-        : loop(owner), transport(remote), control(owner.handle(), 32, 2 * 1024 * 1024), video(owner.handle(), 32, 32 * 1024 * 1024) {}
+        : loop(owner), transport(remote), control(owner.handle(), 32, 2 * 1024 * 1024), video(owner.handle(), 2, 32 * 1024 * 1024) {}
     void detach() {
         if (worker) {
             worker->cancel();

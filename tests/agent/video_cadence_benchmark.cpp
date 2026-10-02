@@ -104,7 +104,6 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
                 after.pendingBeforeDeadlineCalls - baseline.pendingBeforeDeadlineCalls,
                 after.backpressuredCalls - baseline.backpressuredCalls,
                 after.encodedFrames - baseline.encodedFrames,
-                after.earlyEncodedFrames - baseline.earlyEncodedFrames,
                 after.pixelCaptureGaps - baseline.pixelCaptureGaps,
                 after.pixelCaptureGapsGe45ms - baseline.pixelCaptureGapsGe45ms};
     video.stop();
@@ -246,7 +245,7 @@ int main(int argc, char** argv) {
                   << ",\"video_next_calls\":" << calls << ",\"no_update_calls\":" << noUpdate << ",\"cursor_only_calls\":" << cursorOnly
                   << ",\"dxgi_calls\":" << captured.captureCalls << ",\"pixel_updates\":" << captured.pixelUpdates << ",\"dxgi_timeouts\":" << captured.captureTimeouts
                   << ",\"pending_before_deadline_calls\":" << captured.pendingBeforeDeadlineCalls << ",\"backpressured_calls\":" << captured.backpressuredCalls
-                  << ",\"worker_encoded_frames\":" << captured.encodedFrames << ",\"early_encoded_frames\":" << captured.earlyEncodedFrames
+                  << ",\"worker_encoded_frames\":" << captured.encodedFrames
                   << ",\"pixel_capture_gaps\":" << captured.pixelCaptureGaps << ",\"pixel_capture_gaps_ge_45ms\":" << captured.pixelCaptureGapsGe45ms
                   << ",\"cpu_ms_including_warmup\":" << cpuMilliseconds << ",\"peak_working_set_kib\":" << memory.PeakWorkingSetSize / 1024
                   << ",\"private_bytes_kib\":" << memory.PrivateUsage / 1024

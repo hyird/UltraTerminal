@@ -76,6 +76,8 @@ struct DesktopCapture::State {
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGIOutputDuplication> duplication;
     ComPtr<ID3D11Texture2D> staging;
+    ComPtr<ID3D11Texture2D> latest;
+    std::optional<CapturedFrame> deferred;
     DXGI_OUTDUPL_DESC description{};
     DXGI_OUTDUPL_POINTER_SHAPE_INFO pointerInfo{};
     DXGI_OUTDUPL_POINTER_POSITION pointerPosition{};
@@ -338,7 +340,7 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
     current.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
     return ChangeDisplaySettingsExW(state_->displayName.c_str(), &current, nullptr, CDS_UPDATEREGISTRY | CDS_GLOBAL, nullptr) == DISP_CHANGE_SUCCESSFUL;
 }
-std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels) {
+std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels, bool readPixels) {
     if (timeout.count() < 0 || timeout.count() > 5000) {
         throw std::invalid_argument("Capture wait must be between 0 and 5000 milliseconds");
     }
@@ -361,6 +363,24 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         timing->acquireMilliseconds = milliseconds(acquireStarted, Clock::now());
     }
     if (result == DXGI_ERROR_WAIT_TIMEOUT) {
+        if (readPixels && state_->deferred) {
+            auto frame = std::move(*state_->deferred);
+            state_->deferred.reset();
+            if (reusablePixels) {
+                frame.bgra.swap(*reusablePixels);
+            }
+            frame.bgra.resize(static_cast<std::size_t>(frame.width) * frame.height * 4);
+            D3D11_TEXTURE2D_DESC description{};
+            state_->latest->GetDesc(&description);
+            state_->copyStagingPixels(state_->latest, description, frame, timing);
+            state_->pixelsCaptured = true;
+            state_->lastPixelsWidth = frame.width;
+            state_->lastPixelsHeight = frame.height;
+            if (requireInputDesktop() != state_->desktopGeneration) {
+                throw CaptureReset();
+            }
+            return frame;
+        }
         return std::nullopt;
     }
     require(result, "AcquireNextFrame (recreate capture after access loss)");
@@ -382,11 +402,29 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     frame.captureTicks = static_cast<std::uint64_t>(info.LastPresentTime.QuadPart);
     // DXGI reports cursor changes independently. Avoid a GPU readback, map
     // synchronization and a full-frame allocation/copy for those updates.
-    if (!state_->pixelsCaptured || info.LastPresentTime.QuadPart != 0) {
-        state_->copyPixels(source, info, frame, reusablePixels, timing, previousPixels);
+    const bool desktopUpdated = !state_->pixelsCaptured || info.LastPresentTime.QuadPart != 0;
+    if (readPixels && (desktopUpdated || state_->deferred)) {
+        if (state_->deferred && !frame.captureTicks) {
+            frame.captureTicks = state_->deferred->captureTicks;
+        }
+        state_->copyPixels(source, info, frame, reusablePixels, timing, previousPixels && !state_->deferred);
+        state_->deferred.reset();
         state_->pixelsCaptured = true;
         state_->lastPixelsWidth = frame.width;
         state_->lastPixelsHeight = frame.height;
+    } else if (!readPixels && desktopUpdated) {
+        // ReleaseFrame invalidates the acquired resource. Own exactly one GPU
+        // snapshot before releasing it; replace raw pixels, never encoded AVC.
+        if (!state_->latest) {
+            auto latestDescription = description;
+            latestDescription.Usage = D3D11_USAGE_DEFAULT;
+            latestDescription.BindFlags = 0;
+            latestDescription.CPUAccessFlags = 0;
+            latestDescription.MiscFlags = 0;
+            require(state_->device->CreateTexture2D(&latestDescription, nullptr, &state_->latest), "Create latest desktop texture");
+        }
+        state_->context->CopyResource(state_->latest.Get(), source.Get());
+        state_->pixelsCaptured = false;
     }
     // Always return a complete snapshot for the video encoder; move/dirty
     // metadata only reduces CPU readback when the prior pixels are available.
@@ -412,6 +450,12 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     frame.pointerPitch = state_->pointerInfo.Pitch;
     frame.hotspotX = state_->pointerInfo.HotSpot.x;
     frame.hotspotY = state_->pointerInfo.HotSpot.y;
+    if (!readPixels && (desktopUpdated || state_->deferred)) {
+        const auto present = frame.captureTicks ? frame.captureTicks : state_->deferred ? state_->deferred->captureTicks
+                                                                                        : 0;
+        state_->deferred = frame;
+        state_->deferred->captureTicks = present;
+    }
     // Do not publish pixels from a desktop that changed during acquisition.
     if (requireInputDesktop() != state_->desktopGeneration) {
         throw CaptureReset();

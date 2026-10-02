@@ -102,7 +102,7 @@ DesktopDelivery::~DesktopDelivery() {
     }
 }
 DesktopEndpoint::DesktopEndpoint(ruvia::WorkerHandle worker, protocol::DesktopChannelBinding binding)
-    : validator_(std::move(binding)), queue_(ruvia::makeChannel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity = 8})),
+    : validator_(binding), queue_(ruvia::makeChannel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
       space_(ruvia::makeChannel<bool>(std::move(worker), {.capacity = 1})) {}
 ruvia::Task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::StopToken stop) {
     auto result = co_await queue_.second.receive(std::move(stop));

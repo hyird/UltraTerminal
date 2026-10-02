@@ -120,14 +120,23 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
 
     // No test window change is needed: refresh must also work on a static desktop.
     auto refreshed = co_await video.next(true);
-    require(refreshed && !refreshed->configuration && refreshed->generation == 1 && refreshed->frameId == 2 && refreshed->frame.key_frame(), "Refresh did not preserve the generation and produce an IDR");
+    require(refreshed && refreshed->frame.key_frame() &&
+                (refreshed->configuration ? refreshed->generation == first->generation + 1 && refreshed->frameId == 1 : refreshed->generation == first->generation && refreshed->frameId == first->frameId + 1),
+            "Refresh did not produce an IDR on the existing or explicitly rebuilt codec baseline");
     require(refreshed->cursor.has_value(), "Refresh did not resend the cursor snapshot");
     require(refreshed->frame.timestamp_microseconds() > first->frame.timestamp_microseconds(), "Frame timestamps are not increasing");
-    message.set_sequence(4);
+    if (refreshed->configuration) {
+        message.set_sequence(message.sequence() + 1);
+        message.set_generation(refreshed->generation);
+        message.clear_frame_id();
+        *message.mutable_video_config() = *refreshed->configuration;
+        require(bool(validator.accept(message)), "Refreshed codec configuration violates channel protocol");
+    }
+    message.set_sequence(message.sequence() + 1);
     message.set_frame_id(refreshed->frameId);
     *message.mutable_video_frame() = refreshed->frame;
     require(bool(validator.accept(message)), "Runtime refresh violates channel protocol");
-    decode(*refreshed, configuration);
+    decode(*refreshed, refreshed->configuration.value_or(configuration));
 
     wire::QualityFeedback quality;
     quality.set_displayed_generation(refreshed->generation);
@@ -135,16 +144,27 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     quality.set_preference(wire::QualityFeedback::BALANCED);
     video.feedback(quality);
     const auto sharper = co_await video.next();
-    require(sharper && sharper->frame.key_frame() && sharper->generation == refreshed->generation &&
-                sharper->frameId == refreshed->frameId + 1,
-            "Quality change did not refresh the static desktop without reconnecting");
-    decode(*sharper, configuration);
+    require(sharper && sharper->frame.key_frame() &&
+                (sharper->configuration ? sharper->generation == refreshed->generation + 1 && sharper->frameId == 1 : sharper->generation == refreshed->generation && sharper->frameId == refreshed->frameId + 1),
+            "Quality change did not refresh or explicitly rebuild the static desktop codec baseline");
+    if (sharper->configuration) {
+        message.set_sequence(message.sequence() + 1);
+        message.set_generation(sharper->generation);
+        message.clear_frame_id();
+        *message.mutable_video_config() = *sharper->configuration;
+        require(bool(validator.accept(message)), "Quality change configuration violates channel protocol");
+    }
+    message.set_sequence(message.sequence() + 1);
+    message.set_frame_id(sharper->frameId);
+    *message.mutable_video_frame() = sharper->frame;
+    require(bool(validator.accept(message)), "Quality change frame violates channel protocol");
+    decode(*sharper, sharper->configuration.value_or(refreshed->configuration.value_or(configuration)));
 
     std::optional<agent::DesktopVideoUpdate> rebuilt;
     auto previousTimestamp = sharper->frame.timestamp_microseconds();
     // Exercise repeated real DXGI/codec teardown rather than only one reset.
     // Each new baseline must work with a fresh independent decoder.
-    for (std::uint64_t generation = 2; generation <= 13; ++generation) {
+    for (std::uint64_t generation = sharper->generation + 1; generation <= sharper->generation + 12; ++generation) {
         video.invalidate();
         rebuilt.reset();
         const auto recoveryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

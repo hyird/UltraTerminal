@@ -39,8 +39,8 @@ struct CapturedFrame {
     std::int32_t desktopLeft = 0, desktopTop = 0;
     std::uint32_t rotation = 0;
     std::uint64_t captureTicks = 0;
-    // Empty only for cursor-only updates after the first complete snapshot.
-    // Consumers retain the previous pixels; geometry changes require a reset.
+    // Empty for cursor updates and deferred GPU snapshots. captureTicks marks
+    // a desktop update even when CPU readback was deferred by receiver credit.
     std::vector<std::uint8_t> bgra;
     bool pointerVisible = false;
     std::int32_t pointerX = 0, pointerY = 0;
@@ -64,7 +64,10 @@ class DesktopCapture {
     // allows DXGI move/dirty regions to update that image in place. Timeouts
     // and cursor-only updates leave it intact. Finish using pixels before
     // calling; on failure discard the old snapshot.
-    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool previousPixels = false);
+    // readPixels=false retains only the latest GPU image and pointer metadata.
+    // A later readPixels=true materializes it even if DXGI has no new update;
+    // skipped CPU baselines force a complete readback before partial updates.
+    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool previousPixels = false, bool readPixels = true);
     std::vector<DisplayMode> displayModes() const;
     bool resize(std::uint32_t width, std::uint32_t height);
 

@@ -15,7 +15,7 @@
 #include <ruvia/core/AsioTask.h>
 #include <ruvia/core/BlockingPool.h>
 
-#include "pacing.runtime.h"
+#include "frame_flow.runtime.h"
 #include "platform/windows/capture.transport.h"
 #include "platform/windows/cursor.transport.h"
 #include "recovery.runtime.h"
@@ -35,6 +35,7 @@ struct VideoWorker {
     std::uint32_t width = 0, height = 0;
     bool configurationPending = true;
     bool pixelsPending = false;
+    bool readbackReady = false;
     std::chrono::steady_clock::time_point encodeAt{};
     DesktopCursor cursor;
     CaptureRecovery recovery;
@@ -50,8 +51,8 @@ struct VideoWorker {
         lastPresentTicks = 0;
         previousPixelCaptureAt = {};
     }
-    std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopPacing::Rate rate,
-                                           std::uint32_t pacingWidth, std::uint32_t pacingHeight,
+    std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopFrameFlow::Rate rate,
+                                           std::uint32_t flowWidth, std::uint32_t flowHeight,
                                            std::optional<std::pair<std::uint32_t, std::uint32_t>>& geometryChanged, bool allowEncode) {
         if (reset) {
             discard();
@@ -66,9 +67,11 @@ struct VideoWorker {
             }
             // DXGI wakes as soon as a desktop or cursor update is available.
             // The bounded wait also lets cancellation and rate changes take effect.
-            const bool readyToEncode = retained && allowEncode &&
-                                       (refresh || (pixelsPending && DesktopEncodeCadence::ready(std::chrono::steady_clock::now(), encodeAt)));
-            pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode ? 0 : 8), retained ? &retained->bgra : nullptr, nullptr, retained.has_value());
+            const auto now = std::chrono::steady_clock::now();
+            const bool readPixels = allowEncode && (!encoder || configurationPending || refresh || now >= encodeAt);
+            const bool readyToEncode = retained && readPixels && (refresh || pixelsPending);
+            pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode || !allowEncode ? 0 : 16), retained ? &retained->bgra : nullptr, nullptr, retained.has_value(), readPixels);
+            readbackReady = readPixels;
             ++diagnostics.captureCalls;
             if (!pixels) {
                 ++diagnostics.captureTimeouts;
@@ -115,7 +118,7 @@ struct VideoWorker {
         if (source.rotation != 1 || source.width % 2 || source.height % 2) {
             throw DesktopFailure(wire::DesktopFault::INVALID_GEOMETRY, "Desktop orientation or dimensions require capture reconfiguration");
         }
-        if (source.width != pacingWidth || source.height != pacingHeight) {
+        if (source.width != flowWidth || source.height != flowHeight) {
             geometryChanged = std::pair{source.width, source.height};
             return std::nullopt;
         }
@@ -125,11 +128,11 @@ struct VideoWorker {
         update.sourcePresentTicks = lastPresentTicks;
         update.cursor = cursor.update(source, refresh || configurationPending);
         const auto now = std::chrono::steady_clock::now();
-        if (encoder && !configurationPending && ((!pixelsPending && !refresh) || !allowEncode || (!refresh && !DesktopEncodeCadence::ready(now, encodeAt)))) {
+        if (encoder && !configurationPending && ((!pixelsPending && !refresh) || !allowEncode || !readbackReady || (!refresh && now < encodeAt))) {
             if (!allowEncode) {
                 ++diagnostics.backpressuredCalls;
             }
-            if (!refresh && pixelsPending && !DesktopEncodeCadence::ready(now, encodeAt)) {
+            if (!refresh && pixelsPending && now < encodeAt) {
                 ++diagnostics.pendingBeforeDeadlineCalls;
             }
             if (update.cursor) {
@@ -150,8 +153,8 @@ struct VideoWorker {
         }
         encoder->setRate(rate.framesPerSecond, rate.bitrate);
         encoder->setDetail(rate.sharp);
-        const bool encodingEarly = !refresh && !configurationPending && now < encodeAt && DesktopEncodeCadence::ready(now, encodeAt);
-        encodeAt = DesktopEncodeCadence::nextDeadline(now, encodeAt, rate.framesPerSecond, refresh || configurationPending);
+        // Schedule from the actual start; missed slots never cause bursts.
+        encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
         const auto encodeStarted = std::chrono::steady_clock::now();
         const auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(encodeStarted - epoch).count();
         auto encoded = encoder->encode(source.bgra, static_cast<std::size_t>(width) * 4, static_cast<std::uint64_t>(timestamp), refresh || configurationPending);
@@ -203,7 +206,6 @@ struct VideoWorker {
         update.frame.set_target_frames_per_second(rate.framesPerSecond);
         update.frame.set_target_bitrate(rate.bitrate);
         ++diagnostics.encodedFrames;
-        diagnostics.earlyEncodedFrames += encodingEarly;
         return update;
     }
 };
@@ -217,8 +219,9 @@ struct DesktopVideoRuntime::State {
     std::uint32_t display;
     bool stopped = false, pending = false;
     bool reset = false;
+    bool baselineRequired = true;
     bool qualityRefresh = false;
-    DesktopPacing pacing;
+    DesktopFrameFlow flow;
     DesktopVideoDiagnostics diagnostics;
 
     State(ruvia::EventLoop owner, std::uint32_t index) : loop(std::move(owner)), pace(loop.executor()), display(index) {
@@ -251,7 +254,7 @@ struct DesktopVideoRuntime::State {
         if (self->stopped) {
             co_return std::nullopt;
         }
-        if (self->pacing.background()) {
+        if (self->flow.background()) {
             // Hidden workspaces need neither capture nor pixel copies. A
             // visibility ACK wakes this timer immediately; the bounded wait
             // also lets the owner process pending resize/rebind work.
@@ -267,21 +270,26 @@ struct DesktopVideoRuntime::State {
         if (error && error != asio::error::operation_aborted) {
             throw std::system_error(error);
         }
-        if (self->pacing.background()) {
+        if (self->flow.background()) {
             co_return std::nullopt;
         }
         const auto now = std::chrono::steady_clock::now();
-        const bool allowEncode = self->pacing.canEncode(now);
+        const bool allowEncode = self->reset || self->baselineRequired || self->flow.canEncode(now);
         const bool qualityRefresh = std::exchange(self->qualityRefresh, false);
         refresh = refresh || qualityRefresh;
-        const auto [pacingWidth, pacingHeight] = self->pacing.geometry();
-        auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->pacing.rate(), pacingWidth, pacingHeight, allowEncode] {
+        const auto [flowWidth, flowHeight] = self->flow.geometry();
+        auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->flow.rate(), flowWidth, flowHeight, allowEncode] {
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
-            auto update = owned->next(display, refresh, reset, rate, pacingWidth, pacingHeight, geometryChanged, allowEncode);
-            return std::tuple{std::move(update), owned->recovery.nextAttempt(), geometryChanged, owned->diagnostics};
+            auto update = owned->next(display, refresh, reset, rate, flowWidth, flowHeight, geometryChanged, allowEncode);
+            const auto now = std::chrono::steady_clock::now();
+            // Cursor metadata remains responsive without repeatedly mapping
+            // pixels during a closed receiver window. ACKs wake this wait.
+            const auto wakeAt = allowEncode && owned->encodeAt > now ? std::min(owned->encodeAt, now + std::chrono::milliseconds(33)) : now + std::chrono::milliseconds(allowEncode ? 1 : 33);
+            return std::tuple{std::move(update), std::max(owned->recovery.nextAttempt(), wakeAt), geometryChanged, owned->diagnostics, !owned->encoder};
         });
-        auto [result, retryAt, geometryChanged, diagnostics] = co_await ruvia::asAwaitable(std::move(operation));
+        auto [result, retryAt, geometryChanged, diagnostics, baselineRequired] = co_await ruvia::asAwaitable(std::move(operation));
         self->diagnostics = diagnostics;
+        self->baselineRequired = baselineRequired;
         if (qualityRefresh && (!result || result->frame.data().empty())) {
             self->qualityRefresh = true;
         }
@@ -290,13 +298,14 @@ struct DesktopVideoRuntime::State {
             co_return std::nullopt;
         }
         if (geometryChanged) {
-            if (!self->pacing.setGeometry(geometryChanged->first, geometryChanged->second)) {
+            if (!self->flow.setGeometry(geometryChanged->first, geometryChanged->second)) {
                 throw DesktopFailure(wire::DesktopFault::INVALID_GEOMETRY, "Desktop dimensions exceed the encoder quality-budget limits");
             }
             co_return std::nullopt;
         }
         if (result && !result->frame.data().empty()) {
-            self->pacing.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), result->frame.ByteSizeLong());
+            self->flow.observeEncode(std::chrono::microseconds(result->frame.encode_microseconds()));
+            self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), result->frame.ByteSizeLong());
         }
         co_return result;
     }
@@ -331,6 +340,7 @@ struct DesktopVideoRuntime::State {
         const bool applied = co_await ruvia::asAwaitable(std::move(operation));
         if (applied) {
             self->nextFrameAt = {};
+            self->baselineRequired = true;
         }
         co_return applied;
     }
@@ -343,32 +353,39 @@ void DesktopVideoRuntime::stop() {
     state_->stopped = true;
     state_->pace.cancel();
 }
-void DesktopVideoRuntime::invalidate() { state_->reset = true; }
+void DesktopVideoRuntime::invalidate() {
+    state_->reset = true;
+    state_->pace.cancel();
+}
 void DesktopVideoRuntime::observeRoundTrip(std::chrono::microseconds elapsed) {
-    state_->pacing.observeRoundTrip(elapsed, std::chrono::steady_clock::now());
+    state_->flow.observeRoundTrip(elapsed, std::chrono::steady_clock::now());
 }
 DesktopVideoDiagnostics DesktopVideoRuntime::diagnostics() const { return state_->diagnostics; }
 void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
-    const bool wasBackground = state_->pacing.background();
-    if (!state_->pacing.acknowledge(feedback.displayed_generation(), feedback.displayed_frame(),
-                                    feedback.decode_microseconds(), feedback.queue_depth(), std::chrono::steady_clock::now(), feedback.background(),
-                                    feedback.maximum_pending_video_frames())) {
+    const bool wasBackground = state_->flow.background();
+    const bool hadCredit = state_->flow.canEncode(std::chrono::steady_clock::now());
+    if (!state_->flow.acknowledge(feedback.displayed_generation(), feedback.displayed_frame(),
+                                  feedback.decode_microseconds(), feedback.queue_depth(), std::chrono::steady_clock::now(), feedback.background(),
+                                  feedback.maximum_pending_video_frames())) {
         return;
     }
-    if (wasBackground && !state_->pacing.background()) {
+    if (wasBackground && !state_->flow.background()) {
         state_->qualityRefresh = true;
         state_->pace.cancel();
     }
-    using Quality = DesktopPacing::Quality;
+    if (!hadCredit && state_->flow.canEncode(std::chrono::steady_clock::now())) {
+        state_->pace.cancel();
+    }
+    using Quality = DesktopFrameFlow::Quality;
     switch (feedback.preference()) {
     case wire::QualityFeedback::BALANCED:
-        state_->qualityRefresh |= state_->pacing.setQuality(Quality::kBalanced);
+        state_->qualityRefresh |= state_->flow.setQuality(Quality::kBalanced);
         break;
     case wire::QualityFeedback::SMOOTH:
-        state_->qualityRefresh |= state_->pacing.setQuality(Quality::kSmooth);
+        state_->qualityRefresh |= state_->flow.setQuality(Quality::kSmooth);
         break;
     case wire::QualityFeedback::SHARP:
-        state_->qualityRefresh |= state_->pacing.setQuality(Quality::kSharp);
+        state_->qualityRefresh |= state_->flow.setQuality(Quality::kSharp);
         break;
     default:
         break;
