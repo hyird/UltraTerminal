@@ -117,6 +117,23 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         auto endpoints = co_await pair(session);
         auto feedback = refresh(2);
         feedback.mutable_quality_feedback()->set_decode_microseconds(18000);
+        auto config = refresh(2);
+        config.set_channel_id("video");
+        config.set_generation(1);
+        config.mutable_video_config()->set_width(16);
+        config.mutable_video_config()->set_height(16);
+        config.mutable_video_config()->set_codec("avc1.42C01E");
+        require(co_await session.forward(endpoints[3], config));
+        require(bool(co_await endpoints[2]->receive({})));
+        auto frame = config;
+        frame.set_sequence(3);
+        frame.set_frame_id(1);
+        frame.mutable_video_frame()->set_key_frame(true);
+        frame.mutable_video_frame()->set_data("frame");
+        require(co_await session.forward(endpoints[3], frame));
+        require(bool(co_await endpoints[2]->receive({})));
+        feedback.mutable_quality_feedback()->set_displayed_generation(1);
+        feedback.mutable_quality_feedback()->set_displayed_frame(1);
         feedback.mutable_quality_feedback()->set_queue_depth(4);
         feedback.mutable_quality_feedback()->set_background(true);
         require(co_await session.forward(endpoints[0], feedback));
@@ -124,7 +141,20 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(session.diagnostics().maximumDecodeMicroseconds == 18000);
         require(session.diagnostics().latestBrowserQueueDepth == 4);
         require(session.diagnostics().latestBackground);
+        feedback.set_sequence(3);
+        feedback.mutable_quality_feedback()->set_background(false);
+        auto* timing = feedback.mutable_quality_feedback()->mutable_visible_frame_timing();
+        timing->set_sample_count(120);
+        timing->set_p95_microseconds(48000);
+        timing->set_p99_microseconds(63000);
+        timing->set_long_gap_count(2);
+        timing->set_observed_fps_milli(27000);
+        require(co_await session.forward(endpoints[0], feedback));
+        require(session.diagnostics().visibleFrames.reports == 1 && session.diagnostics().visibleFrames.latestSamples == 120 &&
+                session.diagnostics().visibleFrames.latestP95Microseconds == 48000 && session.diagnostics().visibleFrames.latestLongGaps == 2 &&
+                session.diagnostics().visibleFrames.latestFpsMilli == 27000);
         session.logHealth();
+        require(session.diagnostics().visibleFrames.reports == 0);
         session.close(server::DesktopCloseReason::kPeerClosed, server::DesktopCloseOrigin::kBrowserInput);
         session.close(server::DesktopCloseReason::kReadFailed, server::DesktopCloseOrigin::kAgentVideo);
         require(session.closeReason() == server::DesktopCloseReason::kPeerClosed);
@@ -312,23 +342,26 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         quality->set_displayed_generation(1);
         quality->set_displayed_frame(2);
         quality->set_video_refinement(true);
-        auto* report = quality->mutable_render_report();
-        report->set_samples(48);
+        auto* report = quality->mutable_visible_frame_timing();
+        report->set_sample_count(48);
         report->set_p95_microseconds(258000);
         report->set_p99_microseconds(300000);
-        report->set_long_gaps(5);
+        report->set_long_gap_count(5);
+        report->set_observed_fps_milli(20000);
         require(co_await session.forward(endpoints[0], feedback));
         received = co_await endpoints[1]->receive({});
         const auto forwarded = protocol::decodeMessage(received->bytes());
-        require(forwarded && !forwarded->quality_feedback().has_render_report() && forwarded->quality_feedback().video_refinement());
+        require(forwarded && !forwarded->quality_feedback().has_visible_frame_timing() && forwarded->quality_feedback().video_refinement());
         received.reset();
-        require(session.diagnostics().renderReports == 1 && session.diagnostics().rafSamples == 48 && session.diagnostics().rafP95Microseconds == 258000 && session.diagnostics().rafGapsGe100ms == 5);
+        require(session.diagnostics().visibleFrames.reports == 1 && session.diagnostics().visibleFrames.latestSamples == 48 && session.diagnostics().visibleFrames.latestP95Microseconds == 258000 && session.diagnostics().visibleFrames.latestLongGaps == 5);
         feedback.set_sequence(3);
         report->set_p95_microseconds(1000);
         require(co_await session.forward(endpoints[0], feedback));
         require(bool(co_await endpoints[1]->receive({})));
-        require(session.diagnostics().renderReports == 1 && session.diagnostics().rafP95Microseconds == 258000); // Rate limited.
+        require(session.diagnostics().visibleFrames.reports == 1 && session.diagnostics().visibleFrames.latestP95Microseconds == 258000); // Rate limited.
         feedback.set_sequence(4);
+        const auto reportSnapshot = *report;
+        quality->clear_visible_frame_timing();
         quality->set_background(true);
         require(co_await session.forward(endpoints[0], feedback));
         require(bool(co_await endpoints[1]->receive({})));
@@ -336,9 +369,10 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         feedback.set_sequence(5);
         quality->set_background(false);
         quality->set_displayed_frame(3);
+        *quality->mutable_visible_frame_timing() = reportSnapshot;
         require(co_await session.forward(endpoints[0], feedback));
         require(bool(co_await endpoints[1]->receive({})));
-        require(session.diagnostics().renderReports == 1); // Unknown future frame cannot supply metrics.
+        require(session.diagnostics().visibleFrames.reports == 0); // Unknown future frame cannot supply metrics.
         config.set_sequence(5);
         config.set_generation(2);
         config.mutable_video_config()->set_width(32);

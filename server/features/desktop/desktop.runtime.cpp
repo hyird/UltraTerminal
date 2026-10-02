@@ -183,22 +183,18 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
     // Browser diagnostics terminate here; they never consume worker IPC or
     // influence Agent QoS. Strip only the infrequent report, not every frame.
     std::optional<wire::Envelope> forwarded;
-    if (message.has_quality_feedback() && message.quality_feedback().has_render_report()) {
+    if (message.has_quality_feedback() && message.quality_feedback().has_visible_frame_timing()) {
         const auto& feedback = message.quality_feedback();
         const auto now = std::chrono::steady_clock::now();
         if (!feedback.background() && feedback.displayed_generation() == diagnostics_.videoGeneration &&
             feedback.displayed_frame() && feedback.displayed_frame() <= diagnostics_.latestVideoFrame &&
             (diagnostics_.renderReportedAt == std::chrono::steady_clock::time_point{} || now - diagnostics_.renderReportedAt >= std::chrono::seconds(4))) {
-            const auto& report = feedback.render_report();
-            ++diagnostics_.renderReports;
-            diagnostics_.rafSamples = report.samples();
-            diagnostics_.rafP95Microseconds = report.p95_microseconds();
-            diagnostics_.rafP99Microseconds = report.p99_microseconds();
-            diagnostics_.rafGapsGe100ms = report.long_gaps();
+            const auto& report = feedback.visible_frame_timing();
+            diagnostics_.visibleFrames.observe(report.sample_count(), report.p95_microseconds(), report.p99_microseconds(), report.long_gap_count(), report.observed_fps_milli());
             diagnostics_.renderReportedAt = now;
         }
         forwarded = message;
-        forwarded->mutable_quality_feedback()->clear_render_report();
+        forwarded->mutable_quality_feedback()->clear_visible_frame_timing();
     }
     auto bytes = protocol::encodeMessage(forwarded ? *forwarded : message);
     if (!bytes) {
@@ -233,6 +229,7 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.videoGeneration = message.generation();
                 diagnostics_.latestVideoFrame = 0;
                 diagnostics_.renderReportedAt = {};
+                diagnostics_.visibleFrames.clear();
                 diagnostics_.encoding.clear();
                 diagnostics_.videoWidth = message.video_config().width();
                 diagnostics_.videoHeight = message.video_config().height();
@@ -263,6 +260,7 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.latestBackground = feedback.background();
                 if (feedback.background()) {
                     diagnostics_.renderReportedAt = {};
+                    diagnostics_.visibleFrames.clear();
                 }
             }
             if (message.has_video_refinement()) {
@@ -304,9 +302,10 @@ void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin)
         }
     }
 }
-void DesktopSession::logHealth() const {
+void DesktopSession::logHealth() {
     if (bound_ && ready()) {
         logDiagnostics("desktop_session_health");
+        diagnostics_.visibleFrames.clear();
     }
 }
 void DesktopSession::logDiagnostics(std::string_view event) const {
@@ -327,10 +326,10 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
                  diagnostics_.videoWidth, diagnostics_.videoHeight, encoder, encoding.samples, encoding.meanMicroseconds,
                  encoding.p95Microseconds, encoding.p99Microseconds, encoding.maximumMicroseconds, diagnostics_.latestKeyFrameEncodeMicroseconds,
                  diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate);
-    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} report_age_ms={} background={} gpu_encoding={} refinement_messages={} refinement_bytes={}",
-                 identity_.sessionId, identity_.deviceId, diagnostics_.renderReports, rafAge >= 0 ? diagnostics_.rafSamples : 0,
-                 rafAge >= 0 ? diagnostics_.rafP95Microseconds : 0, rafAge >= 0 ? diagnostics_.rafP99Microseconds : 0,
-                 rafAge >= 0 ? diagnostics_.rafGapsGe100ms : 0, rafAge, diagnostics_.latestBackground,
-                 diagnostics_.latestGpuEncoding, diagnostics_.refinementMessages, diagnostics_.refinementBytes);
+    const auto& raf = diagnostics_.visibleFrames;
+    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} raf_fps_milli={} raf_min_fps_milli={} raf_max_fps_milli={} raf_max_p95_us={} raf_max_p99_us={} raf_max_long_gaps={} report_age_ms={} background={} gpu_encoding={} refinement_messages={} refinement_bytes={}",
+                 identity_.sessionId, identity_.deviceId, raf.reports, raf.latestSamples, raf.latestP95Microseconds, raf.latestP99Microseconds, raf.latestLongGaps,
+                 raf.latestFpsMilli, raf.minimumFpsMilli, raf.maximumFpsMilli, raf.maximumP95Microseconds, raf.maximumP99Microseconds, raf.maximumLongGaps,
+                 rafAge, diagnostics_.latestBackground, diagnostics_.latestGpuEncoding, diagnostics_.refinementMessages, diagnostics_.refinementBytes);
 }
 } // namespace ultraterimal::server

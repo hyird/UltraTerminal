@@ -49,6 +49,39 @@ class DesktopEncodingWindow {
     std::size_t count_ = 0;
     std::size_t next_ = 0;
 };
+// These one-second browser reports contain overlapping windows of at most
+// 120 rAF intervals. The latest and worst snapshots are meaningful; summing
+// long-gap counts across reports would count the same interval repeatedly.
+struct DesktopVisibleFrameDiagnostics {
+    std::uint64_t reports = 0;
+    std::uint32_t latestSamples = 0;
+    std::uint32_t latestP95Microseconds = 0;
+    std::uint32_t latestP99Microseconds = 0;
+    std::uint32_t latestLongGaps = 0;
+    std::uint32_t latestFpsMilli = 0;
+    std::uint32_t minimumFpsMilli = 0;
+    std::uint32_t maximumFpsMilli = 0;
+    std::uint32_t maximumP95Microseconds = 0;
+    std::uint32_t maximumP99Microseconds = 0;
+    std::uint32_t maximumLongGaps = 0;
+
+    void observe(std::uint32_t samples, std::uint32_t p95Microseconds, std::uint32_t p99Microseconds, std::uint32_t longGaps, std::uint32_t fpsMilli) {
+        if (!reports || fpsMilli < minimumFpsMilli) {
+            minimumFpsMilli = fpsMilli;
+        }
+        ++reports;
+        latestSamples = samples;
+        latestP95Microseconds = p95Microseconds;
+        latestP99Microseconds = p99Microseconds;
+        latestLongGaps = longGaps;
+        latestFpsMilli = fpsMilli;
+        maximumFpsMilli = std::max(maximumFpsMilli, fpsMilli);
+        maximumP95Microseconds = std::max(maximumP95Microseconds, p95Microseconds);
+        maximumP99Microseconds = std::max(maximumP99Microseconds, p99Microseconds);
+        maximumLongGaps = std::max(maximumLongGaps, longGaps);
+    }
+    void clear() { *this = {}; }
+};
 struct DesktopDiagnostics {
     std::uint64_t forwardedMessages = 0;
     std::uint64_t forwardedBytes = 0;
@@ -63,6 +96,7 @@ struct DesktopDiagnostics {
     std::uint32_t latestBrowserQueueDepth = 0;
     bool latestBackground = false;
     DesktopEncodingWindow encoding;
+    DesktopVisibleFrameDiagnostics visibleFrames;
     std::uint32_t videoWidth = 0;
     std::uint32_t videoHeight = 0;
     std::uint32_t latestKeyFrameEncodeMicroseconds = 0;
@@ -71,8 +105,7 @@ struct DesktopDiagnostics {
     bool latestHardwareEncoding = false;
     bool latestGpuEncoding = false;
     std::uint64_t refinementMessages = 0, refinementBytes = 0;
-    std::uint64_t videoGeneration = 0, latestVideoFrame = 0, renderReports = 0;
-    std::uint32_t rafSamples = 0, rafP95Microseconds = 0, rafP99Microseconds = 0, rafGapsGe100ms = 0;
+    std::uint64_t videoGeneration = 0, latestVideoFrame = 0;
     std::chrono::steady_clock::time_point renderReportedAt{};
 };
 } // namespace ultraterimal::server

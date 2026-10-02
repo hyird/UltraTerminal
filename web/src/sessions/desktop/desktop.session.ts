@@ -1,7 +1,10 @@
 import { ultraterimal } from "../../generated/session";
 import type { DesktopTicket, DesktopPerformance } from "./desktop.types";
 import { DesktopQualityPolicy, type DesktopQuality } from "./quality.session";
-import { DesktopVisibleFrameGaps } from "./visible_frames.session";
+import {
+  DesktopVisibleFrameGaps,
+  visibleFrameTiming,
+} from "./visible_frames.session";
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
@@ -300,7 +303,7 @@ export class DesktopSession {
     this.reportDisplay();
   }
   private reportDisplay(
-    renderReport?: ultraterimal.wire.IBrowserRenderReport,
+    renderReport?: ultraterimal.wire.IVisibleFrameTiming,
   ): void {
     if (this.stopped || !this.displayedFrame) return;
     const channel = this.channels.find(
@@ -318,7 +321,7 @@ export class DesktopSession {
           background: document.hidden || !this.visible,
           maximumPendingVideoFrames,
           videoRefinement: true,
-          ...(renderReport ? { renderReport } : {}),
+          ...(renderReport ? { visibleFrameTiming: renderReport } : {}),
           preference:
             this.quality.preference === "sharp"
               ? wire.QualityFeedback.Preference.SHARP
@@ -840,18 +843,11 @@ export class DesktopSession {
     if (!frames && !presentedFrames) this.visibleFrameGaps.clear();
     const visibleGaps = this.visibleFrameGaps.summary();
     if (now - this.renderReportAt >= 5000 && this.visible && !document.hidden) {
-      this.reportDisplay({
-        samples: visibleGaps.samples,
-        p95Microseconds: Math.min(
-          60000000,
-          Math.round((visibleGaps.p95Milliseconds ?? 0) * 1000),
-        ),
-        p99Microseconds: Math.min(
-          60000000,
-          Math.round((visibleGaps.p99Milliseconds ?? 0) * 1000),
-        ),
-        longGaps: visibleGaps.gapsAtLeast100Milliseconds,
-      });
+      const timing = visibleFrameTiming(
+        visibleGaps,
+        (presentedFrames * 1000) / elapsed,
+      );
+      if (timing) this.reportDisplay(timing);
       this.renderReportAt = now;
     }
     const previousQuality = this.quality.preference;

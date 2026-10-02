@@ -286,20 +286,23 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
             }
         }
         break;
-    case wire::Envelope::kQualityFeedback:
-        if (!wire::QualityFeedback_Preference_IsValid(m.quality_feedback().preference()) ||
-            m.quality_feedback().maximum_pending_video_frames() > 128) {
+    case wire::Envelope::kQualityFeedback: {
+        const auto& feedback = m.quality_feedback();
+        if (!wire::QualityFeedback_Preference_IsValid(feedback.preference()) || feedback.maximum_pending_video_frames() > 128) {
             return invalid();
         }
-        if (m.quality_feedback().has_render_report()) {
-            const auto& report = m.quality_feedback().render_report();
-            if (report.samples() > 120 || report.long_gaps() > report.samples() ||
-                report.p95_microseconds() > report.p99_microseconds() || report.p99_microseconds() > 60000000 ||
-                (report.samples() < 20 && (report.p95_microseconds() || report.p99_microseconds()))) {
+        if (feedback.has_visible_frame_timing()) {
+            const auto& timing = feedback.visible_frame_timing();
+            if (feedback.background() || timing.sample_count() < 20 || timing.sample_count() > 120 ||
+                !timing.p95_microseconds() || timing.p95_microseconds() > 30000000 ||
+                timing.p99_microseconds() < timing.p95_microseconds() || timing.p99_microseconds() > 30000000 ||
+                timing.long_gap_count() > timing.sample_count() ||
+                !timing.observed_fps_milli() || timing.observed_fps_milli() > 240000) {
                 return invalid();
             }
         }
         break;
+    }
     case wire::Envelope::kVideoRefinement: {
         const auto& refinement = m.video_refinement();
         if (!m.generation() || !m.frame_id() || m.base_frame_id() != m.frame_id() || !refinement.patches_size() || refinement.patches_size() > 32) {

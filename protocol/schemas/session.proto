@@ -205,6 +205,18 @@ message InputEvent { enum Kind { UNSPECIFIED = 0; POINTER_MOVE = 1; BUTTON = 2; 
 // x/y locate the hotspot within the selected display. Draw at x-hotspot_x,
 // y-hotspot_y. Empty rgba retains the previous shape and its hotspot.
 message CursorUpdate { sint32 x = 1; sint32 y = 2; uint32 width = 3; uint32 height = 4; uint32 hotspot_x = 5; uint32 hotspot_y = 6; bytes rgba = 7; bool visible = 8; }
+// A bounded window of distinct desktop canvas frames observed in foreground
+// requestAnimationFrame callbacks. These occur BEFORE physical presentation.
+// Windows overlap across reports: counts must never be summed as frame totals.
+message VisibleFrameTiming {
+  uint32 sample_count = 1;
+  uint32 p95_microseconds = 2;
+  uint32 p99_microseconds = 3;
+  // Count of intervals >= 100 ms among sample_count intervals.
+  uint32 long_gap_count = 4;
+  // Distinct frames observed by visible rAF during the last ~1s report interval.
+  uint32 observed_fps_milli = 5;
+}
 message QualityFeedback {
   enum Preference { UNCHANGED = 0; BALANCED = 1; SMOOTH = 2; SHARP = 3; }
   uint64 displayed_frame = 1;
@@ -218,18 +230,9 @@ message QualityFeedback {
   // Zero/omitted means the legacy limit of 16; valid explicit values are 1..128.
   uint32 maximum_pending_video_frames = 7;
   // Opt-in: video bottom layer with bounded, frame-bound PNG detail patches.
-  bool video_refinement = 8;
+  bool video_refinement = 9;
   // Browser-only diagnostics, consumed by the gateway. At most once per 5 s.
-  BrowserRenderReport render_report = 9;
-}
-// Rolling, at most 120 distinct canvas frames observed by visible rAF callbacks.
-// This is before composition, not physical presentation or end-to-end latency.
-// Fewer than 20 samples have zero percentiles; idle/background clears the window.
-message BrowserRenderReport {
-  uint32 samples = 1;
-  uint32 p95_microseconds = 2;
-  uint32 p99_microseconds = 3;
-  uint32 long_gaps = 4;
+  VisibleFrameTiming visible_frame_timing = 8;
 }
 // Applied only to the matching video frame, never to a newer canvas or baseline.
 // Envelope frame_id == base_frame_id == the latest video frame ID.
