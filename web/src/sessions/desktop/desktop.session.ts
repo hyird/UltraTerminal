@@ -1,7 +1,10 @@
 import { ultraterimal } from "../../generated/session";
 import type { DesktopTicket, DesktopPerformance } from "./desktop.types";
 import { DesktopQualityPolicy, type DesktopQuality } from "./quality.session";
-import { DesktopVisibleFrameGaps } from "./visible_frames.session";
+import {
+  DesktopVisibleFrameGaps,
+  visibleFrameTiming,
+} from "./visible_frames.session";
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
@@ -61,6 +64,7 @@ export class DesktopSession {
   private displayedFrame = 0;
   private observedFrame = 0;
   private readonly visibleFrameGaps = new DesktopVisibleFrameGaps();
+  private pendingVisibleTiming: ReturnType<typeof visibleFrameTiming> = null;
   private observationAnimation: number | undefined;
   private visible = true;
   private scaleMode: "native" | "fit" = "fit";
@@ -115,6 +119,7 @@ export class DesktopSession {
         "visibilitychange",
         () => {
           this.visibleFrameGaps.clear();
+          this.pendingVisibleTiming = null;
           this.reportDisplay();
         },
         {
@@ -288,6 +293,7 @@ export class DesktopSession {
     if (this.stopped || this.visible === visible) return;
     this.visible = visible;
     this.visibleFrameGaps.clear();
+    this.pendingVisibleTiming = null;
     if (!visible) this.input?.release();
     this.reportDisplay();
   }
@@ -296,7 +302,9 @@ export class DesktopSession {
     const channel = this.channels.find(
       (entry) => entry.purpose === 2 && entry.ready,
     );
-    if (channel)
+    if (channel) {
+      const timing = this.pendingVisibleTiming;
+      this.pendingVisibleTiming = null;
       this.send(channel, {
         qualityFeedback: {
           displayedGeneration: this.generation,
@@ -313,8 +321,10 @@ export class DesktopSession {
               : this.quality.preference === "smooth"
                 ? wire.QualityFeedback.Preference.SMOOTH
                 : wire.QualityFeedback.Preference.BALANCED,
+          ...(timing ? { visibleFrameTiming: timing } : {}),
         },
       });
+    }
   }
   private observeCanvasFrame(): void {
     if (this.observationAnimation !== undefined || this.stopped) return;
@@ -542,6 +552,7 @@ export class DesktopSession {
       this.generation = generationId;
       this.displayedFrame = this.observedFrame = 0;
       this.visibleFrameGaps.clear();
+      this.pendingVisibleTiming = null;
       this.frame = 0;
       this.timestamp = -1;
       this.canvas.width = this.overlay.width = video.width;
@@ -728,11 +739,20 @@ export class DesktopSession {
     const elapsed = Math.max(1, now - this.bitrateSince);
     const frames = this.displayedCount;
     const presentedFrames = this.presentedCount;
+    const observedFramesPerSecond = (presentedFrames * 1000) / elapsed;
     const decodeMilliseconds = frames ? this.decodeTotal / frames : null;
     // An unchanged desktop is not a stalled video stream. Avoid carrying its
     // idle time into the next visible frame or retaining stale gap metrics.
-    if (!frames && !presentedFrames) this.visibleFrameGaps.clear();
+    if (!frames && !presentedFrames) {
+      this.visibleFrameGaps.clear();
+      this.pendingVisibleTiming = null;
+    }
     const visibleGaps = this.visibleFrameGaps.summary();
+    if (frames && presentedFrames && !document.hidden && this.visible)
+      this.pendingVisibleTiming = visibleFrameTiming(
+        visibleGaps,
+        observedFramesPerSecond,
+      );
     const previousQuality = this.quality.preference;
     this.quality.sample(frames, decodeMilliseconds ?? 0, this.pending.size);
     if (previousQuality !== this.quality.preference) this.reportDisplay();
@@ -740,7 +760,7 @@ export class DesktopSession {
     this.performanceSample({
       // Only count decoded images observed in a visible rAF, not every
       // drawImage submission that may be overwritten before a paint cycle.
-      framesPerSecond: (presentedFrames * 1000) / elapsed,
+      framesPerSecond: observedFramesPerSecond,
       visibleGapP95Milliseconds: visibleGaps.p95Milliseconds,
       visibleGapP99Milliseconds: visibleGaps.p99Milliseconds,
       visibleGapsAtLeast100Milliseconds: visibleGaps.gapsAtLeast100Milliseconds,
@@ -923,6 +943,7 @@ export class DesktopSession {
       cancelAnimationFrame(this.observationAnimation);
     this.observationAnimation = undefined;
     this.visibleFrameGaps.clear();
+    this.pendingVisibleTiming = null;
     this.canvas.style.removeProperty("--desktop-cursor");
     clearTimeout(this.deadline);
     clearTimeout(this.livenessDeadline);

@@ -124,7 +124,20 @@ ruvia::Task<void> exercise(ruvia::WorkerHandle worker) {
         require(session.diagnostics().maximumDecodeMicroseconds == 18000);
         require(session.diagnostics().latestBrowserQueueDepth == 4);
         require(session.diagnostics().latestBackground);
+        feedback.set_sequence(3);
+        feedback.mutable_quality_feedback()->set_background(false);
+        auto* timing = feedback.mutable_quality_feedback()->mutable_visible_frame_timing();
+        timing->set_sample_count(120);
+        timing->set_p95_microseconds(48000);
+        timing->set_p99_microseconds(63000);
+        timing->set_long_gap_count(2);
+        timing->set_observed_fps_milli(27000);
+        require(co_await session.forward(endpoints[0], feedback));
+        require(session.diagnostics().visibleFrames.reports == 1 && session.diagnostics().visibleFrames.latestSamples == 120 &&
+                session.diagnostics().visibleFrames.latestP95Microseconds == 48000 && session.diagnostics().visibleFrames.latestLongGaps == 2 &&
+                session.diagnostics().visibleFrames.latestFpsMilli == 27000);
         session.logHealth();
+        require(session.diagnostics().visibleFrames.reports == 0);
         session.close(server::DesktopCloseReason::kPeerClosed, server::DesktopCloseOrigin::kBrowserInput);
         session.close(server::DesktopCloseReason::kReadFailed, server::DesktopCloseOrigin::kAgentVideo);
         require(session.closeReason() == server::DesktopCloseReason::kPeerClosed);

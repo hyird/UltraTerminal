@@ -1,3 +1,5 @@
+import type { ultraterimal } from "../../generated/session";
+
 // A bounded record of distinct canvas frames observed by visible rAF callbacks.
 // rAF runs before compositor presentation; these are not physical display times.
 export class DesktopVisibleFrameGaps {
@@ -45,4 +47,51 @@ export class DesktopVisibleFrameGaps {
       gapsAtLeast100Milliseconds: sorted.filter((gap) => gap >= 100).length,
     };
   }
+}
+
+// A wire summary is emitted at most once per second and only while a visible
+// stream advances. Invalid or suspended samples never disrupt video ACKs.
+export function visibleFrameTiming(
+  summary: ReturnType<DesktopVisibleFrameGaps["summary"]>,
+  observedFramesPerSecond: number,
+): ultraterimal.wire.IVisibleFrameTiming | null {
+  const {
+    samples,
+    p95Milliseconds,
+    p99Milliseconds,
+    gapsAtLeast100Milliseconds,
+  } = summary;
+  if (
+    !Number.isInteger(samples) ||
+    samples < 20 ||
+    samples > 120 ||
+    p95Milliseconds === null ||
+    p99Milliseconds === null ||
+    !Number.isFinite(p95Milliseconds) ||
+    !Number.isFinite(p99Milliseconds) ||
+    !Number.isInteger(gapsAtLeast100Milliseconds) ||
+    gapsAtLeast100Milliseconds < 0 ||
+    gapsAtLeast100Milliseconds > samples ||
+    !Number.isFinite(observedFramesPerSecond)
+  )
+    return null;
+  const p95Microseconds = Math.round(p95Milliseconds * 1000);
+  const p99Microseconds = Math.round(p99Milliseconds * 1000);
+  const observedFpsMilli = Math.round(observedFramesPerSecond * 1000);
+  if (
+    p95Microseconds < 1 ||
+    p95Microseconds > 30_000_000 ||
+    p99Microseconds < p95Microseconds ||
+    p99Microseconds > 30_000_000 ||
+    observedFpsMilli < 1 ||
+    observedFpsMilli > 240_000
+  )
+    return null;
+  return {
+    sampleCount: samples,
+    p95Microseconds,
+    p99Microseconds,
+    longGapCount: gapsAtLeast100Milliseconds,
+    observedFpsMilli,
+  };
 }

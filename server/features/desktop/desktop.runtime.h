@@ -95,7 +95,7 @@ class DesktopSession {
     DesktopCloseReason closeReason() const { return closeReason_; }
     DesktopCloseOrigin closeOrigin() const { return closeOrigin_; }
     const DesktopDiagnostics& diagnostics() const { return diagnostics_; }
-    void logHealth() const;
+    void logHealth();
 
   private:
     void logDiagnostics(std::string_view event) const;

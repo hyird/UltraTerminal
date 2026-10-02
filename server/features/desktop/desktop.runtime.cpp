@@ -235,6 +235,10 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.maximumBrowserQueueDepth = std::max(diagnostics_.maximumBrowserQueueDepth, feedback.queue_depth());
                 diagnostics_.latestBrowserQueueDepth = feedback.queue_depth();
                 diagnostics_.latestBackground = feedback.background();
+                if (feedback.has_visible_frame_timing()) {
+                    const auto& timing = feedback.visible_frame_timing();
+                    diagnostics_.visibleFrames.observe(timing.sample_count(), timing.p95_microseconds(), timing.p99_microseconds(), timing.long_gap_count(), timing.observed_fps_milli());
+                }
             }
             co_return true;
         }
@@ -271,9 +275,10 @@ void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin)
         }
     }
 }
-void DesktopSession::logHealth() const {
+void DesktopSession::logHealth() {
     if (bound_ && ready()) {
         logDiagnostics("desktop_session_health");
+        diagnostics_.visibleFrames.clear();
     }
 }
 void DesktopSession::logDiagnostics(std::string_view event) const {
@@ -282,9 +287,10 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
     }
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_).count();
     const auto encoding = diagnostics_.encoding.summary();
+    const auto& raf = diagnostics_.visibleFrames;
     const auto encoder = !encoding.samples ? "unknown" : diagnostics_.latestHardwareEncoding ? "hardware"
                                                                                              : "software";
-    spdlog::info("{} session_id={} device_id={} reason={} origin={} ready={} duration_ms={} messages={} bytes={} frames={} inputs={} feedback={} backpressure_events={} backpressure_ms={} pending_bytes={} peak_pending_bytes={} max_decode_us={} max_browser_queue_depth={} latest_browser_queue_depth={} background={} video_width={} video_height={} encoder={} encode_samples={} mean_encode_us={} p95_encode_us={} p99_encode_us={} max_encode_us={} last_keyframe_encode_us={} target_fps={} target_bps={}",
+    spdlog::info("{} session_id={} device_id={} reason={} origin={} ready={} duration_ms={} messages={} bytes={} frames={} inputs={} feedback={} backpressure_events={} backpressure_ms={} pending_bytes={} peak_pending_bytes={} max_decode_us={} max_browser_queue_depth={} latest_browser_queue_depth={} background={} video_width={} video_height={} encoder={} encode_samples={} mean_encode_us={} p95_encode_us={} p99_encode_us={} max_encode_us={} last_keyframe_encode_us={} target_fps={} target_bps={} raf_reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_long_gaps={} raf_fps_milli={} raf_min_fps_milli={} raf_max_fps_milli={} raf_max_p95_us={} raf_max_p99_us={} raf_max_long_gaps={}",
                  event, identity_.sessionId, identity_.deviceId, closed_ ? closeReasonName(closeReason_) : "active", closed_ ? closeOriginName(closeOrigin_) : "server", ready_, duration,
                  diagnostics_.forwardedMessages, diagnostics_.forwardedBytes, diagnostics_.videoFrames, diagnostics_.inputEvents,
                  diagnostics_.feedbackMessages, diagnostics_.backpressureEvents, diagnostics_.backpressureMilliseconds,
@@ -292,6 +298,8 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
                  diagnostics_.maximumBrowserQueueDepth, diagnostics_.latestBrowserQueueDepth, diagnostics_.latestBackground,
                  diagnostics_.videoWidth, diagnostics_.videoHeight, encoder, encoding.samples, encoding.meanMicroseconds,
                  encoding.p95Microseconds, encoding.p99Microseconds, encoding.maximumMicroseconds, diagnostics_.latestKeyFrameEncodeMicroseconds,
-                 diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate);
+                 diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate,
+                 raf.reports, raf.latestSamples, raf.latestP95Microseconds, raf.latestP99Microseconds, raf.latestLongGaps,
+                 raf.latestFpsMilli, raf.minimumFpsMilli, raf.maximumFpsMilli, raf.maximumP95Microseconds, raf.maximumP99Microseconds, raf.maximumLongGaps);
 }
 } // namespace ultraterimal::server
