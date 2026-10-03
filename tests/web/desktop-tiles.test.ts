@@ -17,6 +17,62 @@ function png(width = 128, height = 64): Uint8Array {
 }
 const area = { x: 0, y: 0, width: 128, height: 64 };
 
+test("PNG decoding overlaps with a four-image ceiling and closes late failures", async () => {
+  let active = 0,
+    peak = 0,
+    closes = 0;
+  const releases: (() => void)[] = [];
+  const cache = new DesktopTiles(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    active--;
+    return {
+      width: 128,
+      height: 64,
+      close: () => {
+        closes++;
+      },
+    };
+  });
+  const patches = Array.from({ length: 8 }, (_, index) => ({
+    destination: area,
+    png: png(),
+    cacheSlot: index + 1,
+  }));
+  const prepared = cache.prepare(patches, 256, 128);
+  expect(active).toBe(4);
+  while (closes === 0) {
+    for (const release of releases.splice(0)) release();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (active === 0) break;
+  }
+  const batch = await prepared;
+  expect(peak).toBe(4);
+  expect(batch.tiles).toHaveLength(8);
+  batch.dispose();
+  expect(closes).toBe(8);
+  let started = 0,
+    failedCloses = 0;
+  const failing = new DesktopTiles(async () => {
+    const index = started++;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    if (index === 0) throw new Error("decoder failure");
+    return {
+      width: 128,
+      height: 64,
+      close: () => {
+        failedCloses++;
+      },
+    };
+  });
+  await expect(failing.prepare(patches, 256, 128)).rejects.toThrow(
+    "decoder failure",
+  );
+  expect(started).toBe(8);
+  expect(failedCloses).toBe(7);
+});
+
 test("tile definitions publish atomically and reuse the same decoded image", async () => {
   let decodes = 0,
     closes = 0;

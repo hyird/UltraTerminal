@@ -108,13 +108,29 @@ export class DesktopTiles {
       throw new Error("Desktop tile budget exceeded");
     const definitions = new Map<number, ImageBitmap>();
     const owned = new Set<ImageBitmap>();
+    const decoded = new Map<number, ImageBitmap>();
     const tiles: DesktopDecodedTile[] = [];
     try {
-      for (const area of areas) {
+      let next = 0;
+      // Wait for every bounded worker before cleanup; late completions own images.
+      const workers = await Promise.allSettled(
+        Array.from({ length: Math.min(4, areas.length) }, async () => {
+          while (next < areas.length) {
+            const index = next++;
+            const area = areas[index];
+            if (!area.png.length) continue;
+            const image = await this.decode(area.png);
+            owned.add(image);
+            decoded.set(index, image);
+          }
+        }),
+      );
+      for (const worker of workers)
+        if (worker.status === "rejected") throw worker.reason;
+      for (const [index, area] of areas.entries()) {
         const image = area.png.length
-          ? await this.decode(area.png)
+          ? decoded.get(index)
           : (definitions.get(area.slot) ?? this.slots.get(area.slot));
-        if (image && area.png.length) owned.add(image);
         if (
           !image ||
           image.width !== area.width ||
