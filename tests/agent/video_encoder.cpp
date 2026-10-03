@@ -4,6 +4,7 @@
 #include <wels/codec_api.h>
 
 #include "features/desktop/avc.protocol.h"
+#include "features/desktop/codecs.protocol.h"
 #include "features/desktop/software_video.transport.h"
 #include "features/desktop/video.transport.h"
 #include "platform/windows/media_encoder.transport.h"
@@ -19,6 +20,7 @@ enum class Fault { kNone,
                    kFalseKey };
 Fault fault = Fault::kNone;
 unsigned creations = 0, destructions = 0;
+std::vector<ultraterimal::wire::VideoCodec> attemptedCodecs;
 void require(bool condition, const char* message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -57,6 +59,7 @@ struct MediaEncoder::State {
 };
 MediaEncoder::MediaEncoder(MediaEncoderConfig config, ID3D11Device*) {
     ++creations;
+    attemptedCodecs.push_back(config.codec);
     if (fault == Fault::kUnavailable) {
         throw std::runtime_error("Optional media unavailable");
     }
@@ -111,6 +114,26 @@ int main() {
             require(creations == before + 1, "Unbounded hardware retry");
         }
         require(destructions == 6, "Hardware codec was not released on failure");
+        fault = Fault::kNone;
+        attemptedCodecs.clear();
+        {
+            // The hardware double emits AVC even when asked for AV1. It must
+            // never be labeled or transmitted as the requested family.
+            VideoEncoder encoder({64, 64, 1000000, 60, false, {ultraterimal::wire::AVC, ultraterimal::wire::HEVC, ultraterimal::wire::AV1}});
+            auto baseline = encoder.encode(pixels, 256, 1, true);
+            require(baseline && baseline->codec.starts_with("avc1."), "Malformed optional codec failed to return H264");
+            decode(*baseline);
+            require(attemptedCodecs == std::vector{ultraterimal::wire::AV1, ultraterimal::wire::AVC}, "Optional codec retry was unbounded");
+            for (std::uint64_t timestamp = 2; timestamp < 10; ++timestamp) {
+                require(encoder.encode(pixels, 256, timestamp).has_value(), "H264 after optional fallback failed");
+            }
+            require(attemptedCodecs.size() == 2, "Rejected optional codec was retried");
+        }
+        for (const auto family : {ultraterimal::wire::HEVC, ultraterimal::wire::AV1}) {
+            const std::vector<std::uint8_t> malformed{0, 0, 1, 0x65, 1};
+            require(!describeVideoFrame(family, malformed, "", true), "Malformed optional frame accepted");
+            require(!verifyVideoBaseline(family, malformed, 64, 64), "Malformed optional baseline decoded");
+        }
         const std::vector<std::vector<std::uint8_t>> malformed{{}, {0, 0, 1}, {0, 0, 1, 0x87, 66, 0, 30}, {0, 0, 1, 0x65, 1}, {0, 0, 1, 0x67, 66}, {0, 0, 1, 0x67, 66, 0, 30, 0, 0, 1, 0x68, 1}};
         for (const auto& bytes : malformed) {
             require(!describeAvcFrame(bytes, "avc1.42001E"), "Malformed or incomplete AVC accepted");

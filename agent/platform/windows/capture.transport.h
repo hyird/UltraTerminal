@@ -45,6 +45,11 @@ struct CapturedFrame {
     // Empty for cursor updates and deferred GPU snapshots. captureTicks marks
     // a desktop update even when CPU readback was deferred by receiver credit.
     std::vector<std::uint8_t> bgra;
+    // DXGI damage since the immediately preceding acquired desktop image.
+    // Consumers must accumulate damage when coalescing raw snapshots.
+    bool damageKnown = false;
+    std::vector<wire::CopyRect> moves;
+    std::vector<wire::Rectangle> dirty;
     bool pointerVisible = false;
     std::int32_t pointerX = 0, pointerY = 0;
     std::vector<std::uint8_t> pointerShape;

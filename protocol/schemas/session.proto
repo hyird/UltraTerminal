@@ -142,7 +142,7 @@ message ChannelData { bytes data = 1; }
 message SessionClose { string reason = 1; }
 message SessionError { string code = 1; string message = 2; }
 message DisplayMode { uint32 width = 1; uint32 height = 2; }
-message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; }
+message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; }
 message DesktopResize { uint64 request_id = 1; uint32 width = 2; uint32 height = 3; }
 message DesktopResizeResult { uint64 request_id = 1; bool applied = 2; }
 // Service -> browser. Zero means dispatched, not confirmation of a UI transition.
@@ -192,7 +192,10 @@ message VideoFrame {
 message Rectangle { uint32 x = 1; uint32 y = 2; uint32 width = 3; uint32 height = 4; }
 message FullFrame { uint32 width = 1; uint32 height = 2; bytes rgba = 3; }
 message CopyRect { Rectangle destination = 1; uint32 source_x = 2; uint32 source_y = 3; }
-message PatchRect { Rectangle destination = 1; bytes png = 2; }
+// cache_slot 1..128 defines/reuses a generation-scoped 128x64-or-smaller tile.
+// Empty png requires a previously defined slot of exactly the same dimensions.
+// Zero is an uncached PNG (also the only form allowed in legacy DiffBatch).
+message PatchRect { Rectangle destination = 1; bytes png = 2; uint32 cache_slot = 3; }
 message DiffBatch { repeated CopyRect copies = 1; repeated PatchRect patches = 2; }
 // POINTER_MOVE: output-local physical pixels. BUTTON: 0 left, 1 middle, 2 right,
 // 3 back, 4 forward. KEY: Windows virtual-key code (left/right modifiers),
@@ -237,6 +240,23 @@ message QualityFeedback {
 // Applied only to the matching video frame, never to a newer canvas or baseline.
 // Envelope frame_id == base_frame_id == the latest video frame ID.
 message VideoRefinement { repeated PatchRect patches = 1; }
+// Atomic updates to the composed canvas. All copies read the PREVIOUS canvas,
+// then patches are applied. Does not change the video decoder's reference frames.
+message DesktopRegionUpdate {
+  repeated CopyRect copies = 1;
+  repeated PatchRect patches = 2;
+  uint32 encode_microseconds = 3;
+  uint32 target_frames_per_second = 4;
+  uint32 target_bitrate = 5;
+}
+enum VideoCodec { VIDEO_CODEC_UNSPECIFIED = 0; AVC = 1; HEVC = 2; AV1 = 3; }
+// Sent on the authenticated input channel; independent of frame ACKs. Missing
+// capabilities preserve the deployed H264/uncached-refinement contract.
+message DesktopVideoCapabilities {
+  repeated VideoCodec codecs = 1;
+  bool region_updates = 2;
+  bool tile_cache = 3;
+}
 message RequestRefresh {}
 // Agent issues monotonically increasing nonces on the input channel and retains
 // a bounded number in flight for delayed acknowledgments; browser echoes each
@@ -311,5 +331,7 @@ message Envelope {
     AgentUpdate agent_update = 41;
     DesktopSecureAttentionResult desktop_secure_attention_result = 42;
     VideoRefinement video_refinement = 43;
+    DesktopRegionUpdate desktop_region_update = 44;
+    DesktopVideoCapabilities desktop_video_capabilities = 45;
   }
 }

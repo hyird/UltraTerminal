@@ -51,6 +51,9 @@ class DesktopContinuity {
     // False means an obsolete command, not a malformed wire message. Native
     // validation still occurs before this filter, including sequence checks.
     bool incoming(wire::Envelope& message) {
+        if (message.has_desktop_video_capabilities()) {
+            return true; // Already authenticated; capability negotiation needs no displayed frame.
+        }
         if (message.has_desktop_probe()) {
             auto& probe = *message.mutable_desktop_probe();
             if (probe.nonce() <= probeOffset_ || probe.nonce() > probe_) {

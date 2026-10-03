@@ -12,7 +12,7 @@ struct ID3D11Texture2D;
 
 namespace ultraterimal::agent {
 // Owns encoder selection and failover on one encoding worker. A failed hardware
-// encoder is not retried until a new desktop encoder is constructed.
+// family falls back to H.264, then software; the failed family is not retried.
 class VideoEncoder {
   public:
     explicit VideoEncoder(VideoEncoderConfig config, ID3D11Device* device = nullptr);

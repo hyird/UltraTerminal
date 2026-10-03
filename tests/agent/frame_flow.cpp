@@ -100,6 +100,19 @@ int main() {
         narrow.run(30s, 125000, 40ms);
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Narrow link failed to adapt both bitrate and capture cadence");
         require(narrow.peakFrames <= 128 && narrow.peakBytes <= 4 * 1024 * 1024 + 50000, "Narrow link exceeded bounded flight");
+        auto scene = narrow.flow;
+        const auto narrowBitrate = scene.rate().bitrate;
+        for (unsigned sample = 0; sample < 24; ++sample) {
+            scene.observeScene(100, 128 * 64, false);
+        }
+        require(scene.rate().framesPerSecond > narrow.flow.rate().framesPerSecond && scene.rate().bitrate == narrowBitrate, "Cheap regional updates did not recover cadence within the same bandwidth");
+        for (unsigned sample = 0; sample < 24; ++sample) {
+            scene.observeScene(100000, 1920 * 1080, false);
+        }
+        require(scene.rate().framesPerSecond <= narrow.flow.rate().framesPerSecond, "Large encoded frames ignored the actual byte budget");
+        const auto sceneRate = scene.rate().framesPerSecond;
+        scene.observeScene(1, 1, true);
+        require(scene.rate().framesPerSecond == sceneRate, "Keyframe distorted the steady scene estimate");
         const auto reduced = narrow.flow.rate();
         narrow.run(25s, 10000000, 40ms);
         std::cout << "recovery_25s_bitrate=" << narrow.flow.rate().bitrate << " fps=" << narrow.flow.rate().framesPerSecond << '\n';

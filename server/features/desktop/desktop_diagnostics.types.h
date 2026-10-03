@@ -105,6 +105,7 @@ struct DesktopDiagnostics {
     bool latestHardwareEncoding = false;
     bool latestGpuEncoding = false;
     std::uint64_t refinementMessages = 0, refinementBytes = 0;
+    std::uint64_t regionMessages = 0, regionBytes = 0, copiedPixels = 0, tileCacheHits = 0;
     std::uint64_t videoGeneration = 0, latestVideoFrame = 0;
     std::chrono::steady_clock::time_point renderReportedAt{};
 };

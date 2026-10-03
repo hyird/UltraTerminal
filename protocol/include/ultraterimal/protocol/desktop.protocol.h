@@ -1,11 +1,15 @@
 #pragma once
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <utility>
 
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::protocol {
+inline constexpr std::size_t kDesktopTileCacheSlots = 128;
 enum class ChannelSource { kBrowser,
                            kAgent };
 enum class DesktopMessageError { kMalformed,
@@ -37,6 +41,7 @@ class DesktopChannelValidator {
                       kVideo,
                       kLossless };
     bool acceptFrame(const wire::Envelope& message);
+    bool acceptPatches(const google::protobuf::RepeatedPtrField<wire::PatchRect>& patches);
     DesktopChannelBinding binding_;
     std::uint64_t sequence_ = 1;
     std::uint64_t generation_ = 0;
@@ -46,5 +51,6 @@ class DesktopChannelValidator {
     std::uint32_t height_ = 0;
     Mode mode_ = Mode::kNone;
     bool refined_ = false;
+    std::array<std::pair<std::uint32_t, std::uint32_t>, kDesktopTileCacheSlots> tiles_{};
 };
 } // namespace ultraterimal::protocol

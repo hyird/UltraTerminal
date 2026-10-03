@@ -32,7 +32,7 @@ std::uint64_t cpuTicks() {
     const auto ticks = [](FILETIME value) { return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
     return ticks(kernel) + ticks(user);
 }
-asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, std::chrono::seconds duration, bool sharp, std::vector<Clock::time_point>& received, std::vector<double>& sourceAges, std::vector<std::uint64_t>& presentTicks, std::vector<std::uint64_t>& encodeStartedUs, std::int64_t qpcFrequency, unsigned& sourceWidth, unsigned& sourceHeight, unsigned& lastTargetRate,
+asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, std::chrono::seconds duration, bool sharp, bool regions, unsigned& regionFrames, std::vector<Clock::time_point>& received, std::vector<double>& sourceAges, std::vector<std::uint64_t>& presentTicks, std::vector<std::uint64_t>& encodeStartedUs, std::int64_t qpcFrequency, unsigned& sourceWidth, unsigned& sourceHeight, unsigned& lastTargetRate,
                               unsigned& hardwareFrames, unsigned& gpuFrames, std::uint64_t& totalEncodeMicroseconds, std::uint64_t& totalEncodedBytes, unsigned& calls, unsigned& noUpdate, unsigned& cursorOnly,
                               ultraterimal::agent::DesktopVideoDiagnostics& captured) {
     using namespace ultraterimal;
@@ -51,6 +51,11 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
     feedback.set_displayed_generation(first->generation);
     feedback.set_displayed_frame(first->frameId);
     video.feedback(feedback);
+    wire::DesktopVideoCapabilities capabilities;
+    capabilities.add_codecs(wire::AVC);
+    capabilities.set_region_updates(regions);
+    capabilities.set_tile_cache(regions);
+    video.capabilities(capabilities);
     const auto until = Clock::now() + 3s + duration;
     const auto warmup = until - duration;
     agent::DesktopVideoDiagnostics baseline;
@@ -67,11 +72,11 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
             ++calls;
             if (!update) {
                 ++noUpdate;
-            } else if (update->frame.data().empty()) {
+            } else if (update->frame.data().empty() && !update->region) {
                 ++cursorOnly;
             }
         }
-        if (!update || update->frame.data().empty()) {
+        if (!update || (update->frame.data().empty() && !update->region)) {
             continue;
         }
         feedback.set_displayed_generation(update->generation);
@@ -88,13 +93,15 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
                 }
                 sourceAges.push_back(1000.0 * (static_cast<std::uint64_t>(published.QuadPart) - update->sourcePresentTicks) / qpcFrequency);
                 presentTicks.push_back(update->sourcePresentTicks);
-                encodeStartedUs.push_back(update->frame.timestamp_microseconds());
+                const auto encodeUs = update->region ? update->region->encode_microseconds() : update->frame.encode_microseconds();
+                encodeStartedUs.push_back(static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count()) - encodeUs);
             }
-            lastTargetRate = update->frame.target_frames_per_second();
+            lastTargetRate = update->region ? update->region->target_frames_per_second() : update->frame.target_frames_per_second();
+            regionFrames += update->region.has_value();
             hardwareFrames += update->frame.hardware_encoding();
             gpuFrames += update->frame.gpu_encoding();
-            totalEncodeMicroseconds += update->frame.encode_microseconds();
-            totalEncodedBytes += update->frame.data().size();
+            totalEncodeMicroseconds += update->region ? update->region->encode_microseconds() : update->frame.encode_microseconds();
+            totalEncodedBytes += update->region ? update->region->ByteSizeLong() : update->frame.ByteSizeLong();
         }
     }
     const auto after = video.diagnostics();
@@ -106,7 +113,10 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
                 after.backpressuredCalls - baseline.backpressuredCalls,
                 after.encodedFrames - baseline.encodedFrames,
                 after.pixelCaptureGaps - baseline.pixelCaptureGaps,
-                after.pixelCaptureGapsGe45ms - baseline.pixelCaptureGapsGe45ms};
+                after.pixelCaptureGapsGe45ms - baseline.pixelCaptureGapsGe45ms,
+                after.unknownDamageUpdates - baseline.unknownDamageUpdates,
+                after.regionCandidates - baseline.regionCandidates,
+                after.regionBudgetFailures - baseline.regionBudgetFailures};
     video.stop();
 }
 } // namespace
@@ -118,6 +128,8 @@ int main(int argc, char** argv) {
         bool sharp = false;
         bool scrolling = false;
         bool motion = false;
+        bool regions = false;
+        unsigned regionFrames = 0;
         for (int index = 1; index < argc; ++index) {
             const auto option = std::string_view(argv[index]);
             if (option == "--paint-hz=30") {
@@ -138,8 +150,10 @@ int main(int argc, char** argv) {
                 scrolling = true;
             } else if (option == "--motion") {
                 motion = true;
+            } else if (option == "--regions") {
+                regions = true;
             } else {
-                throw std::invalid_argument("Usage: agent-video-cadence-benchmark [--paint-hz=30|40|60] [--paint-size=512|960] [--seconds=60] [--quality=sharp] [--scroll|--motion]");
+                throw std::invalid_argument("Usage: agent-video-cadence-benchmark [--paint-hz=30|40|60] [--paint-size=512|960] [--seconds=60] [--quality=sharp] [--scroll|--motion] [--regions]");
             }
         }
         if (scrolling && motion) {
@@ -187,7 +201,7 @@ int main(int argc, char** argv) {
         std::uint64_t totalEncodeMicroseconds = 0, totalEncodedBytes = 0;
         ultraterimal::agent::DesktopVideoDiagnostics captured;
         std::exception_ptr failure;
-        asio::co_spawn(io, measure(video, duration, sharp, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured), [&](std::exception_ptr error) {
+        asio::co_spawn(io, measure(video, duration, sharp, regions, regionFrames, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured), [&](std::exception_ptr error) {
             failure = error;
             video.stop();
             attachment.stop();
@@ -242,11 +256,12 @@ int main(int argc, char** argv) {
                   << "\",\"surface_action\":\"" << action << "\",\"paint_size\":" << paintSize << ",\"source_width\":" << sourceWidth << ",\"source_height\":" << sourceHeight
                   << ",\"duration_seconds\":" << duration.count() << ",\"paint_calls\":" << paints
                   << ",\"target_fps\":" << targetRate << ",\"encoded_frames\":" << received.size() << ",\"measured_seconds\":" << elapsed
-                  << ",\"hardware_frames\":" << hardwareFrames << ",\"gpu_frames\":" << gpuFrames << ",\"mean_encode_us\":" << totalEncodeMicroseconds / received.size() << ",\"mean_encoded_bytes\":" << totalEncodedBytes / received.size() << ",\"encoded_bps\":" << totalEncodedBytes * 8 / elapsed
+                  << ",\"region_frames\":" << regionFrames << ",\"hardware_frames\":" << hardwareFrames << ",\"gpu_frames\":" << gpuFrames << ",\"mean_encode_us\":" << totalEncodeMicroseconds / received.size() << ",\"mean_encoded_bytes\":" << totalEncodedBytes / received.size() << ",\"encoded_bps\":" << totalEncodedBytes * 8 / elapsed
                   << ",\"video_next_calls\":" << calls << ",\"no_update_calls\":" << noUpdate << ",\"cursor_only_calls\":" << cursorOnly
                   << ",\"dxgi_calls\":" << captured.captureCalls << ",\"pixel_updates\":" << captured.pixelUpdates << ",\"dxgi_timeouts\":" << captured.captureTimeouts
                   << ",\"pending_before_deadline_calls\":" << captured.pendingBeforeDeadlineCalls << ",\"backpressured_calls\":" << captured.backpressuredCalls
                   << ",\"worker_encoded_frames\":" << captured.encodedFrames
+                  << ",\"unknown_damage_updates\":" << captured.unknownDamageUpdates << ",\"region_candidates\":" << captured.regionCandidates << ",\"region_budget_failures\":" << captured.regionBudgetFailures
                   << ",\"pixel_capture_gaps\":" << captured.pixelCaptureGaps << ",\"pixel_capture_gaps_ge_45ms\":" << captured.pixelCaptureGapsGe45ms
                   << ",\"cpu_ms_including_warmup\":" << cpuMilliseconds << ",\"peak_working_set_kib\":" << memory.PeakWorkingSetSize / 1024
                   << ",\"private_bytes_kib\":" << memory.PrivateUsage / 1024

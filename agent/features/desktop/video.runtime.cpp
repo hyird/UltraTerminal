@@ -15,11 +15,13 @@
 #include <ruvia/core/AsioTask.h>
 #include <ruvia/core/BlockingPool.h>
 
+#include "damage.protocol.h"
 #include "frame_flow.runtime.h"
 #include "platform/windows/capture.transport.h"
 #include "platform/windows/cursor.transport.h"
 #include "recovery.runtime.h"
 #include "refinement.protocol.h"
+#include "tile_cache.protocol.h"
 #include "video.transport.h"
 
 namespace ultraterimal::agent {
@@ -44,6 +46,10 @@ struct VideoWorker {
     DesktopCursor cursor;
     CaptureRecovery recovery;
     DesktopVideoDiagnostics diagnostics;
+    DesktopDamage damage;
+    DesktopTileCache tiles;
+    std::uint32_t damageWidth = 0, damageHeight = 0;
+    std::vector<wire::VideoCodec> requestedCodecs{wire::AVC};
 
     void discard() {
         retained.reset();
@@ -56,6 +62,9 @@ struct VideoWorker {
         lastEncodedTicks = refinedFrame = 0;
         lastEncodedAt = {};
         previousPixelCaptureAt = {};
+        damage.reset(0, 0);
+        damageWidth = damageHeight = 0;
+        tiles.clear();
     }
     bool materialize() {
         try {
@@ -71,10 +80,18 @@ struct VideoWorker {
     }
     std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopFrameFlow::Rate rate,
                                            std::uint32_t flowWidth, std::uint32_t flowHeight,
-                                           std::optional<std::pair<std::uint32_t, std::uint32_t>>& geometryChanged, bool allowEncode, bool allowRefinement) {
+                                           std::optional<std::pair<std::uint32_t, std::uint32_t>>& geometryChanged, bool allowEncode, bool allowRefinement, const wire::DesktopVideoCapabilities& capabilities) {
         if (reset) {
             discard();
         }
+        std::vector<wire::VideoCodec> codecs{wire::AVC};
+        for (const auto codec : capabilities.codecs()) {
+            if (codec != wire::AVC) {
+                codecs.push_back(static_cast<wire::VideoCodec>(codec));
+            }
+        }
+        const bool codecChanged = codecs != requestedCodecs;
+        refresh = refresh || codecChanged;
         if (!recovery.ready(std::chrono::steady_clock::now())) {
             return std::nullopt;
         }
@@ -90,12 +107,12 @@ struct VideoWorker {
             capturedOnGpu = gpu;
             const bool readPixels = !gpu && allowEncode && (!encoder || configurationPending || refresh || now >= encodeAt);
             const bool readyToEncode = retained && readPixels && (refresh || pixelsPending);
-            pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode || !allowEncode ? 0 : 16), retained ? &retained->bgra : nullptr, nullptr, retained.has_value(), readPixels, !encoder || gpu);
+            pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode || !allowEncode ? 0 : 16), retained ? &retained->bgra : nullptr, nullptr, retained.has_value(), readPixels, !encoder || gpu || codecChanged);
             readbackReady = readPixels || gpu;
             ++diagnostics.captureCalls;
             if (!pixels) {
                 ++diagnostics.captureTimeouts;
-            } else if (pixels->bgra.empty()) {
+            } else if (!pixels->captureTicks || pixels->captureTicks == lastPresentTicks) {
                 ++diagnostics.cursorOnlyUpdates;
             } else {
                 ++diagnostics.pixelUpdates;
@@ -120,6 +137,15 @@ struct VideoWorker {
             return std::nullopt;
         }
         if (pixels) {
+            if (pixels->width != damageWidth || pixels->height != damageHeight) {
+                damageWidth = pixels->width;
+                damageHeight = pixels->height;
+                damage.reset(damageWidth, damageHeight);
+            }
+            if (pixels->captureTicks && pixels->captureTicks != lastPresentTicks) {
+                damage.add(pixels->damageKnown, pixels->moves, pixels->dirty);
+                diagnostics.unknownDamageUpdates += !pixels->damageKnown;
+            }
             pixelsPending = pixelsPending || (pixels->captureTicks != 0 && pixels->captureTicks != lastEncodedTicks);
             if (pixels->captureTicks != 0) {
                 lastPresentTicks = pixels->captureTicks;
@@ -157,7 +183,7 @@ struct VideoWorker {
         const auto now = std::chrono::steady_clock::now();
         if (detailDue && !pixelsPending && !refresh && !configurationPending) {
             refinedFrame = frameId;
-            auto detail = refineVideoDetails(source.bgra, source.width, source.height);
+            auto detail = refineVideoDetails(source.bgra, source.width, source.height, &tiles, capabilities.tile_cache());
             if (detail.patches_size()) {
                 update.generation = generation;
                 update.frameId = frameId;
@@ -177,8 +203,61 @@ struct VideoWorker {
             }
             return std::nullopt;
         }
-        if (!encoder || source.width != width || source.height != height) {
-            encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, rate.sharp}, capture->device());
+        update.changedPixels = damage.changedPixels();
+        if (encoder && !configurationPending && !refresh && frameId && capabilities.region_updates() && damage.regionCandidate()) {
+            ++diagnostics.regionCandidates;
+            const auto started = std::chrono::steady_clock::now();
+            if (encoder->gpu() && !materialize()) {
+                return std::nullopt;
+            }
+            wire::DesktopRegionUpdate region;
+            for (const auto& copy : damage.copies()) {
+                *region.add_copies() = copy;
+            }
+            tiles.begin();
+            std::size_t bytes = 0;
+            bool fits = true;
+            // Spend at most half a video-frame budget on PNGs. Cached copies
+            // remain cheap; high-entropy updates go directly to the video codec.
+            const auto budget = std::min<std::size_t>(256 * 1024, std::max<std::size_t>(4096, rate.bitrate / rate.framesPerSecond / 16));
+            for (const auto& area : damage.patches()) {
+                auto patch = tiles.prepare(source.bgra, source.width, source.height, area, capabilities.tile_cache(), budget - bytes);
+                if (!patch) {
+                    fits = false;
+                    break;
+                }
+                bytes += patch->png().size();
+                *region.add_patches() = std::move(*patch);
+            }
+            if (fits) {
+                if (frameId == std::numeric_limits<std::uint64_t>::max()) {
+                    throw std::overflow_error("Desktop frame sequence exhausted");
+                }
+                tiles.commit();
+                region.set_encode_microseconds(static_cast<std::uint32_t>(std::max<std::int64_t>(1, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count())));
+                region.set_target_frames_per_second(rate.framesPerSecond);
+                region.set_target_bitrate(rate.bitrate);
+                update.generation = generation;
+                update.baseFrameId = frameId;
+                update.frameId = ++frameId;
+                update.changedPixels = 0;
+                for (const auto& patch : region.patches()) {
+                    update.changedPixels += static_cast<std::uint64_t>(patch.destination().width()) * patch.destination().height();
+                }
+                update.region = std::move(region);
+                pixelsPending = false;
+                lastEncodedTicks = lastPresentTicks;
+                lastEncodedAt = std::chrono::steady_clock::now();
+                encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
+                damage.commit();
+                return update;
+            }
+            tiles.begin();
+            ++diagnostics.regionBudgetFailures;
+        }
+        if (!encoder || source.width != width || source.height != height || codecChanged) {
+            encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, rate.sharp, codecs}, capture->device());
+            requestedCodecs = std::move(codecs);
             width = source.width;
             height = source.height;
             if (generation == std::numeric_limits<std::uint64_t>::max()) {
@@ -188,6 +267,7 @@ struct VideoWorker {
             frameId = 0;
             refinedFrame = 0;
             configurationPending = true;
+            tiles.clear();
         }
         encoder->setRate(rate.framesPerSecond, rate.bitrate);
         encoder->setDetail(rate.sharp);
@@ -228,6 +308,7 @@ struct VideoWorker {
             frameId = 0;
             refinedFrame = 0;
             configurationPending = true;
+            tiles.clear();
             update.cursor = cursor.update(source, true);
         }
         if (frameId == std::numeric_limits<std::uint64_t>::max()) {
@@ -238,9 +319,11 @@ struct VideoWorker {
         update.frameId = ++frameId;
         lastEncodedTicks = lastPresentTicks;
         lastEncodedAt = std::chrono::steady_clock::now();
+        damage.commit();
         if (configurationPending) {
             update.configuration.emplace();
             update.configuration->set_codec(encoded->codec);
+            update.configuration->set_desktop_optimization(true);
             update.configuration->set_width(width);
             update.configuration->set_height(height);
             for (const auto& mode : capture->displayModes()) {
@@ -275,6 +358,7 @@ struct DesktopVideoRuntime::State {
     bool baselineRequired = true;
     bool qualityRefresh = false;
     bool refinementEnabled = false;
+    wire::DesktopVideoCapabilities capabilities;
     DesktopFrameFlow flow;
     DesktopVideoDiagnostics diagnostics;
 
@@ -333,9 +417,9 @@ struct DesktopVideoRuntime::State {
         refresh = refresh || qualityRefresh;
         const auto [flowWidth, flowHeight] = self->flow.geometry();
         const bool allowRefinement = self->refinementEnabled && self->flow.detailAllowed() && !self->flow.pendingFrames();
-        auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->flow.rate(), flowWidth, flowHeight, allowEncode, allowRefinement] {
+        auto operation = ruvia::runBlocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate = self->flow.rate(), flowWidth, flowHeight, allowEncode, allowRefinement, capabilities = self->capabilities] {
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
-            auto update = owned->next(display, refresh, reset, rate, flowWidth, flowHeight, geometryChanged, allowEncode, allowRefinement);
+            auto update = owned->next(display, refresh, reset, rate, flowWidth, flowHeight, geometryChanged, allowEncode, allowRefinement, capabilities);
             const auto now = std::chrono::steady_clock::now();
             // Cursor metadata remains responsive without repeatedly mapping
             // pixels during a closed receiver window. ACKs wake this wait.
@@ -358,9 +442,11 @@ struct DesktopVideoRuntime::State {
             }
             co_return std::nullopt;
         }
-        if (result && !result->frame.data().empty()) {
-            self->flow.observeEncode(std::chrono::microseconds(result->frame.encode_microseconds()));
-            self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), result->frame.ByteSizeLong());
+        if (result && (!result->frame.data().empty() || result->region)) {
+            const auto bytes = result->region ? result->region->ByteSizeLong() : result->frame.ByteSizeLong();
+            self->flow.observeEncode(std::chrono::microseconds(result->region ? result->region->encode_microseconds() : result->frame.encode_microseconds()));
+            self->flow.observeScene(bytes, result->changedPixels, result->frame.key_frame());
+            self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), bytes);
         }
         co_return result;
     }
@@ -416,6 +502,21 @@ void DesktopVideoRuntime::observeRoundTrip(std::chrono::microseconds elapsed) {
     state_->flow.observeRoundTrip(elapsed, std::chrono::steady_clock::now());
 }
 DesktopVideoDiagnostics DesktopVideoRuntime::diagnostics() const { return state_->diagnostics; }
+void DesktopVideoRuntime::capabilities(const wire::DesktopVideoCapabilities& capabilities) {
+    const auto signature = [](const wire::DesktopVideoCapabilities& value) {
+        unsigned mask = 1u << wire::AVC;
+        for (const auto codec : value.codecs()) {
+            mask |= 1u << codec;
+        }
+        return mask;
+    };
+    if (signature(state_->capabilities) != signature(capabilities)) {
+        state_->qualityRefresh = true;
+        state_->baselineRequired = true;
+    }
+    state_->capabilities = capabilities;
+    state_->pace.cancel();
+}
 void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
     const bool wasBackground = state_->flow.background();
     const bool hadCredit = state_->flow.canEncode(std::chrono::steady_clock::now());

@@ -7,6 +7,8 @@
 
 #include <windows.h>
 
+#include "ultraterimal/protocol/message.protocol.h"
+
 struct ID3D11Device;
 struct ID3D11Texture2D;
 struct IMFMediaBuffer;
@@ -19,13 +21,14 @@ struct MediaEncoderConfig {
     std::uint32_t bitrate;
     std::uint32_t framesPerSecond;
     bool sharp = false;
+    wire::VideoCodec codec = wire::AVC;
 };
 struct MediaEncodedFrame {
     std::vector<std::uint8_t> bytes;
     std::uint64_t timestampMicroseconds;
     bool keyFrame;
 };
-// Thread-affine H264 hardware adapter. Call only on an encoding worker.
+// Thread-affine H264/HEVC/AV1 hardware adapter. Call only on an encoding worker.
 // Media Foundation is optional and dynamically loaded. Startup failure throws;
 // frame/rate failures return HRESULT and require recreating the encoder.
 class MediaEncoder {

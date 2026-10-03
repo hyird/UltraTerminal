@@ -166,6 +166,15 @@ class DesktopWorker {
                     co_await send(std::move(cursor));
                 }
                 if (update->frame.data().empty()) {
+                    if (update->region) {
+                        wire::Envelope region;
+                        region.set_channel_id("video");
+                        region.set_generation(update->generation);
+                        region.set_frame_id(update->frameId);
+                        region.set_base_frame_id(update->baseFrameId);
+                        *region.mutable_desktop_region_update() = std::move(*update->region);
+                        co_await send(std::move(region));
+                    }
                     if (update->refinement) {
                         wire::Envelope refinement;
                         refinement.set_channel_id("video");
@@ -274,6 +283,8 @@ class DesktopWorker {
                     refresh_ = true;
                 } else if (message->has_quality_feedback()) {
                     video_.feedback(message->quality_feedback());
+                } else if (message->has_desktop_video_capabilities()) {
+                    video_.capabilities(message->desktop_video_capabilities());
                 } else if (message->has_desktop_resize()) {
                     if (!ready_ || resize_ || resizing_) {
                         throw std::runtime_error("Desktop resize request queue exceeded");

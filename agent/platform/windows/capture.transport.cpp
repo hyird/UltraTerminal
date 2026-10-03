@@ -89,7 +89,9 @@ struct DesktopCapture::State {
     std::uint32_t lastPixelsWidth = 0, lastPixelsHeight = 0;
     std::vector<DXGI_OUTDUPL_MOVE_RECT> moved;
     std::vector<RECT> dirty, regions;
-    bool changedRegions(const DXGI_OUTDUPL_FRAME_INFO& info, const CapturedFrame& frame, CaptureTiming* timing) {
+    bool partialDamage = false;
+    bool changedRegions(const DXGI_OUTDUPL_FRAME_INFO& info, CapturedFrame& frame, CaptureTiming* timing) {
+        partialDamage = false;
         constexpr UINT maximumMetadata = 1024 * 1024;
         if (!info.TotalMetadataBufferSize || info.TotalMetadataBufferSize > maximumMetadata) {
             return false;
@@ -126,6 +128,26 @@ struct DesktopCapture::State {
         if (!area) {
             return false;
         }
+        frame.damageKnown = true;
+        for (const auto& move : moved) {
+            wire::CopyRect value;
+            auto* destination = value.mutable_destination();
+            destination->set_x(move.DestinationRect.left);
+            destination->set_y(move.DestinationRect.top);
+            destination->set_width(move.DestinationRect.right - move.DestinationRect.left);
+            destination->set_height(move.DestinationRect.bottom - move.DestinationRect.top);
+            value.set_source_x(move.SourcePoint.x);
+            value.set_source_y(move.SourcePoint.y);
+            frame.moves.push_back(std::move(value));
+        }
+        for (const auto& rectangle : dirty) {
+            wire::Rectangle value;
+            value.set_x(rectangle.left);
+            value.set_y(rectangle.top);
+            value.set_width(rectangle.right - rectangle.left);
+            value.set_height(rectangle.bottom - rectangle.top);
+            frame.dirty.push_back(std::move(value));
+        }
         if (timing) {
             timing->metadataMilliseconds = milliseconds(started, Clock::now());
             timing->movedRectangles = static_cast<std::uint32_t>(moved.size());
@@ -133,7 +155,8 @@ struct DesktopCapture::State {
             timing->changedPixels = *area;
         }
         // A full copy is cheaper than many overlapping or large rectangles.
-        return *area > 0 && *area < static_cast<std::uint64_t>(frame.width) * frame.height / 2;
+        partialDamage = *area > 0 && *area < static_cast<std::uint64_t>(frame.width) * frame.height / 2;
+        return partialDamage;
     }
     void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing, const std::vector<RECT>* changed = nullptr) {
         if (!staging) {
@@ -172,7 +195,7 @@ struct DesktopCapture::State {
             timing->rowCopyMilliseconds = milliseconds(rowsStarted, Clock::now());
         }
     }
-    void copyPixels(const ComPtr<ID3D11Texture2D>& source, const DXGI_OUTDUPL_FRAME_INFO& info, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels) {
+    void copyPixels(const ComPtr<ID3D11Texture2D>& source, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels) {
         D3D11_TEXTURE2D_DESC textureDescription{};
         source->GetDesc(&textureDescription);
         const auto byteCount = static_cast<std::uint64_t>(textureDescription.Width) * textureDescription.Height * 4;
@@ -182,7 +205,7 @@ struct DesktopCapture::State {
         }
         const auto partial = previousPixels && reusablePixels && pixelsCaptured &&
                              lastPixelsWidth == frame.width && lastPixelsHeight == frame.height && reusablePixels->size() == byteCount &&
-                             changedRegions(info, frame, timing);
+                             frame.damageKnown && partialDamage;
         if (reusablePixels) {
             frame.bgra.swap(*reusablePixels);
         }
@@ -424,6 +447,9 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     // DXGI reports cursor changes independently. Avoid a GPU readback, map
     // synchronization and a full-frame allocation/copy for those updates.
     const bool desktopUpdated = (!state_->pixelsCaptured && !state_->deferred) || info.LastPresentTime.QuadPart != 0;
+    if (desktopUpdated) {
+        state_->changedRegions(info, frame, timing);
+    }
     if ((!readPixels || retainTexture) && desktopUpdated) {
         if (!state_->latest) {
             auto latestDescription = description;
@@ -439,7 +465,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         if (state_->deferred && !frame.captureTicks) {
             frame.captureTicks = state_->deferred->captureTicks;
         }
-        state_->copyPixels(source, info, frame, reusablePixels, timing, previousPixels && !state_->deferred);
+        state_->copyPixels(source, frame, reusablePixels, timing, previousPixels && !state_->deferred);
         state_->deferred.reset();
         state_->pixelsCaptured = true;
         state_->lastPixelsWidth = frame.width;
@@ -449,8 +475,8 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         // snapshot before releasing it; replace raw pixels, never encoded AVC.
         state_->pixelsCaptured = false;
     }
-    // Always return a complete snapshot for the video encoder; move/dirty
-    // metadata only reduces CPU readback when the prior pixels are available.
+    // The video path retains a complete snapshot. The region path consumes the
+    // same validated DXGI metadata against its previous transmitted canvas.
     if (info.LastMouseUpdateTime.QuadPart) {
         state_->pointerPosition = info.PointerPosition;
     }

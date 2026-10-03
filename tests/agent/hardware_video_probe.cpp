@@ -17,6 +17,7 @@
 #include <wels/codec_api.h>
 #include <wrl/client.h>
 
+#include "features/desktop/codecs.protocol.h"
 #include "features/desktop/video.transport.h"
 #include "features/desktop/video_color.protocol.h"
 #include "platform/windows/media_encoder.transport.h"
@@ -171,6 +172,22 @@ int main() {
         report["h265"] = inspect(runtime, MFVideoFormat_HEVC);
     }
     report["adapter"] = encodeFrames();
+    boost::json::array optional;
+    for (const auto preferred : {ultraterimal::wire::HEVC, ultraterimal::wire::AV1}) {
+        using namespace ultraterimal;
+        std::vector<std::uint8_t> pixels(1280 * 720 * 4, 90);
+        agent::VideoEncoder encoder({1280, 720, 8000000, 60, false, {wire::AVC, preferred}});
+        const auto started = std::chrono::steady_clock::now();
+        const auto frame = encoder.encode(pixels, 1280 * 4, 1, true);
+        const auto selected = frame && frame->codec.starts_with("hev1.") ? wire::HEVC : frame && frame->codec.starts_with("av01.") ? wire::AV1
+                                                                                                                                   : wire::AVC;
+        const auto valid = frame && agent::verifyVideoBaseline(selected, frame->annexB, 1280, 720);
+        optional.push_back(boost::json::object{{"requested", wire::VideoCodec_Name(preferred)}, {"codec", frame ? frame->codec : "failed"}, {"hardware", encoder.hardware()}, {"decoded", valid}, {"first_frame_ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()}});
+        if (!valid) {
+            throw std::runtime_error("Optional hardware codec or fallback is not independently decodable");
+        }
+    }
+    report["optional_codecs"] = std::move(optional);
     report["agent_hardware_path_implemented"] = true;
     std::cout << boost::json::serialize(report) << '\n';
     return report.at("adapter").as_object().at("decoded").as_bool() ? 0 : 1;

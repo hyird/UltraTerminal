@@ -13,6 +13,8 @@
       "features": ["asm", "gpl"]
     },
     { "name": "openh264", "platform": "windows" },
+    { "name": "libde265", "platform": "windows" },
+    { "name": "dav1d", "platform": "windows" },
     "protobuf"
   ],
   "features": {

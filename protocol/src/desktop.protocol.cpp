@@ -19,7 +19,7 @@ std::expected<void, DesktopMessageError> DesktopChannelValidator::accept(const w
         if (binding_.source == ChannelSource::kAgent) {
             allowed = message.has_cursor_update() || message.has_desktop_resize_result() || message.has_desktop_probe() || message.has_desktop_secure_attention_result();
         } else {
-            allowed = message.has_input_event() || message.has_quality_feedback() || message.has_request_refresh() || message.has_desktop_resize() || message.has_desktop_probe();
+            allowed = message.has_input_event() || message.has_quality_feedback() || message.has_request_refresh() || message.has_desktop_resize() || message.has_desktop_probe() || message.has_desktop_video_capabilities();
             if ((message.has_input_event() || message.has_desktop_resize()) && !binding_.writeControl) {
                 return std::unexpected(DesktopMessageError::kReadOnly);
             }
@@ -28,7 +28,7 @@ std::expected<void, DesktopMessageError> DesktopChannelValidator::accept(const w
             }
         }
     } else if (binding_.purpose == wire::DESKTOP_VIDEO && binding_.source == ChannelSource::kAgent) {
-        allowed = message.has_video_config() || message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_video_refinement();
+        allowed = message.has_video_config() || message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_video_refinement() || message.has_desktop_region_update();
     }
     if (!allowed) {
         return std::unexpected(DesktopMessageError::kDirection);
@@ -54,6 +54,7 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         height_ = message.video_config().height();
         mode_ = Mode::kVideo;
         refined_ = false;
+        tiles_ = {};
         return true;
     }
     if (message.has_video_frame()) {
@@ -70,13 +71,28 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         if (mode_ != Mode::kVideo || refined_ || message.generation() != generation_ || !frame_ || message.frame_id() != frame_ || message.base_frame_id() != frame_) {
             return false;
         }
-        for (const auto& patch : message.video_refinement().patches()) {
-            const auto& rectangle = patch.destination();
-            if (rectangle.width() > width_ || rectangle.height() > height_ || rectangle.x() > width_ - rectangle.width() || rectangle.y() > height_ - rectangle.height()) {
+        if (!acceptPatches(message.video_refinement().patches())) {
+            return false;
+        }
+        refined_ = true;
+        return true;
+    }
+    if (message.has_desktop_region_update()) {
+        if (mode_ != Mode::kVideo || message.generation() != generation_ || !frame_ || message.base_frame_id() != frame_ || message.frame_id() <= frame_) {
+            return false;
+        }
+        for (const auto& copy : message.desktop_region_update().copies()) {
+            const auto& area = copy.destination();
+            if (area.width() > width_ || area.height() > height_ || area.x() > width_ - area.width() || area.y() > height_ - area.height() ||
+                copy.source_x() > width_ - area.width() || copy.source_y() > height_ - area.height()) {
                 return false;
             }
         }
-        refined_ = true;
+        if (!acceptPatches(message.desktop_region_update().patches())) {
+            return false;
+        }
+        frame_ = message.frame_id();
+        refined_ = false;
         return true;
     }
     if (message.has_full_frame()) {
@@ -111,6 +127,25 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         }
     }
     frame_ = message.frame_id();
+    return true;
+}
+bool DesktopChannelValidator::acceptPatches(const google::protobuf::RepeatedPtrField<wire::PatchRect>& patches) {
+    auto staged = tiles_;
+    for (const auto& patch : patches) {
+        const auto& area = patch.destination();
+        if (area.width() > width_ || area.height() > height_ || area.x() > width_ - area.width() || area.y() > height_ - area.height()) {
+            return false;
+        }
+        if (patch.cache_slot()) {
+            const auto dimensions = std::pair{area.width(), area.height()};
+            auto& slot = staged[patch.cache_slot() - 1];
+            if (patch.png().empty() && slot != dimensions) {
+                return false;
+            }
+            slot = dimensions;
+        }
+    }
+    tiles_ = staged;
     return true;
 }
 } // namespace ultraterimal::protocol

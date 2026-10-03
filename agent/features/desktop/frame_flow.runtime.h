@@ -40,6 +40,8 @@ class DesktopFrameFlow {
         }
         width_ = width;
         height_ = height;
+        scenePixels_.reset();
+        sceneBytes_ = 0;
         updateFrameRate();
         return true;
     }
@@ -65,6 +67,8 @@ class DesktopFrameFlow {
         clientFrameLimit_ = kLegacyMaximumInFlightFrames;
         receiverFrameRate_ = kMaximumFramesPerSecond;
         decodeMicroseconds_ = 0;
+        scenePixels_.reset();
+        sceneBytes_ = 0;
         congestionSamples_ = 0;
         healthySince_.reset();
     }
@@ -84,6 +88,16 @@ class DesktopFrameFlow {
             encodeMicroseconds_ = encodeMicroseconds_ ? (encodeMicroseconds_ * 7 + static_cast<std::uint64_t>(elapsed.count())) / 8 : static_cast<std::uint64_t>(elapsed.count());
             updateFrameRate();
         }
+    }
+    void observeScene(std::size_t bytes, std::uint64_t changedPixels, bool keyFrame) {
+        if (keyFrame) {
+            return; // Startup/refresh bursts do not describe steady frame cost.
+        }
+        const auto pixels = std::min(changedPixels, static_cast<std::uint64_t>(width_) * height_);
+        scenePixels_ = scenePixels_ ? (*scenePixels_ * 3 + pixels) / 4 : pixels;
+        sceneBytes_ = sceneBytes_ ? (sceneBytes_ * 3 + bytes) / 4 : bytes;
+        // Capacity and codec/receiver pressure still bound this increase.
+        updateFrameRate(true, 4);
     }
     std::size_t frameWindow() const {
         if (!baseline_ && !roundTrip_) {
@@ -235,7 +249,9 @@ class DesktopFrameFlow {
     void updateFrameRate(bool recover = false, std::uint32_t recoveryStep = 2) {
         // Prefer fewer readable frames on a narrow path. The bitrate remains
         // bounded by capacity even below the per-frame clarity budget.
-        const auto bitsPerFrame = std::max<std::uint64_t>(1, 8000000ull * width_ * height_ / (1920ull * 1080 * 60));
+        const auto pixels = scenePixels_.value_or(static_cast<std::uint64_t>(width_) * height_);
+        const auto clarityBits = std::max<std::uint64_t>(1024, 8000000ull * pixels / (1920ull * 1080 * 60));
+        const auto bitsPerFrame = std::max<std::uint64_t>(clarityBits, sceneBytes_ * 8 * 11 / 10);
         auto fps = std::min<std::uint64_t>(receiverFrameRate_, rate_.bitrate / bitsPerFrame);
         if (encodeMicroseconds_) {
             fps = std::min<std::uint64_t>(fps, 800000ull / encodeMicroseconds_);
@@ -253,6 +269,8 @@ class DesktopFrameFlow {
     std::uint32_t receiverFrameRate_ = kMaximumFramesPerSecond;
     std::uint64_t generation_ = 0, acknowledged_ = 0, lastSent_ = 0;
     std::uint64_t deliveryBytesPerSecond_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
+    std::optional<std::uint64_t> scenePixels_;
+    std::uint64_t sceneBytes_ = 0;
     std::deque<Pending> pending_;
     std::size_t pendingBytes_ = 0;
     std::optional<std::chrono::microseconds> roundTrip_, baseline_;

@@ -116,8 +116,10 @@ struct MediaEncoder::State {
         }
     }
     void initialize() {
+        const GUID format = config.codec == wire::HEVC ? MFVideoFormat_HEVC : config.codec == wire::AV1 ? MFVideoFormat_AV1
+                                                                                                        : MFVideoFormat_H264;
         MFT_REGISTER_TYPE_INFO inputInfo{MFMediaType_Video, MFVideoFormat_NV12};
-        MFT_REGISTER_TYPE_INFO outputInfo{MFMediaType_Video, MFVideoFormat_H264};
+        MFT_REGISTER_TYPE_INFO outputInfo{MFMediaType_Video, format};
         struct Candidates {
             IMFActivate** items = nullptr;
             UINT32 count = 0;
@@ -137,7 +139,7 @@ struct MediaEncoder::State {
             }
         }
         if (!transform) {
-            throw std::runtime_error("No H264 hardware encoder available");
+            throw std::runtime_error("No compatible hardware encoder available");
         }
         ComPtr<IMFAttributes> attributes;
         require(transform->GetAttributes(&attributes));
@@ -160,6 +162,9 @@ struct MediaEncoder::State {
         }
         require(transform.As(&codec));
         require(codec->IsSupported(&CODECAPI_AVEncVideoForceKeyFrame));
+        if (SUCCEEDED(codec->IsSupported(&CODECAPI_AVEncMPVDefaultBPictureCount))) {
+            require(codecValue(*codec.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0));
+        }
         if (config.sharp) {
             // MaxQP is static: configure before streaming, recreate on changes.
             require(codecValue(*codec.Get(), CODECAPI_AVEncVideoMaxQP, 18));
@@ -176,9 +181,11 @@ struct MediaEncoder::State {
         ComPtr<IMFMediaType> output, input;
         require(runtime.createType(&output));
         require(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-        require(output->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
+        require(output->SetGUID(MF_MT_SUBTYPE, format));
         require(output->SetUINT32(MF_MT_AVG_BITRATE, config.bitrate));
-        require(output->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base));
+        const auto profile = config.codec == wire::HEVC ? static_cast<UINT32>(eAVEncH265VProfile_Main_420_8) : config.codec == wire::AV1 ? 0u
+                                                                                                                                         : static_cast<UINT32>(eAVEncH264VProfile_Base);
+        require(output->SetUINT32(MF_MT_MPEG2_PROFILE, profile));
         require(output->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
         require(output->SetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235));
         require(output->SetUINT32(MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT601));

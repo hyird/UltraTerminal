@@ -22,15 +22,21 @@ struct DesktopVideoDiagnostics {
     std::uint64_t encodedFrames = 0;
     std::uint64_t pixelCaptureGaps = 0;
     std::uint64_t pixelCaptureGapsGe45ms = 0;
+    std::uint64_t unknownDamageUpdates = 0;
+    std::uint64_t regionCandidates = 0;
+    std::uint64_t regionBudgetFailures = 0;
 };
 struct DesktopVideoUpdate {
     std::optional<wire::VideoConfig> configuration;
     std::optional<wire::CursorUpdate> cursor;
     std::optional<wire::VideoRefinement> refinement;
-    // Empty data means a cursor-only update; it does not advance the video ID.
+    std::optional<wire::DesktopRegionUpdate> region;
+    // Region updates advance the composed frame ID without encoding video.
     wire::VideoFrame frame;
     std::uint64_t generation = 0;
     std::uint64_t frameId = 0;
+    std::uint64_t baseFrameId = 0;
+    std::uint64_t changedPixels = 0;
     // Local-only QPC tick of the most recent pixel snapshot (not serialized).
     std::uint64_t sourcePresentTicks = 0;
     std::int32_t desktopLeft = 0, desktopTop = 0;
@@ -50,6 +56,7 @@ class DesktopVideoRuntime {
     void stop();       // Owning event loop only.
     void invalidate(); // Discard an in-flight old frame and rebuild the source.
     void feedback(const wire::QualityFeedback& feedback);
+    void capabilities(const wire::DesktopVideoCapabilities& capabilities);
     void observeRoundTrip(std::chrono::microseconds elapsed);
     // Owning event loop only; most recent completed capture-worker snapshot.
     DesktopVideoDiagnostics diagnostics() const;

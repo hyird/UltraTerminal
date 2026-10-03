@@ -8,6 +8,8 @@ import {
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
+import { DesktopTiles, desktopCopies } from "./tiles.session";
+import { desktopCodecFamily, detectDesktopCodecs } from "./codecs.session";
 import {
   DesktopVideoDecodeLease,
   DesktopVideoDecodeTimeoutError,
@@ -88,6 +90,13 @@ export class DesktopSession {
   private presentedCount = 0;
   private decodeTotal = 0;
   private codec = "";
+  private tiles = new DesktopTiles();
+  private copyCanvas: OffscreenCanvas | undefined;
+  private supportedCodecs: ultraterimal.wire.VideoCodec[] = [
+    wire.VideoCodec.AVC,
+  ];
+  private rejectedGeneration = 0;
+  private capabilitiesAccepted = false;
   private videoBytes = 0;
   private bitrateSince = 0;
   private bitrateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -186,7 +195,8 @@ export class DesktopSession {
               () => {
                 if (
                   channel.purpose !== 3 ||
-                  channel.receive.decodeWaiterCount === 0
+                  (channel.receive.decodeWaiterCount === 0 &&
+                    !this.refinementWait)
                 )
                   return;
                 try {
@@ -199,6 +209,11 @@ export class DesktopSession {
                     candidateGeneration,
                     this.generation,
                   );
+                  if (this.refinementWait) {
+                    clearTimeout(this.refinementWait.timer);
+                    this.refinementWait.resolve(false);
+                    this.refinementWait = undefined;
+                  }
                 } catch {
                   // The serialized receive path reports malformed messages.
                 }
@@ -214,6 +229,11 @@ export class DesktopSession {
             true,
           );
       }
+      void detectDesktopCodecs().then((codecs) => {
+        if (this.stopped) return;
+        this.supportedCodecs = codecs;
+        this.reportCapabilities();
+      });
     } catch (error) {
       this.stop();
       throw error;
@@ -331,6 +351,43 @@ export class DesktopSession {
         },
       });
   }
+  private reportCapabilities(): void {
+    const channel = this.channels.find(
+      (entry) => entry.purpose === 2 && entry.ready,
+    );
+    if (this.stopped || !channel || !this.capabilitiesAccepted) return;
+    this.send(channel, {
+      desktopVideoCapabilities: {
+        codecs: this.supportedCodecs,
+        regionUpdates: true,
+        tileCache: true,
+      },
+    });
+  }
+  private rejectCodec(codec: string): void {
+    const family = desktopCodecFamily(codec);
+    if (
+      family === wire.VideoCodec.AVC ||
+      family === wire.VideoCodec.VIDEO_CODEC_UNSPECIFIED
+    ) {
+      this.fail("视频解码失败");
+      return;
+    }
+    this.rejectedGeneration = this.generation;
+    this.supportedCodecs = this.supportedCodecs.filter(
+      (entry) => entry !== family,
+    );
+    if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
+    this.decoder = null;
+    for (const pending of this.pending.values()) pending.lease.release();
+    this.pending.clear();
+    this.reportCapabilities();
+    const channel = this.channels.find(
+      (entry) => entry.purpose === 2 && entry.ready,
+    );
+    if (channel) this.send(channel, { requestRefresh: {} });
+    this.status("正在切换兼容的视频编码…");
+  }
   private observeCanvasFrame(): void {
     if (this.observationAnimation !== undefined || this.stopped) return;
     const generation = this.generation;
@@ -378,6 +435,7 @@ export class DesktopSession {
       if (!this.displayedFrame)
         this.status("通道已配对，等待远端采集与视频首帧…");
       if (channel.purpose === 2) {
+        this.reportCapabilities();
         // The video socket may display a frame before this input socket pairs.
         // Never advertise writable input while its ordered channel is absent.
         this.reportDisplay();
@@ -395,7 +453,9 @@ export class DesktopSession {
     }
     if (
       channel.purpose === 3 &&
-      message.body === "videoFrame" &&
+      (message.body === "videoFrame" ||
+        message.body === "desktopRegionUpdate" ||
+        message.body === "videoRefinement") &&
       channel.receive.isRetiredGeneration(generationId, this.generation)
     )
       return;
@@ -496,6 +556,8 @@ export class DesktopSession {
     }
     if (message.body === "videoConfig" && message.videoConfig) {
       const video = wire.VideoConfig.create(message.videoConfig);
+      this.capabilitiesAccepted = video.desktopOptimization;
+      this.reportCapabilities();
       const modes = video.displayModes.map((mode) =>
         wire.DisplayMode.create(mode),
       );
@@ -527,7 +589,8 @@ export class DesktopSession {
         integer(video.width, 1) > 16384 ||
         integer(video.height, 1) > 16384 ||
         video.width * video.height > 33554432 ||
-        !/^avc1\.[0-9a-f]{6}$/i.test(video.codec)
+        desktopCodecFamily(video.codec) ===
+          wire.VideoCodec.VIDEO_CODEC_UNSPECIFIED
       )
         throw new Error("Invalid video configuration");
       // A new configuration confirms that the Agent retired the old input
@@ -551,6 +614,7 @@ export class DesktopSession {
       this.input = null;
       this.decoder = null;
       this.pending.clear();
+      this.tiles.clear();
       if (this.observationAnimation !== undefined)
         cancelAnimationFrame(this.observationAnimation);
       this.observationAnimation = undefined;
@@ -576,15 +640,28 @@ export class DesktopSession {
       };
       if (video.description.length)
         configuration.description = new Uint8Array(video.description);
-      if (!(await VideoDecoder.isConfigSupported(configuration)).supported)
-        throw new Error("Unsupported video configuration");
+      const supported = await VideoDecoder.isConfigSupported(
+        configuration,
+      ).catch(() => ({ supported: false }));
+      if (!supported.supported) {
+        channel.receive.completeVideoGeneration(generationId);
+        this.rejectCodec(video.codec);
+        return;
+      }
       if (this.stopped) return;
       const generation = this.generation;
       this.decoder = new VideoDecoder({
-        error: () => this.fail("视频解码失败"),
+        error: () => {
+          if (generation === this.generation) this.rejectCodec(video.codec);
+        },
         output: (frame) => {
           try {
-            if (this.stopped || generation !== this.generation) return;
+            if (
+              this.stopped ||
+              generation !== this.generation ||
+              generation === this.rejectedGeneration
+            )
+              return;
             const pending = this.pending.get(frame.timestamp);
             if (
               !pending ||
@@ -649,54 +726,35 @@ export class DesktopSession {
       channel.receive.completeVideoGeneration(generationId);
       return;
     }
-    if (message.body === "videoRefinement" && message.videoRefinement) {
+    if (
+      (message.body === "videoRefinement" && message.videoRefinement) ||
+      (message.body === "desktopRegionUpdate" && message.desktopRegionUpdate)
+    ) {
+      if (generationId === this.rejectedGeneration) return;
+      const region = message.desktopRegionUpdate;
+      const patches = region?.patches ?? message.videoRefinement?.patches ?? [];
+      const copies = desktopCopies(
+        region?.copies ?? [],
+        this.canvas.width,
+        this.canvas.height,
+      );
       if (
         generationId !== this.generation ||
+        !this.frame ||
         !frameId ||
-        frameId !== this.frame ||
-        baseFrameId !== frameId ||
-        !this.decoder
+        !this.decoder ||
+        (region
+          ? baseFrameId !== this.frame || frameId <= this.frame
+          : frameId !== this.frame || baseFrameId !== frameId) ||
+        (!patches.length && !copies.length)
       )
-        throw new Error("Invalid video refinement baseline");
-      const patches = message.videoRefinement.patches ?? [];
-      if (!patches.length || patches.length > 32)
-        throw new Error("Invalid refinement count");
-      let bytes = 0,
-        pixels = 0;
-      const areas = patches.map((patch) => {
-        const area = patch.destination;
-        const png = patch.png;
-        if (!area || !png || png.length < 33)
-          throw new Error("Missing refinement pixels");
-        const x = integer(area.x ?? 0),
-          y = integer(area.y ?? 0);
-        const width = integer(area.width ?? 0, 1),
-          height = integer(area.height ?? 0, 1);
-        const header = new DataView(png.buffer, png.byteOffset, png.byteLength);
-        if (
-          width > 128 ||
-          height > 64 ||
-          x + width > this.canvas.width ||
-          y + height > this.canvas.height ||
-          header.getUint32(0) !== 0x89504e47 ||
-          header.getUint32(4) !== 0x0d0a1a0a ||
-          header.getUint32(8) !== 13 ||
-          header.getUint32(12) !== 0x49484452 ||
-          header.getUint32(16) !== width ||
-          header.getUint32(20) !== height
-        )
-          throw new Error("Invalid refinement geometry");
-        bytes += png.length;
-        pixels += width * height;
-        return { x, y, width, height, png };
-      });
-      if (bytes > 256 * 1024 || pixels > 256 * 1024)
-        throw new Error("Refinement budget exceeded");
+        throw new Error("Invalid desktop update baseline");
       const generation = this.generation;
-      if (this.displayedFrame < frameId) {
+      const baseline = region ? baseFrameId : frameId;
+      if (this.displayedFrame < baseline) {
         const ready = await new Promise<boolean>((resolve) => {
           this.refinementWait = {
-            frame: frameId,
+            frame: baseline,
             resolve,
             timer: setTimeout(() => {
               this.refinementWait = undefined;
@@ -704,40 +762,79 @@ export class DesktopSession {
             }, videoDecodeSlotTimeoutMilliseconds),
           };
         });
-        if (!ready && !this.stopped)
-          throw new Error("Refinement baseline was not displayed");
+        if (!ready && !this.stopped && !channel.receive.isReconfiguring)
+          throw new Error("Desktop update baseline was not displayed");
       }
-      const decoded: { area: (typeof areas)[number]; image: ImageBitmap }[] =
-        [];
+      if (this.stopped || channel.receive.isReconfiguring) return;
+      const started = performance.now();
+      const batch = await this.tiles.prepare(
+        patches,
+        this.canvas.width,
+        this.canvas.height,
+      );
       try {
-        for (const area of areas) {
-          if (this.stopped || generation !== this.generation) return;
-          const image = await createImageBitmap(
-            new Blob([new Uint8Array(area.png)], { type: "image/png" }),
-          );
-          decoded.push({ area, image });
-          if (image.width !== area.width || image.height !== area.height)
-            throw new Error("Refinement image mismatch");
-        }
         if (
           this.stopped ||
           generation !== this.generation ||
-          this.displayedFrame !== frameId
+          this.displayedFrame !== baseline ||
+          channel.receive.isReconfiguring
         )
           return;
-        // Decode and validate the entire batch before atomically patching its
-        // exact video bottom layer. A later video frame replaces every patch.
-        for (const { area, image } of decoded)
-          this.context.drawImage(image, area.x, area.y);
-        this.recordVideoBytes(bytes);
+        if (copies.length) {
+          this.copyCanvas ??= new OffscreenCanvas(
+            this.canvas.width,
+            this.canvas.height,
+          );
+          if (
+            this.copyCanvas.width !== this.canvas.width ||
+            this.copyCanvas.height !== this.canvas.height
+          ) {
+            this.copyCanvas.width = this.canvas.width;
+            this.copyCanvas.height = this.canvas.height;
+          }
+          const snapshot = this.copyCanvas.getContext("2d", { alpha: false });
+          if (!snapshot) throw new Error("Desktop copy canvas unavailable");
+          snapshot.drawImage(this.canvas, 0, 0);
+          for (const copy of copies)
+            this.context.drawImage(
+              this.copyCanvas,
+              copy.sourceX,
+              copy.sourceY,
+              copy.width,
+              copy.height,
+              copy.x,
+              copy.y,
+              copy.width,
+              copy.height,
+            );
+        }
+        for (const tile of batch.tiles)
+          this.context.drawImage(tile.image, tile.x, tile.y);
+        batch.commit();
+        this.recordVideoBytes(
+          region ? reservation.remainingBytes : batch.bytes,
+        );
+        if (region) {
+          this.frame = this.displayedFrame = frameId;
+          this.canvas.dataset.frame = String(frameId);
+          this.decodeMicroseconds = Math.min(
+            1000000,
+            Math.round((performance.now() - started) * 1000),
+          );
+          this.displayedCount++;
+          this.decodeTotal += this.decodeMicroseconds / 1000;
+          this.reportDisplay();
+          if (!document.hidden && this.visible) this.observeCanvasFrame();
+        }
       } finally {
-        for (const { image } of decoded) image.close();
+        batch.dispose();
       }
       return;
     }
     const image = message.videoFrame
       ? wire.VideoFrame.create(message.videoFrame)
       : null;
+    if (generationId === this.rejectedGeneration) return;
     if (
       message.body !== "videoFrame" ||
       !image ||
@@ -1023,6 +1120,8 @@ export class DesktopSession {
     this.ended(hadFrame, retryable);
   }
   stop(): void {
+    this.tiles.clear();
+    this.copyCanvas = undefined;
     if (this.stopped || this.stopping) return;
     this.stopping = true;
     this.stopped = true;

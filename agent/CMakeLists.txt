@@ -1,5 +1,18 @@
 find_package(Boost CONFIG REQUIRED COMPONENTS json)
 find_package(OpenSSL REQUIRED)
+find_package(libde265 CONFIG REQUIRED)
+set(dav1d_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+find_path(DAV1D_INCLUDE_DIR dav1d/dav1d.h PATHS "${dav1d_root}/include" NO_DEFAULT_PATH REQUIRED)
+find_library(DAV1D_RELEASE dav1d PATHS "${dav1d_root}/lib" NO_DEFAULT_PATH REQUIRED)
+find_library(DAV1D_DEBUG dav1d PATHS "${dav1d_root}/debug/lib" NO_DEFAULT_PATH REQUIRED)
+add_library(dav1d::dav1d STATIC IMPORTED)
+set_target_properties(dav1d::dav1d PROPERTIES
+    IMPORTED_CONFIGURATIONS "DEBUG;RELEASE"
+    IMPORTED_LOCATION_RELEASE "${DAV1D_RELEASE}"
+    IMPORTED_LOCATION_DEBUG "${DAV1D_DEBUG}"
+    MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
+    MAP_IMPORTED_CONFIG_MINSIZEREL Release
+    INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}")
 add_library(ultraterimal-login-serialization STATIC
     platform/windows/login_serialization.transport.cpp
     platform/windows/login_provider.transport.cpp
@@ -55,11 +68,14 @@ add_library(ultraterimal-agent-core STATIC
     features/desktop/software_video.transport.cpp
     features/desktop/video.transport.cpp
     features/desktop/avc.protocol.cpp
+    features/desktop/codecs.protocol.cpp
     features/desktop/video_color.protocol.cpp
     features/desktop/video_color_avx2.protocol.cpp
     features/desktop/desktop.transport.cpp
     features/desktop/video.runtime.cpp
     features/desktop/refinement.protocol.cpp
+    features/desktop/tile_cache.protocol.cpp
+    features/desktop/damage.protocol.cpp
     platform/windows/image_encoder.transport.cpp
     features/desktop/worker.runtime.cpp
     features/desktop/bridge.runtime.cpp
@@ -97,7 +113,7 @@ set_target_properties(ultraterimal-agent-core PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(ultraterimal-agent-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(ultraterimal-agent-core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 target_compile_options(ultraterimal-agent-core PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc)
-target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 windowscodecs mfuuid strmiids msi x264::x264 OpenH264::OpenH264
+target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 windowscodecs mfuuid strmiids msi x264::x264 OpenH264::OpenH264 de265 dav1d::dav1d
     PUBLIC ultraterimal::protocol ruvia::core Boost::json OpenSSL::SSL OpenSSL::Crypto)
 add_executable(ultraterimal-agent main.cpp)
 target_link_libraries(ultraterimal-agent PRIVATE ultraterimal-agent-core)

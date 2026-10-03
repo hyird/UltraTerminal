@@ -3,7 +3,7 @@
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::agent {
-std::expected<AvcFrameDescription, VideoEncodeError> describeAvcFrame(std::span<const std::uint8_t> bytes, const std::string& previousCodec) {
+std::expected<VideoFrameDescription, VideoEncodeError> describeAvcFrame(std::span<const std::uint8_t> bytes, const std::string& previousCodec) {
     if (bytes.empty() || bytes.size() > protocol::kMaximumMessageBytes - 1024) {
         return std::unexpected(VideoEncodeError::kFrameTooLarge);
     }
@@ -18,7 +18,7 @@ std::expected<AvcFrameDescription, VideoEncodeError> describeAvcFrame(std::span<
         }
         return 0;
     };
-    AvcFrameDescription description{previousCodec, false};
+    VideoFrameDescription description{previousCodec, false};
     bool sps = false, pps = false, slice = false, delta = false;
     for (std::size_t at = 0; at < bytes.size();) {
         const auto start = prefix(at);

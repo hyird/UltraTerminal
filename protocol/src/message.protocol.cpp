@@ -5,6 +5,7 @@
 
 #include <google/protobuf/io/coded_stream.h>
 
+#include "ultraterimal/protocol/desktop.protocol.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 
@@ -28,6 +29,38 @@ bool dimensions(std::uint32_t width, std::uint32_t height) {
 }
 bool rectangle(const wire::Rectangle& r) {
     return dimensions(r.width(), r.height()) && r.x() <= 16384 - r.width() && r.y() <= 16384 - r.height();
+}
+bool boundedPatches(const google::protobuf::RepeatedPtrField<wire::PatchRect>& patches) {
+    if (patches.size() > 32) {
+        return false;
+    }
+    std::size_t bytes = 0;
+    std::uint64_t pixels = 0;
+    for (const auto& patch : patches) {
+        const auto& area = patch.destination();
+        const auto& png = patch.png();
+        if (!rectangle(area) || area.width() > 128 || area.height() > 64 || patch.cache_slot() > kDesktopTileCacheSlots || (png.empty() && !patch.cache_slot())) {
+            return false;
+        }
+        if (!png.empty()) {
+            if (png.size() < 33 || png.size() > 64 * 1024 || png.compare(0, 8, "\211PNG\r\n\032\n", 8) != 0 || png.compare(12, 4, "IHDR") != 0) {
+                return false;
+            }
+            const auto dimension = [&](std::size_t offset) {
+                std::uint32_t value = 0;
+                for (std::size_t index = offset; index < offset + 4; ++index) {
+                    value = value * 256 + static_cast<unsigned char>(png[index]);
+                }
+                return value;
+            };
+            if (dimension(8) != 13 || dimension(16) != area.width() || dimension(20) != area.height()) {
+                return false;
+            }
+        }
+        bytes += png.size();
+        pixels += static_cast<std::uint64_t>(area.width()) * area.height();
+    }
+    return bytes <= 256 * 1024 && pixels <= 256 * 1024;
 }
 } // namespace
 std::expected<void, MessageError> validateInputEvent(const wire::InputEvent& input) {
@@ -281,7 +314,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
             }
         }
         for (const auto& patch : m.diff_batch().patches()) {
-            if (!rectangle(patch.destination()) || patch.png().empty()) {
+            if (!rectangle(patch.destination()) || patch.png().empty() || patch.cache_slot()) {
                 return invalid();
             }
         }
@@ -308,29 +341,42 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         if (!m.generation() || !m.frame_id() || m.base_frame_id() != m.frame_id() || !refinement.patches_size() || refinement.patches_size() > 32) {
             return invalid();
         }
-        std::size_t bytes = 0;
-        std::uint64_t pixels = 0;
-        for (const auto& patch : refinement.patches()) {
-            const auto& area = patch.destination();
-            const auto& png = patch.png();
-            if (!rectangle(area) || area.width() > 128 || area.height() > 64 || png.size() < 33 || png.compare(0, 8, "\211PNG\r\n\032\n", 8) != 0 || png.compare(12, 4, "IHDR") != 0) {
-                return invalid();
-            }
-            const auto dimension = [&](std::size_t offset) {
-                std::uint32_t value = 0;
-                for (std::size_t index = offset; index < offset + 4; ++index) {
-                    value = value * 256 + static_cast<unsigned char>(png[index]);
-                }
-                return value;
-            };
-            if (dimension(8) != 13 || dimension(16) != area.width() || dimension(20) != area.height()) {
-                return invalid();
-            }
-            bytes += png.size();
-            pixels += static_cast<std::uint64_t>(area.width()) * area.height();
-        }
-        if (bytes > 256 * 1024 || pixels > 256 * 1024) {
+        if (!boundedPatches(refinement.patches())) {
             return invalid();
+        }
+        break;
+    }
+    case wire::Envelope::kDesktopRegionUpdate: {
+        const auto& update = m.desktop_region_update();
+        if (!m.generation() || !m.base_frame_id() || m.frame_id() <= m.base_frame_id() ||
+            update.copies_size() > 32 || (!update.copies_size() && !update.patches_size()) || !boundedPatches(update.patches()) ||
+            update.target_frames_per_second() < 5 || update.target_frames_per_second() > 60 ||
+            update.target_bitrate() < 64000 || update.target_bitrate() > 100000000 || update.encode_microseconds() > 5000000) {
+            return invalid();
+        }
+        std::uint64_t pixels = 0;
+        for (const auto& copy : update.copies()) {
+            if (!rectangle(copy.destination()) || copy.source_x() > 16384 - copy.destination().width() || copy.source_y() > 16384 - copy.destination().height()) {
+                return invalid();
+            }
+            pixels += static_cast<std::uint64_t>(copy.destination().width()) * copy.destination().height();
+        }
+        if (pixels > 33554432) {
+            return invalid();
+        }
+        break;
+    }
+    case wire::Envelope::kDesktopVideoCapabilities: {
+        const auto& capabilities = m.desktop_video_capabilities();
+        if (m.generation() || m.frame_id() || m.base_frame_id() || capabilities.codecs_size() > 3) {
+            return invalid();
+        }
+        unsigned seen = 0;
+        for (const auto codec : capabilities.codecs()) {
+            if (codec < wire::AVC || codec > wire::AV1 || (seen & (1u << codec))) {
+                return invalid();
+            }
+            seen |= 1u << codec;
         }
         break;
     }

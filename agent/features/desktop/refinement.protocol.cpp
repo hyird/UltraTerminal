@@ -3,13 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
-#include <cstring>
 #include <vector>
 
-#include "platform/windows/image_encoder.transport.h"
+#include "tile_cache.protocol.h"
 
 namespace ultraterimal::agent {
-wire::VideoRefinement refineVideoDetails(std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height) {
+wire::VideoRefinement refineVideoDetails(std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height, DesktopTileCache* cache, bool cached) {
     wire::VideoRefinement result;
     if (!width || !height || width > 4096 || height > 2160 || bgra.size() != static_cast<std::size_t>(width) * height * 4) {
         return result;
@@ -43,31 +42,26 @@ wire::VideoRefinement refineVideoDetails(std::span<const std::uint8_t> bgra, std
     }
     std::stable_sort(candidates.begin(), candidates.end(), [](const Tile& left, const Tile& right) { return left.score > right.score; });
     std::size_t encodedBytes = 0;
-    std::vector<std::uint8_t> pixels;
+    DesktopTileCache uncached;
+    auto& tiles = cache ? *cache : uncached;
+    tiles.begin();
     for (const auto& tile : candidates) {
         if (result.patches_size() == 32) {
             break;
         }
-        pixels.resize(static_cast<std::size_t>(tile.width) * tile.height * 4);
-        for (std::uint32_t row = 0; row < tile.height; ++row) {
-            auto* destination = pixels.data() + static_cast<std::size_t>(row) * tile.width * 4;
-            std::memcpy(destination, bgra.data() + (static_cast<std::size_t>(tile.y + row) * width + tile.x) * 4, static_cast<std::size_t>(tile.width) * 4);
-            for (std::uint32_t column = 0; column < tile.width; ++column) {
-                destination[column * 4 + 3] = 255;
-            }
-        }
-        auto png = encodeDetailPng(pixels, tile.width, tile.height);
-        if (!png || encodedBytes + png->size() > 256 * 1024) {
+        wire::Rectangle area;
+        area.set_x(tile.x);
+        area.set_y(tile.y);
+        area.set_width(tile.width);
+        area.set_height(tile.height);
+        auto patch = tiles.prepare(bgra, width, height, area, cached, 256 * 1024 - encodedBytes);
+        if (!patch) {
             continue;
         }
-        encodedBytes += png->size();
-        auto* patch = result.add_patches();
-        patch->mutable_destination()->set_x(tile.x);
-        patch->mutable_destination()->set_y(tile.y);
-        patch->mutable_destination()->set_width(tile.width);
-        patch->mutable_destination()->set_height(tile.height);
-        patch->set_png(std::move(*png));
+        encodedBytes += patch->png().size();
+        *result.add_patches() = std::move(*patch);
     }
+    tiles.commit();
     return result;
 }
 } // namespace ultraterimal::agent

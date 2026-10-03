@@ -223,7 +223,7 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
         if (sent.accepted()) {
             ++diagnostics_.forwardedMessages;
             diagnostics_.forwardedBytes += size;
-            diagnostics_.videoFrames += message.has_video_frame() || message.has_full_frame() || message.has_diff_batch();
+            diagnostics_.videoFrames += message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_desktop_region_update();
             diagnostics_.inputEvents += message.has_input_event();
             if (message.has_video_config()) {
                 diagnostics_.videoGeneration = message.generation();
@@ -251,6 +251,19 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                     diagnostics_.latestKeyFrameEncodeMicroseconds = frame.encode_microseconds();
                 }
             }
+            if (message.has_desktop_region_update()) {
+                diagnostics_.latestVideoFrame = message.frame_id();
+                ++diagnostics_.regionMessages;
+                diagnostics_.regionBytes += size;
+                diagnostics_.latestTargetFramesPerSecond = message.desktop_region_update().target_frames_per_second();
+                diagnostics_.latestTargetBitrate = message.desktop_region_update().target_bitrate();
+                for (const auto& copy : message.desktop_region_update().copies()) {
+                    diagnostics_.copiedPixels += static_cast<std::uint64_t>(copy.destination().width()) * copy.destination().height();
+                }
+                for (const auto& patch : message.desktop_region_update().patches()) {
+                    diagnostics_.tileCacheHits += patch.cache_slot() && patch.png().empty();
+                }
+            }
             if (message.has_quality_feedback()) {
                 ++diagnostics_.feedbackMessages;
                 const auto& feedback = message.quality_feedback();
@@ -266,6 +279,9 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
             if (message.has_video_refinement()) {
                 ++diagnostics_.refinementMessages;
                 diagnostics_.refinementBytes += size;
+                for (const auto& patch : message.video_refinement().patches()) {
+                    diagnostics_.tileCacheHits += patch.cache_slot() && patch.png().empty();
+                }
             }
             co_return true;
         }
@@ -312,6 +328,8 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
     if (!bound_) {
         return;
     }
+    spdlog::info("desktop_region_transport session_id={} region_messages={} region_bytes={} copied_pixels={} tile_cache_hits={}",
+                 identity_.sessionId, diagnostics_.regionMessages, diagnostics_.regionBytes, diagnostics_.copiedPixels, diagnostics_.tileCacheHits);
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_).count();
     const auto encoding = diagnostics_.encoding.summary();
     const auto rafAge = diagnostics_.renderReportedAt == std::chrono::steady_clock::time_point{} ? -1 : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostics_.renderReportedAt).count();
