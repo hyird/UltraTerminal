@@ -16,6 +16,7 @@ enum class Fault { kNone,
                    kRate,
                    kDetail,
                    kMalformed,
+                   kUndecodableKey,
                    kTimestamp,
                    kFalseKey };
 Fault fault = Fault::kNone;
@@ -83,6 +84,16 @@ std::expected<MediaEncodedFrame, HRESULT> MediaEncoder::encode(std::span<const s
     if (fault == Fault::kMalformed) {
         frame->annexB = {0, 0, 1, 7};
     }
+    if (fault == Fault::kUndecodableKey) {
+        for (std::size_t at = 2; at + 2 < frame->annexB.size(); ++at) {
+            if (frame->annexB[at - 2] == 0 && frame->annexB[at - 1] == 0 && frame->annexB[at] == 1 && (frame->annexB[at + 1] & 31) == 5) {
+                frame->annexB.resize(at + 3);
+                frame->annexB.back() = 0xff;
+                break;
+            }
+        }
+        require(bool(describeAvcFrame(frame->annexB, frame->codec)), "Undecodable refresh must pass structural validation");
+    }
     return MediaEncodedFrame{std::move(frame->annexB), fault == Fault::kTimestamp ? timestamp + 1 : timestamp, fault == Fault::kFalseKey ? !frame->keyFrame : frame->keyFrame};
 }
 } // namespace ultraterimal::agent
@@ -91,7 +102,7 @@ int main() {
     using namespace ultraterimal::agent;
     try {
         std::vector<std::uint8_t> pixels(64 * 64 * 4, 90);
-        for (auto failure : {Fault::kUnavailable, Fault::kEncode, Fault::kRate, Fault::kDetail, Fault::kMalformed, Fault::kTimestamp, Fault::kFalseKey}) {
+        for (auto failure : {Fault::kUnavailable, Fault::kEncode, Fault::kRate, Fault::kDetail, Fault::kMalformed, Fault::kUndecodableKey, Fault::kTimestamp, Fault::kFalseKey}) {
             fault = failure == Fault::kUnavailable ? failure : Fault::kNone;
             const auto before = creations;
             VideoEncoder encoder({64, 64, 1000000, 60});
@@ -100,8 +111,10 @@ int main() {
             decode(*first);
             require(!encoder.encode({}, 256, 2) && !encoder.encode(pixels, 256, 1), "Invalid input accepted");
             fault = failure;
-            encoder.setRate(30, 2000000);
-            encoder.setDetail(true);
+            if (failure != Fault::kUndecodableKey) {
+                encoder.setRate(30, 2000000);
+                encoder.setDetail(true);
+            }
             auto fallback = encoder.encode(pixels, 256, 2, true);
             require(fallback && fallback->keyFrame && fallback->timestampMicroseconds == 2 && !encoder.hardware(), "Hardware failure did not fall back");
             require(fallback->baselineReset == (failure != Fault::kUnavailable), "Failover did not announce exactly one new baseline");
@@ -113,7 +126,7 @@ int main() {
             }
             require(creations == before + 1, "Unbounded hardware retry");
         }
-        require(destructions == 6, "Hardware codec was not released on failure");
+        require(destructions == 7, "Hardware codec was not released on failure");
         fault = Fault::kNone;
         attemptedCodecs.clear();
         {

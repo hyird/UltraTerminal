@@ -6,7 +6,7 @@
 
 #include <wrl/client.h>
 
-#include "features/desktop/refinement.protocol.h"
+#include "features/desktop/refinement.transport.h"
 
 namespace {
 void require(bool value) {

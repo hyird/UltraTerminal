@@ -1,4 +1,4 @@
-#include "tile_cache.protocol.h"
+#include "tile_cache.transport.h"
 
 #include <algorithm>
 #include <cstring>
@@ -16,7 +16,7 @@ void DesktopTileCache::begin() {
     protected_ = {};
 }
 std::optional<wire::PatchRect> DesktopTileCache::prepare(std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height,
-                                                         const wire::Rectangle& area, bool cached, std::size_t byteBudget) {
+                                                         const wire::Rectangle& area, bool cached, std::size_t byteBudget, DesktopRegionBudget* timeBudget) {
     if (!area.width() || !area.height() || area.width() > 128 || area.height() > 64 || area.width() > width || area.height() > height ||
         area.x() > width - area.width() || area.y() > height - area.height() || bgra.size() != static_cast<std::size_t>(width) * height * 4) {
         return std::nullopt;
@@ -67,7 +67,18 @@ std::optional<wire::PatchRect> DesktopTileCache::prepare(std::span<const std::ui
         }
         return patch;
     }
+    const auto started = DesktopRegionBudget::Clock::now();
+    if (timeBudget && !timeBudget->canEncode(started)) {
+        return std::nullopt;
+    }
     auto png = encodeDetailPng(value.pixels, area.width(), area.height());
+    const auto finished = DesktopRegionBudget::Clock::now();
+    if (timeBudget) {
+        timeBudget->observe(std::chrono::duration_cast<std::chrono::microseconds>(finished - started), finished);
+        if (!timeBudget->within(finished)) {
+            return std::nullopt;
+        }
+    }
     if (!png || png->size() > byteBudget) {
         return std::nullopt;
     }

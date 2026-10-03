@@ -1,11 +1,11 @@
-#include "refinement.protocol.h"
+#include "refinement.transport.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <vector>
 
-#include "tile_cache.protocol.h"
+#include "tile_cache.transport.h"
 
 namespace ultraterimal::agent {
 wire::VideoRefinement refineVideoDetails(std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height, DesktopTileCache* cache, bool cached) {

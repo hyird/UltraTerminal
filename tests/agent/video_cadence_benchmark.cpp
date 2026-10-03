@@ -116,7 +116,11 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
                 after.pixelCaptureGapsGe45ms - baseline.pixelCaptureGapsGe45ms,
                 after.unknownDamageUpdates - baseline.unknownDamageUpdates,
                 after.regionCandidates - baseline.regionCandidates,
-                after.regionBudgetFailures - baseline.regionBudgetFailures};
+                after.regionBudgetFailures - baseline.regionBudgetFailures,
+                after.regionTimeBudgetFailures - baseline.regionTimeBudgetFailures,
+                after.filteredPixels - baseline.filteredPixels,
+                after.unchangedPixelUpdates - baseline.unchangedPixelUpdates,
+                after.sparseReadbackPixels - baseline.sparseReadbackPixels};
     video.stop();
 }
 } // namespace
@@ -262,6 +266,8 @@ int main(int argc, char** argv) {
                   << ",\"pending_before_deadline_calls\":" << captured.pendingBeforeDeadlineCalls << ",\"backpressured_calls\":" << captured.backpressuredCalls
                   << ",\"worker_encoded_frames\":" << captured.encodedFrames
                   << ",\"unknown_damage_updates\":" << captured.unknownDamageUpdates << ",\"region_candidates\":" << captured.regionCandidates << ",\"region_budget_failures\":" << captured.regionBudgetFailures
+                  << ",\"region_time_budget_failures\":" << captured.regionTimeBudgetFailures << ",\"filtered_pixels\":" << captured.filteredPixels
+                  << ",\"unchanged_pixel_updates\":" << captured.unchangedPixelUpdates << ",\"sparse_readback_pixels\":" << captured.sparseReadbackPixels
                   << ",\"pixel_capture_gaps\":" << captured.pixelCaptureGaps << ",\"pixel_capture_gaps_ge_45ms\":" << captured.pixelCaptureGapsGe45ms
                   << ",\"cpu_ms_including_warmup\":" << cpuMilliseconds << ",\"peak_working_set_kib\":" << memory.PeakWorkingSetSize / 1024
                   << ",\"private_bytes_kib\":" << memory.PrivateUsage / 1024

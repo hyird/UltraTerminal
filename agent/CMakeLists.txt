@@ -73,8 +73,8 @@ add_library(ultraterimal-agent-core STATIC
     features/desktop/video_color_avx2.protocol.cpp
     features/desktop/desktop.transport.cpp
     features/desktop/video.runtime.cpp
-    features/desktop/refinement.protocol.cpp
-    features/desktop/tile_cache.protocol.cpp
+    features/desktop/refinement.transport.cpp
+    features/desktop/tile_cache.transport.cpp
     features/desktop/damage.protocol.cpp
     platform/windows/image_encoder.transport.cpp
     features/desktop/worker.runtime.cpp
@@ -93,6 +93,7 @@ add_library(ultraterimal-agent-core STATIC
     platform/windows/capability.transport.cpp
     platform/windows/capture.transport.cpp
     platform/windows/capture_regions.protocol.cpp
+    platform/windows/texture_regions.transport.cpp
     platform/windows/cursor.transport.cpp
     platform/windows/pipe.transport.cpp
     platform/windows/desktop_process.transport.cpp

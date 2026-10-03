@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "desktop.transport.h"
@@ -80,6 +81,10 @@ class DesktopCapture {
     ID3D11Device* device() const;
     ID3D11Texture2D* texture() const;
     void readTexture(CapturedFrame& frame);
+    // Sparse rows do not establish a complete CPU baseline for nextFrame().
+    std::uint64_t readTextureRegions(CapturedFrame& frame, std::span<const wire::Rectangle> regions);
+    std::optional<std::vector<std::uint32_t>> changedTextureTiles();
+    void rememberTexture();
     std::vector<DisplayMode> displayModes() const;
     bool resize(std::uint32_t width, std::uint32_t height);
 

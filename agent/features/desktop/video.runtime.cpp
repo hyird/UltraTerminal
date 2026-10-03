@@ -7,6 +7,7 @@
 #include <chrono>
 #include <future>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <system_error>
 #include <tuple>
@@ -20,8 +21,8 @@
 #include "platform/windows/capture.transport.h"
 #include "platform/windows/cursor.transport.h"
 #include "recovery.runtime.h"
-#include "refinement.protocol.h"
-#include "tile_cache.protocol.h"
+#include "refinement.transport.h"
+#include "tile_cache.transport.h"
 #include "video.transport.h"
 
 namespace ultraterimal::agent {
@@ -43,11 +44,13 @@ struct VideoWorker {
     bool readbackReady = false;
     bool capturedOnGpu = false;
     std::chrono::steady_clock::time_point encodeAt{};
+    std::chrono::steady_clock::time_point compareAt{};
     DesktopCursor cursor;
     CaptureRecovery recovery;
     DesktopVideoDiagnostics diagnostics;
     DesktopDamage damage;
     DesktopTileCache tiles;
+    DesktopRegionBudget regionBudget;
     std::uint32_t damageWidth = 0, damageHeight = 0;
     std::vector<wire::VideoCodec> requestedCodecs{wire::AVC};
 
@@ -65,10 +68,51 @@ struct VideoWorker {
         damage.reset(0, 0);
         damageWidth = damageHeight = 0;
         tiles.clear();
+        regionBudget = DesktopRegionBudget{};
+        compareAt = {};
     }
-    bool materialize() {
+    bool materialize(std::span<const wire::Rectangle> regions = {}) {
         try {
-            capture->readTexture(*retained);
+            if (regions.empty()) {
+                capture->readTexture(*retained);
+            } else {
+                diagnostics.sparseReadbackPixels += capture->readTextureRegions(*retained, regions);
+            }
+            return true;
+        } catch (const DesktopChanged& error) {
+            discard();
+            if (!recovery.restart(std::chrono::steady_clock::now())) {
+                throw DesktopFailure(error.code(), "Desktop capture recovery budget exhausted");
+            }
+            return false;
+        }
+    }
+    bool comparePixels() {
+        try {
+            if (encoder->gpu()) {
+                if (const auto changed = capture->changedTextureTiles()) {
+                    damage.filterTiles(*changed);
+                }
+            } else {
+                damage.filterPixels(retained->bgra);
+            }
+            return true;
+        } catch (const DesktopChanged& error) {
+            discard();
+            if (!recovery.restart(std::chrono::steady_clock::now())) {
+                throw DesktopFailure(error.code(), "Desktop capture recovery budget exhausted");
+            }
+            return false;
+        }
+    }
+    bool rememberPixels() {
+        try {
+            if (encoder->gpu()) {
+                damage.forgetPixels();
+                capture->rememberTexture();
+            } else {
+                damage.rememberPixels(retained->bgra);
+            }
             return true;
         } catch (const DesktopChanged& error) {
             discard();
@@ -203,11 +247,30 @@ struct VideoWorker {
             }
             return std::nullopt;
         }
+        if (encoder && !configurationPending && !refresh && frameId && capabilities.region_updates() &&
+            (damage.regionCandidate() || now >= compareAt)) {
+            const auto previousPixels = damage.changedPixels();
+            if (!comparePixels()) {
+                return std::nullopt;
+            }
+            diagnostics.filteredPixels += previousPixels - std::min(previousPixels, damage.changedPixels());
+            // Large moving scenes already require video. Reprobe their damage
+            // after 100 ms instead of synchronizing a GPU comparison every frame.
+            compareAt = damage.unchanged() || damage.regionCandidate() ? now : now + std::chrono::milliseconds(100);
+            if (damage.unchanged()) {
+                ++diagnostics.unchangedPixelUpdates;
+                pixelsPending = false;
+                lastEncodedTicks = lastPresentTicks;
+                damage.commit();
+                return update.cursor ? std::optional{std::move(update)} : std::nullopt;
+            }
+        }
         update.changedPixels = damage.changedPixels();
         if (encoder && !configurationPending && !refresh && frameId && capabilities.region_updates() && damage.regionCandidate()) {
             ++diagnostics.regionCandidates;
-            const auto started = std::chrono::steady_clock::now();
-            if (encoder->gpu() && !materialize()) {
+            regionBudget.begin(std::chrono::steady_clock::now(), rate.framesPerSecond);
+            const auto patches = damage.patches();
+            if (encoder->gpu() && !patches.empty() && !materialize(patches)) {
                 return std::nullopt;
             }
             wire::DesktopRegionUpdate region;
@@ -220,8 +283,8 @@ struct VideoWorker {
             // Spend at most half a video-frame budget on PNGs. Cached copies
             // remain cheap; high-entropy updates go directly to the video codec.
             const auto budget = std::min<std::size_t>(256 * 1024, std::max<std::size_t>(4096, rate.bitrate / rate.framesPerSecond / 16));
-            for (const auto& area : damage.patches()) {
-                auto patch = tiles.prepare(source.bgra, source.width, source.height, area, capabilities.tile_cache(), budget - bytes);
+            for (const auto& area : patches) {
+                auto patch = tiles.prepare(source.bgra, source.width, source.height, area, capabilities.tile_cache(), budget - bytes, &regionBudget);
                 if (!patch) {
                     fits = false;
                     break;
@@ -229,12 +292,20 @@ struct VideoWorker {
                 bytes += patch->png().size();
                 *region.add_patches() = std::move(*patch);
             }
+            const bool withinBudget = regionBudget.within(std::chrono::steady_clock::now());
+            fits &= withinBudget;
+            if (!withinBudget || regionBudget.denied()) {
+                ++diagnostics.regionTimeBudgetFailures;
+            }
             if (fits) {
                 if (frameId == std::numeric_limits<std::uint64_t>::max()) {
                     throw std::overflow_error("Desktop frame sequence exhausted");
                 }
+                if (!rememberPixels()) {
+                    return std::nullopt;
+                }
                 tiles.commit();
-                region.set_encode_microseconds(static_cast<std::uint32_t>(std::max<std::int64_t>(1, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count())));
+                region.set_encode_microseconds(static_cast<std::uint32_t>(std::max<std::int64_t>(1, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now).count())));
                 region.set_target_frames_per_second(rate.framesPerSecond);
                 region.set_target_bitrate(rate.bitrate);
                 update.generation = generation;
@@ -287,7 +358,8 @@ struct VideoWorker {
             }
             encoded = encoder->encode(source.bgra, static_cast<std::size_t>(width) * 4, static_cast<std::uint64_t>(timestamp), true);
         }
-        const auto encodeMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - encodeStarted).count();
+        // Include rejected region work and GPU comparison in encoder pressure.
+        const auto encodeMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now).count();
         if (!encoded) {
             if (encoded.error() == VideoEncodeError::kFrameSkipped) {
                 if (update.cursor) {
@@ -313,6 +385,9 @@ struct VideoWorker {
         }
         if (frameId == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Desktop frame sequence exhausted");
+        }
+        if (!rememberPixels()) {
+            return std::nullopt;
         }
         update.generation = generation;
         pixelsPending = false;

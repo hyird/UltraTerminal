@@ -18,6 +18,7 @@
 #include "capture_regions.protocol.h"
 #include "desktop.transport.h"
 #include "handle.types.h"
+#include "texture_regions.transport.h"
 
 namespace ultraterimal::agent {
 namespace {
@@ -77,6 +78,7 @@ struct DesktopCapture::State {
     ComPtr<IDXGIOutputDuplication> duplication;
     ComPtr<ID3D11Texture2D> staging;
     ComPtr<ID3D11Texture2D> latest;
+    std::unique_ptr<DesktopTextureRegions> textureRegions;
     std::optional<CapturedFrame> deferred;
     DXGI_OUTDUPL_DESC description{};
     DXGI_OUTDUPL_POINTER_SHAPE_INFO pointerInfo{};
@@ -168,7 +170,15 @@ struct DesktopCapture::State {
             require(device->CreateTexture2D(&stagingDescription, nullptr, &staging), "Create staging texture");
         }
         const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
-        context->CopyResource(staging.Get(), source.Get());
+        if (changed) {
+            for (const auto& area : *changed) {
+                const D3D11_BOX box{static_cast<UINT>(area.left), static_cast<UINT>(area.top), 0,
+                                    static_cast<UINT>(area.right), static_cast<UINT>(area.bottom), 1};
+                context->CopySubresourceRegion(staging.Get(), 0, box.left, box.top, 0, source.Get(), 0, &box);
+            }
+        } else {
+            context->CopyResource(staging.Get(), source.Get());
+        }
         const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
         D3D11_MAPPED_SUBRESOURCE mapped{};
         require(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
@@ -176,23 +186,28 @@ struct DesktopCapture::State {
         {
             MappedTexture mapping{context.Get(), staging.Get()};
             copyCapturePixels(frame.bgra, frame.width, frame.height, mapped.pData, mapped.RowPitch, changed ? std::span<const RECT>(*changed) : std::span<const RECT>{});
-            if (timing && timing->verifyWithStaging) {
-                if (changed) {
-                    std::vector<std::uint8_t> reference(frame.bgra.size());
-                    copyCapturePixels(reference, frame.width, frame.height, mapped.pData, mapped.RowPitch);
-                    timing->matchedStaging = reference == frame.bgra;
-                } else {
-                    timing->matchedStaging = true;
-                }
-                if (!timing->matchedStaging) {
-                    throw std::runtime_error("DXGI staging partial readback disagrees with its complete frame");
-                }
-            }
         }
         if (timing) {
             timing->copyDispatchMilliseconds = milliseconds(copyStarted, mapStarted);
             timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
             timing->rowCopyMilliseconds = milliseconds(rowsStarted, Clock::now());
+            if (timing->verifyWithStaging) {
+                timing->matchedStaging = true;
+                if (changed) {
+                    CapturedFrame reference;
+                    reference.width = frame.width;
+                    reference.height = frame.height;
+                    reference.bgra.resize(frame.bgra.size());
+                    CaptureTiming verification;
+                    copyStagingPixels(source, textureDescription, reference, &verification);
+                    timing->matchedStaging = reference.bgra == frame.bgra;
+                    timing->verificationStagingMapMilliseconds = verification.mapMilliseconds;
+                    timing->verificationStagingRowCopyMilliseconds = verification.rowCopyMilliseconds;
+                }
+                if (!timing->matchedStaging) {
+                    throw std::runtime_error("DXGI staging partial readback disagrees with its complete frame");
+                }
+            }
         }
     }
     void copyPixels(const ComPtr<ID3D11Texture2D>& source, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels) {
@@ -384,6 +399,59 @@ void DesktopCapture::readTexture(CapturedFrame& frame) {
         throw CaptureReset();
     }
 }
+std::uint64_t DesktopCapture::readTextureRegions(CapturedFrame& frame, std::span<const wire::Rectangle> regions) {
+    if (!state_->latest || requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    D3D11_TEXTURE2D_DESC description{};
+    state_->latest->GetDesc(&description);
+    if (description.Width != frame.width || description.Height != frame.height) {
+        throw CaptureReset();
+    }
+    if (!state_->textureRegions) {
+        state_->textureRegions = std::make_unique<DesktopTextureRegions>(state_->device.Get());
+    }
+    frame.bgra.resize(static_cast<std::size_t>(frame.width) * frame.height * 4);
+    auto copied = state_->textureRegions->read(state_->latest.Get(), regions, frame.bgra);
+    if (!copied) {
+        require(copied.error(), "Read desktop texture regions");
+    }
+    if (requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    return *copied;
+}
+std::optional<std::vector<std::uint32_t>> DesktopCapture::changedTextureTiles() {
+    if (!state_->latest || requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    if (!state_->textureRegions) {
+        return std::nullopt;
+    }
+    auto changed = state_->textureRegions->changes(state_->latest.Get());
+    if (!changed) {
+        if (changed.error() != S_FALSE) {
+            require(changed.error(), "Compare desktop texture tiles");
+        }
+        return std::nullopt;
+    }
+    if (requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    return std::move(*changed);
+}
+void DesktopCapture::rememberTexture() {
+    if (!state_->latest || requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    if (!state_->textureRegions) {
+        state_->textureRegions = std::make_unique<DesktopTextureRegions>(state_->device.Get());
+    }
+    require(state_->textureRegions->remember(state_->latest.Get()), "Remember submitted desktop texture");
+    if (requireInputDesktop() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+}
 std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool previousPixels, bool readPixels, bool retainTexture) {
     if (timeout.count() < 0 || timeout.count() > 5000) {
         throw std::invalid_argument("Capture wait must be between 0 and 5000 milliseconds");
@@ -454,7 +522,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         if (!state_->latest) {
             auto latestDescription = description;
             latestDescription.Usage = D3D11_USAGE_DEFAULT;
-            latestDescription.BindFlags = 0; // Video processor input permits an unbound DEFAULT texture.
+            latestDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
             latestDescription.CPUAccessFlags = 0;
             latestDescription.MiscFlags = 0;
             require(state_->device->CreateTexture2D(&latestDescription, nullptr, &state_->latest), "Create latest desktop texture");

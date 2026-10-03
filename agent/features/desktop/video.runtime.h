@@ -25,6 +25,10 @@ struct DesktopVideoDiagnostics {
     std::uint64_t unknownDamageUpdates = 0;
     std::uint64_t regionCandidates = 0;
     std::uint64_t regionBudgetFailures = 0;
+    std::uint64_t regionTimeBudgetFailures = 0;
+    std::uint64_t filteredPixels = 0;
+    std::uint64_t unchangedPixelUpdates = 0;
+    std::uint64_t sparseReadbackPixels = 0;
 };
 struct DesktopVideoUpdate {
     std::optional<wire::VideoConfig> configuration;

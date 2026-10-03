@@ -14,6 +14,13 @@ class DesktopDamage {
     void reset(std::uint32_t width, std::uint32_t height);
     void add(bool known, std::span<const wire::CopyRect> moves, std::span<const wire::Rectangle> dirty);
     void commit();
+    // Compare against the last submitted raw image, never an unsent capture.
+    // False means that a complete baseline is not available yet.
+    bool filterPixels(std::span<const std::uint8_t> bgra);
+    void filterTiles(std::span<const std::uint32_t> changed);
+    void rememberPixels(std::span<const std::uint8_t> bgra);
+    void forgetPixels();
+    bool unchanged() const;
     std::uint64_t changedPixels() const;
     bool regionCandidate() const;
     std::vector<wire::Rectangle> patches() const;
@@ -26,5 +33,6 @@ class DesktopDamage {
     bool known_ = true;
     std::vector<bool> dirty_, moved_;
     std::vector<wire::CopyRect> copies_;
+    std::vector<std::uint8_t> baseline_;
 };
 } // namespace ultraterimal::agent

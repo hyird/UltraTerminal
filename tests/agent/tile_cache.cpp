@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "features/desktop/tile_cache.protocol.h"
+#include "features/desktop/tile_cache.transport.h"
 
 namespace {
 void require(bool value) {
@@ -58,6 +58,26 @@ int main() {
         const auto advertise = cache.prepare(pixels, 128, 64, area, true, 65536);
         require(advertise && advertise->cache_slot() && !advertise->png().empty());
         require(!cache.prepare({}, 128, 64, area, true, 65536));
+        agent::DesktopRegionBudget budget;
+        using Clock = agent::DesktopRegionBudget::Clock;
+        const auto start = Clock::time_point{} + std::chrono::seconds(10);
+        budget.begin(start, 60);
+        require(budget.canEncode(start) && budget.within(start + std::chrono::microseconds(3999)));
+        require(!budget.within(start + std::chrono::microseconds(4000)));
+        budget.observe(std::chrono::milliseconds(10), start);
+        budget.begin(start + std::chrono::milliseconds(20), 60);
+        require(!budget.canEncode(start + std::chrono::milliseconds(20)));
+        budget.begin(start + std::chrono::seconds(1), 60);
+        require(budget.canEncode(start + std::chrono::seconds(1)));
+        budget.observe(std::chrono::microseconds(300), start + std::chrono::seconds(1));
+        budget.begin(start + std::chrono::milliseconds(1020), 120);
+        require(budget.canEncode(start + std::chrono::milliseconds(1020)));
+        cache.clear();
+        budget.begin(Clock::now() - std::chrono::seconds(1), 60);
+        require(!cache.prepare(pixels, 128, 64, area, true, 65536, &budget));
+        require(cache.prepare(pixels, 128, 64, area, true, 65536).has_value());
+        cache.commit();
+        require(cache.prepare(pixels, 128, 64, area, true, 0, &budget).has_value()); // Cached references bypass codec admission.
         std::cout << "Transactional publication, exact tile reuse, bounded eviction and generation reset passed\n";
         return 0;
     } catch (const std::exception& error) {

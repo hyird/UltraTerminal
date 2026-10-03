@@ -21,6 +21,7 @@ struct VideoEncoder::State {
     std::string codec;
     bool baselinePending = false;
     bool hardwareValidated = false;
+    bool refreshRebuilt = false;
     wire::VideoCodec hardwareCodec = wire::AVC;
     ID3D11Device* device = nullptr; // Capture owns it until this encoder is destroyed.
 
@@ -65,7 +66,7 @@ struct VideoEncoder::State {
     std::optional<EncodedVideoFrame> acceptHardware(std::expected<MediaEncodedFrame, HRESULT> result, std::uint64_t timestamp, bool keyRequired) {
         if (result && result->timestampMicroseconds == timestamp) {
             auto description = describeVideoFrame(hardwareCodec, result->bytes, codec, result->keyFrame);
-            const bool needsValidation = !hardwareValidated || (description && codec != description->codec) || (hardwareCodec == wire::AV1 && result->keyFrame);
+            const bool needsValidation = !hardwareValidated || keyRequired || (description && codec != description->codec) || (hardwareCodec == wire::AV1 && result->keyFrame);
             if (description && description->keyFrame == result->keyFrame && (!keyRequired || description->keyFrame) &&
                 (!needsValidation || (description->keyFrame && verifyVideoBaseline(hardwareCodec, result->bytes, config.width, config.height)))) {
                 hardwareValidated = true;
@@ -116,6 +117,17 @@ std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodeTexture(I
     if (state.withinLatencyBudget(started)) {
         if (auto result = state.acceptHardware(std::move(encoded), timestamp, keyRequired)) {
             return std::move(*result);
+        }
+    }
+    // Some hardware encoders emit invalid forced refreshes after rate changes.
+    // A fresh transform can restore its independently decodable first frame.
+    if (bgra && keyRequired && !state.codec.empty() && !state.refreshRebuilt) {
+        state.refreshRebuilt = true;
+        if (state.initialize(state.hardwareCodec, true) && state.media->gpu()) {
+            state.baselinePending = true;
+            if (auto result = state.acceptHardware(state.media->encodeTexture(bgra, timestamp, true), timestamp, true)) {
+                return std::move(*result);
+            }
         }
     }
     if (state.fallbackHardware(true) && state.media->gpu()) {

@@ -21,20 +21,20 @@ DesktopCapture::DesktopCapture(std::uint32_t) : state_(std::make_unique<State>()
 DesktopCapture::~DesktopCapture() = default;
 std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds, std::vector<std::uint8_t>*, CaptureTiming*, bool, bool readPixels, bool) {
     CapturedFrame frame;
-    frame.width = 512;
-    frame.height = 256;
+    frame.width = 1024;
+    frame.height = 512;
     frame.rotation = 1;
     frame.captureTicks = ++state_->ticks;
-    frame.damageKnown = true;
+    frame.damageKnown = state_->ticks % 3 != 0;
     wire::Rectangle area;
-    area.set_width(128);
-    area.set_height(64);
+    area.set_width(frame.width);
+    area.set_height(frame.height);
     frame.dirty.push_back(area);
     if (readPixels) {
-        frame.bgra.assign(512 * 256 * 4, 255);
+        frame.bgra.assign(static_cast<std::size_t>(frame.width) * frame.height * 4, 255);
         for (unsigned y = 0; y < 64; ++y) {
             for (unsigned x = 0; x < 128; ++x) {
-                frame.bgra[(y * 512 + x) * 4] = state_->ticks % 2 ? 32 : 208;
+                frame.bgra[(y * frame.width + x) * 4] = state_->ticks % 2 ? 32 : 208;
             }
         }
     }
@@ -43,7 +43,10 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
 ID3D11Device* DesktopCapture::device() const { return nullptr; }
 ID3D11Texture2D* DesktopCapture::texture() const { return nullptr; }
 void DesktopCapture::readTexture(CapturedFrame&) { throw std::runtime_error("Unexpected GPU readback in capture double"); }
-std::vector<DesktopCapture::DisplayMode> DesktopCapture::displayModes() const { return {{512, 256}}; }
+std::uint64_t DesktopCapture::readTextureRegions(CapturedFrame&, std::span<const wire::Rectangle>) { throw std::runtime_error("Unexpected sparse GPU readback in capture double"); }
+std::optional<std::vector<std::uint32_t>> DesktopCapture::changedTextureTiles() { return std::nullopt; }
+void DesktopCapture::rememberTexture() { throw std::runtime_error("Unexpected GPU baseline in capture double"); }
+std::vector<DesktopCapture::DisplayMode> DesktopCapture::displayModes() const { return {{1024, 512}}; }
 bool DesktopCapture::resize(std::uint32_t, std::uint32_t) { return false; }
 } // namespace ultraterimal::agent
 namespace {
@@ -105,6 +108,14 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video) {
     require(regions == 16 && references > 0, "Region updates or cache hits did not reach the receiver");
     const auto refreshed = co_await video.next(true);
     require(refreshed && !refreshed->frame.data().empty() && refreshed->frame.key_frame(), "Explicit refresh did not return to a video baseline");
+    message.set_generation(refreshed->generation);
+    if (refreshed->configuration) {
+        message.set_sequence(++sequence);
+        message.set_frame_id(0);
+        message.set_base_frame_id(0);
+        *message.mutable_video_config() = *refreshed->configuration;
+        require(validator.accept(message).has_value(), "Refreshed codec baseline invalid");
+    }
     message.set_sequence(++sequence);
     message.set_frame_id(refreshed->frameId);
     message.set_base_frame_id(0);

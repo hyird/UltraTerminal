@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "region_budget.types.h"
 #include "ultraterimal/protocol/desktop.protocol.h"
 
 namespace ultraterimal::agent {
@@ -18,7 +19,7 @@ class DesktopTileCache {
     void clear();
     void begin();
     std::optional<wire::PatchRect> prepare(std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height,
-                                           const wire::Rectangle& area, bool cached, std::size_t byteBudget);
+                                           const wire::Rectangle& area, bool cached, std::size_t byteBudget, DesktopRegionBudget* timeBudget = nullptr);
     void commit();
 
   private:

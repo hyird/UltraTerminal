@@ -1,6 +1,7 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 #include "features/desktop/damage.protocol.h"
 
@@ -53,6 +54,44 @@ int main() {
         require(!damage.regionCandidate());
         damage.reset(0, 0);
         require(damage.changedPixels() == 0 && !damage.regionCandidate());
+        damage.reset(1024, 512);
+        std::vector<std::uint8_t> pixels(1024 * 512 * 4, 255);
+        damage.rememberPixels(pixels);
+        const std::array coarse{area(0, 0, 1024, 512)};
+        pixels[(100 * 1024 + 254) * 4] = 0;
+        damage.add(true, {}, coarse);
+        require(!damage.regionCandidate()); // DXGI overreports more than 32 tiles.
+        require(damage.filterPixels(pixels) && damage.regionCandidate() && damage.patches().size() == 1);
+        require(damage.changedPixels() == 128 * 64);
+        damage.commit(); // Unsubmitted image: baseline must stay unchanged.
+        damage.add(false, {}, {});
+        require(damage.filterPixels(pixels) && damage.patches().size() == 1);
+        damage.rememberPixels(pixels);
+        damage.commit();
+        for (std::size_t index = 3; index < pixels.size(); index += 4) {
+            pixels[index] = 0;
+        }
+        damage.add(true, {}, coarse);
+        require(damage.filterPixels(pixels) && damage.unchanged());
+        damage.commit();
+        damage.forgetPixels();
+        damage.add(true, {}, coarse);
+        require(!damage.filterPixels(pixels) && !damage.unchanged());
+        damage.reset(1024, 512);
+        pixels.assign(pixels.size(), 255);
+        pixels[0] = 32;
+        damage.rememberPixels(pixels);
+        *copy.mutable_destination() = area(128, 0, 128, 64);
+        pixels[(64 * 1024 + 512) * 4] = 48;
+        const std::array corrective{area(128, 0, 128, 64), area(512, 64, 1, 1)};
+        damage.add(true, std::array{copy}, corrective);
+        require(damage.filterPixels(pixels) && damage.patches().size() == 2 && damage.copies().size() == 1);
+        damage.reset(2, 2);
+        std::vector<std::uint8_t> edgePixels(16, 255);
+        damage.rememberPixels(edgePixels);
+        edgePixels[12] = 0;
+        damage.add(false, {}, {});
+        require(damage.filterPixels(edgePixels) && damage.changedPixels() == 4 && damage.patches().size() == 1);
         std::cout << "Single-update scroll, coalescing, unknown damage and edge tiles passed\n";
         return 0;
     } catch (const std::exception& error) {

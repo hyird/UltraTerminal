@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <sstream>
@@ -5,6 +6,7 @@
 
 #include <wels/codec_api.h>
 
+#include "features/desktop/codecs.protocol.h"
 #include "features/desktop/video.transport.h"
 #include "platform/windows/capture.transport.h"
 #include "platform/windows/media_encoder.transport.h"
@@ -20,6 +22,11 @@ int main() {
         }
         if (!pixels || !pixels->bgra.empty() || timing.mapMilliseconds || !capture.texture()) {
             throw std::runtime_error("GPU capture mapped CPU pixels");
+        }
+        capture.rememberTexture();
+        const auto changedTiles = capture.changedTextureTiles();
+        if (changedTiles && std::ranges::any_of(*changedTiles, [](std::uint32_t changed) { return changed != 0; })) {
+            throw std::runtime_error("GPU comparison changed an unchanged encoding surface");
         }
         VideoEncoder encoder({pixels->width, pixels->height, 16000000, 60, false}, capture.device());
         if (!encoder.gpu()) {
@@ -56,6 +63,9 @@ int main() {
             auto encoded = encoder.encodeTexture(capture.texture(), static_cast<std::uint64_t>(frame + 1) * 16667, frame % 20 == 0);
             if (!encoded || !encoder.gpu()) {
                 throw std::runtime_error("GPU surface pool or encoding failed");
+            }
+            if (encoded->keyFrame && !verifyVideoBaseline(ultraterimal::wire::AVC, encoded->annexB, pixels->width, pixels->height)) {
+                throw std::runtime_error("GPU refresh is not independently decodable");
             }
             unsigned char* planes[3]{};
             SBufferInfo output{};

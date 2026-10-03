@@ -74,7 +74,9 @@ void decode(const agent::DesktopVideoUpdate& update, const wire::VideoConfig& co
     information.uiInBsTimeStamp = update.frame.timestamp_microseconds();
     const auto& bytes = update.frame.data();
     const auto result = decoder->DecodeFrameNoDelay(reinterpret_cast<const unsigned char*>(bytes.data()), static_cast<int>(bytes.size()), planes, &information);
-    require(result == dsErrorFree && information.iBufferStatus == 1, "Desktop key frame is not independently decodable");
+    if (result != dsErrorFree || information.iBufferStatus != 1) {
+        throw std::runtime_error("Desktop key frame is not independently decodable: generation=" + std::to_string(update.generation) + " frame=" + std::to_string(update.frameId) + " codec=" + config.codec() + " result=" + std::to_string(result) + " output=" + std::to_string(information.iBufferStatus));
+    }
     require(information.UsrData.sSystemBuffer.iWidth == static_cast<int>(config.width()) && information.UsrData.sSystemBuffer.iHeight == static_cast<int>(config.height()), "Desktop dimensions changed in encoding");
     require(information.uiOutYuvTimeStamp == update.frame.timestamp_microseconds(), "Desktop presentation timestamp changed");
 }
@@ -196,10 +198,19 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     feedback.set_decode_microseconds(1000);
     video.feedback(feedback);
     std::uint64_t lastSent = rebuilt->frameId;
+    auto currentGeneration = rebuilt->generation;
+    auto currentConfiguration = *rebuilt->configuration;
     bool blocked = false;
-    for (unsigned i = 0; i < 20; ++i) {
+    // One GPU-refresh rebuild and one software fallback may reset a generation.
+    // They are bounded; repeated refreshes must eventually wait for an ACK.
+    for (unsigned i = 0; i < 40; ++i) {
         auto update = co_await video.next(true);
         if (update && !update->frame.data().empty()) {
+            if (update->configuration) {
+                require(update->generation == currentGeneration + 1 && update->frameId == 1, "Rejected hardware refresh did not rebuild the baseline");
+                currentGeneration = update->generation;
+                currentConfiguration = *update->configuration;
+            }
             lastSent = update->frameId;
         } else {
             require(update && update->cursor, "Congestion stopped cursor refresh");
@@ -208,11 +219,16 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
         }
     }
     require(blocked && lastSent <= 17, "Missing display ACKs did not bound encoded frames");
+    feedback.set_displayed_generation(currentGeneration);
     feedback.set_displayed_frame(lastSent);
     video.feedback(feedback);
     auto resumed = co_await video.next(true);
-    require(resumed && resumed->frameId > lastSent && resumed->frame.key_frame(), "Display ACK did not resume encoding");
-    decode(*resumed, *rebuilt->configuration);
+    require(resumed && resumed->frame.key_frame() &&
+                (resumed->configuration ? resumed->generation == currentGeneration + 1 && resumed->frameId == 1 : resumed->generation == currentGeneration && resumed->frameId > lastSent),
+            "Display ACK did not resume encoding or rebuild a rejected hardware baseline");
+    const auto resumedConfiguration = resumed->configuration.value_or(currentConfiguration);
+    decode(*resumed, resumedConfiguration);
+    feedback.set_displayed_generation(resumed->generation);
     feedback.set_displayed_frame(resumed->frameId);
     feedback.set_background(true);
     video.feedback(feedback);
@@ -232,7 +248,7 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     const auto visible = co_await video.next();
     require(visible && visible->frameId == resumed->frameId + 1 && visible->generation == resumed->generation,
             "Foreground desktop did not resume its existing video baseline");
-    decode(*visible, *rebuilt->configuration);
+    decode(*visible, visible->configuration.value_or(resumedConfiguration));
 
     require(!(co_await video.resize(0, 1080)), "Invalid display size accepted");
     require(!(co_await video.resize(17, 16)), "Odd display size accepted");
