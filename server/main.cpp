@@ -66,6 +66,7 @@ int main(int argc, char** argv) {
             .use_service_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
             .use_connection_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
             .on_error([](ruvia::context& context, ruvia::http_error_info error) -> ruvia::task<ruvia::http_response> {
+                spdlog::warn("http_request_failed status={} code={}", error.status().value(), error.code());
                 co_return context.error({.status_ = error.status(), .code_ = "request_failed", .message_ = "Request failed"});
             })
             .on_start([gateway, native] {

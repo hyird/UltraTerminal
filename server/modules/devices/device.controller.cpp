@@ -1,5 +1,8 @@
 #include "device.controller.h"
 
+#include <exception>
+#include <typeinfo>
+
 #include <spdlog/spdlog.h>
 
 #include "config/request.schema.h"
@@ -9,40 +12,51 @@
 #include "update.service.h"
 namespace ultraterimal::server {
 ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& context) const {
-    const auto body = requestObject(co_await context.req().text(), {"device_id"});
-    const auto device = requestText(body, "device_id", 128);
-    auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
-    const auto user = context.request_state<UserIdentity>().id;
-    const auto allowed = (co_await context.run_blocking([service = runtime.devices, device, user] {
-                             const auto devices = service.list(user);
-                             return std::any_of(devices.begin(), devices.end(), [&](const auto& found) { return found.id == device && found.canManage; });
-                         })).value();
-    if (!allowed) {
-        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can update its Agent"});
-    }
-    const auto release = (co_await context.run_blocking([root = runtime.config.webRoot] { return agentRelease(root); })).value();
-    if (!release) {
-        co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
-    }
-    const auto found = runtime.controlConnections.find(device);
-    if (found == runtime.controlConnections.end() || !found->second->ready || !found->second->capabilities.agent_update()) {
-        co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "agent_unavailable", .message_ = "Agent is offline or requires an initial installer upgrade"});
-    }
-    const auto connection = found->second;
-    if (!protocol::newerUpdate(release->update, connection->agentVersion)) {
-        co_return jsonResponse(context, {{"status", "current"}, {"version", connection->agentVersion}});
-    }
-    if (!connection->updatePending) {
-        wire::Envelope command;
-        *command.mutable_agent_update() = release->update;
-        if (!connection->enqueue(std::move(command))) {
-            co_return context.error({.status_ = ruvia::http_status::service_unavailable, .code_ = "agent_busy", .message_ = "Agent control queue is unavailable"});
+    std::string_view stage = "request_body";
+    try {
+        const auto body = requestObject(co_await context.req().text(), {"device_id"});
+        const auto device = requestText(body, "device_id", 128);
+        auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
+        const auto user = context.request_state<UserIdentity>().id;
+        stage = "ownership_query";
+        const auto allowed = (co_await context.run_blocking([service = runtime.devices, device, user] {
+                                 const auto devices = service.list(user);
+                                 return std::any_of(devices.begin(), devices.end(), [&](const auto& found) { return found.id == device && found.canManage; });
+                             })).value();
+        if (!allowed) {
+            co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can update its Agent"});
         }
-        connection->updatePending = true;
-        spdlog::info("agent_update_requested user_id={} device_id={} version={}", user, device, release->update.version());
+        stage = "release_lookup";
+        const auto release = (co_await context.run_blocking([root = runtime.config.webRoot] { return agentRelease(root); })).value();
+        if (!release) {
+            co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
+        }
+        const auto found = runtime.controlConnections.find(device);
+        if (found == runtime.controlConnections.end() || !found->second->ready || !found->second->capabilities.agent_update()) {
+            co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "agent_unavailable", .message_ = "Agent is offline or requires an initial installer upgrade"});
+        }
+        const auto connection = found->second;
+        if (!protocol::newerUpdate(release->update, connection->agentVersion)) {
+            co_return jsonResponse(context, {{"status", "current"}, {"version", connection->agentVersion}});
+        }
+        stage = "control_dispatch";
+        if (!connection->updatePending) {
+            wire::Envelope command;
+            *command.mutable_agent_update() = release->update;
+            if (!connection->enqueue(std::move(command))) {
+                co_return context.error({.status_ = ruvia::http_status::service_unavailable, .code_ = "agent_busy", .message_ = "Agent control queue is unavailable"});
+            }
+            connection->updatePending = true;
+            spdlog::info("agent_update_requested user_id={} device_id={} version={}", user, device, release->update.version());
+        }
+        context.status(ruvia::http_status::accepted);
+        co_return jsonResponse(context, {{"status", "requested"}, {"version", release->update.version()}});
+    } catch (const std::exception& error) {
+        // Fixed phase and exception type identify failures without exposing
+        // request bodies, credentials, database errors or exception messages.
+        spdlog::error("agent_update_failed stage={} exception_type={}", stage, typeid(error).name());
+        throw;
     }
-    context.status(ruvia::http_status::accepted);
-    co_return jsonResponse(context, {{"status", "requested"}, {"version", release->update.version()}});
 }
 ruvia::task<ruvia::http_response> DeviceInstallerController::script(ruvia::context& context) const {
     context.header("Cache-Control", "no-store");
