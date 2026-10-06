@@ -105,6 +105,9 @@ DesktopEndpoint::DesktopEndpoint(ruvia::execution_handle worker, protocol::Deskt
     : validator_(binding), queue_(ruvia::make_channel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity_ = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
       space_(ruvia::make_channel<bool>(std::move(worker), {.capacity_ = 1})) {}
 ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::stop_token stop) {
+    return ruvia::on(queue_.second.execution(), receiveOwned(std::move(stop)));
+}
+ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receiveOwned(ruvia::stop_token stop) {
     auto result = co_await queue_.second.receive(std::move(stop));
     if (!result.has_value()) {
         co_return nullptr;
@@ -171,6 +174,9 @@ std::shared_ptr<DesktopEndpoint> DesktopSession::attach(const ChannelAuthorizati
     return endpoint;
 }
 ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop) {
+    return ruvia::on(worker_, forwardOwned(std::move(sender), message, std::move(stop)));
+}
+ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop) {
     const auto found = std::ranges::find(endpoints_, sender);
     if (!ready() || !sender || found == endpoints_.end()) {
         co_return false;

@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include <ruvia/core/execution_domain.h>
 #include <ruvia/core/io_runtime.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
@@ -41,9 +42,11 @@ ruvia::task<void> awaitClose(server::DesktopEndpoint& endpoint, bool& finished) 
     require(!(co_await endpoint.receive({})));
     finished = true;
 }
-ruvia::task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, bool& finished) {
+ruvia::task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, ruvia::execution_handle caller, bool& finished) {
     for (std::uint64_t sequence = 10; sequence <= 100; ++sequence) {
+        require(caller.is_current());
         require(co_await session.forward(sender, refresh(sequence)));
+        require(caller.is_current());
     }
     finished = true;
 }
@@ -157,19 +160,22 @@ struct TestDesktopWriter {
     std::vector<wire::Envelope> messages;
     bool aborted = false;
     ruvia::task<void> binary(std::string_view bytes) {
+        require(worker.is_current());
         auto message = protocol::decodeMessage(bytes);
         require(bool(message));
         messages.push_back(std::move(*message));
         co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2));
+        require(worker.is_current());
     }
     void abort() { aborted = true; }
 };
 ruvia::task<void> exerciseWriters(ruvia::execution_handle worker) {
+    ruvia::execution_domain browserInput(worker.io_context()), agentInput(worker.io_context()), browserVideo(worker.io_context()), agentVideo(worker.io_context());
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     auto owner = std::make_shared<server::DesktopSession>(worker, budget);
     auto& session = *owner;
     std::array<server::ChannelState, 4> states;
-    std::array<TestDesktopWriter, 4> writers{{{worker, {}, false}, {worker, {}, false}, {worker, {}, false}, {worker, {}, false}}};
+    std::array<TestDesktopWriter, 4> writers{{{browserInput.handle(), {}, false}, {agentInput.handle(), {}, false}, {browserVideo.handle(), {}, false}, {agentVideo.handle(), {}, false}}};
     co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
         for (std::size_t slot = 0; slot < states.size(); ++slot) {
             auto& state = states[slot];
@@ -180,7 +186,7 @@ ruvia::task<void> exerciseWriters(ruvia::execution_handle worker) {
             require(bool(state.endpoint));
         }
         for (std::size_t slot = 0; slot < states.size(); ++slot) {
-            scope.spawn(server::writeChannel(writers[slot], states[slot], scope));
+            scope.spawn(ruvia::on(writers[slot].worker, server::writeChannel(writers[slot], states[slot], scope)));
         }
         co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
         for (std::size_t slot = 0; slot < writers.size(); ++slot) {
@@ -796,8 +802,9 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
             require(co_await session.forward(endpoints[0], refresh(sequence)));
         }
         bool finished = false;
+        ruvia::execution_domain ingress(worker.io_context());
         co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
-            scope.spawn(forwardBurst(session, endpoints[0], finished));
+            scope.spawn(ruvia::on(ingress.handle(), forwardBurst(session, endpoints[0], ingress.handle(), finished)));
             co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
             require(session.ready() && !finished);
             require(budget->used == 9 * protocol::encodeMessage(refresh(2))->size());

@@ -76,6 +76,7 @@ class DesktopEndpoint {
   private:
     friend class DesktopSession;
     DesktopEndpoint(ruvia::execution_handle worker, protocol::DesktopChannelBinding binding);
+    ruvia::task<std::unique_ptr<DesktopDelivery>> receiveOwned(ruvia::stop_token stop);
     void close();
     bool closed_ = false;
     bool waiting_ = false;
@@ -104,6 +105,7 @@ class DesktopSession {
     void writeCompleted(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed);
 
   private:
+    ruvia::task<bool> forwardOwned(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop);
     void logDiagnostics(std::string_view event) const;
     void optimizationBarrier(const wire::Envelope& message);
     void completeRefinement();
