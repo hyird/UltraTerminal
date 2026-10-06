@@ -23,7 +23,7 @@ set(RUVIA_ENABLE_JWT OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(ruvia
     SYSTEM
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG b1c77d0825e10d11c99ba7481a1dc6cd0078a1ea)
+    GIT_TAG fb3d10552439f9c9e9c08b3032135a625abce23e)
 FetchContent_MakeAvailable(ruvia)
 add_subdirectory(protocol)
 if(ULTRATERIMAL_BUILD_AGENT)
