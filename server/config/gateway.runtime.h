@@ -4,7 +4,7 @@
 #include <stop_token>
 #include <string>
 
-#include <ruvia/core/BlockingPool.h>
+#include <ruvia/core/blocking_pool.h>
 
 #include "modules/database/database.config.h"
 #include "modules/database/database.service.h"
@@ -22,7 +22,7 @@ class GatewayRuntime {
     std::shared_ptr<DatabaseConnection> lease_;
     std::shared_ptr<std::atomic<bool>> failed_ = std::make_shared<std::atomic<bool>>(false);
     std::stop_source stop_;
-    ruvia::BlockingPool pool_{{.threadCount = 1, .queueCapacity = 1}};
+    ruvia::blocking_pool pool_{{.thread_count_ = 1, .queue_capacity_ = 1}};
     bool started_ = false;
 };
 } // namespace ultraterimal::server

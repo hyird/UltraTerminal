@@ -13,7 +13,7 @@ struct DeviceTransport::State : std::enable_shared_from_this<State> {
     wire::NativeConnect::Purpose purpose;
     asio::steady_timer deadline;
     bool started = false, connected = false, cancelled = false;
-    State(ruvia::EventLoop loop, const ConnectionConfig& settings, std::size_t maximum, wire::NativeConnect::Purpose use)
+    State(ruvia::execution_handle loop, const ConnectionConfig& settings, std::size_t maximum, wire::NativeConnect::Purpose use)
         : config(settings), purpose(use), deadline(loop.executor()) {
         native = std::make_unique<NativeTransport>(loop, config, maximum);
     }
@@ -81,7 +81,7 @@ struct DeviceTransport::State : std::enable_shared_from_this<State> {
         co_return;
     }
 };
-DeviceTransport::DeviceTransport(ruvia::EventLoop loop, const ConnectionConfig& config, std::size_t maximum, wire::NativeConnect::Purpose purpose) : state_(std::make_shared<State>(loop, config, maximum, purpose)) {}
+DeviceTransport::DeviceTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximum, wire::NativeConnect::Purpose purpose) : state_(std::make_shared<State>(loop, config, maximum, purpose)) {}
 DeviceTransport::~DeviceTransport() { state_->cancel(); }
 asio::awaitable<void> DeviceTransport::connect(std::string credential) { return State::connect(state_, std::move(credential)); }
 asio::awaitable<void> DeviceTransport::send(std::string bytes) { return State::send(state_, std::move(bytes)); }

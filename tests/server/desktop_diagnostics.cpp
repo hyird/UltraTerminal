@@ -1,7 +1,9 @@
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 #include "features/desktop/desktop_diagnostics.types.h"
 
@@ -11,9 +13,126 @@ void require(bool condition) {
         throw std::runtime_error("Desktop encoding statistics differ");
     }
 }
+void stagePresence() {
+    using namespace ultraterimal;
+    using namespace server;
+    DesktopPipelineDiagnostics diagnostics;
+    wire::DesktopStageTiming timing;
+    timing.set_worker_queue_microseconds(0);
+    timing.set_acquire_wait_microseconds(0);
+    timing.set_source_age_microseconds(0);
+    timing.set_pacing_credit_wait_microseconds(0);
+    timing.set_gpu_sync_wait_microseconds(0);
+    timing.set_readback_ready_microseconds(0);
+    timing.set_prepare_cpu_microseconds(0);
+    timing.set_png_encode_microseconds(0);
+    timing.set_video_encode_microseconds(0);
+    diagnostics.observe(timing);
+    diagnostics.observe(wire::DesktopStageTiming{});
+    for (std::size_t index = 0; index <= static_cast<std::size_t>(DesktopStage::kVideoEncode); ++index) {
+        const auto summary = diagnostics.stages[index].summary();
+        require(summary.samples == 1 && summary.meanMicroseconds == 0 && summary.maximumMicroseconds == 0);
+    }
+    require(kDesktopStageNames[static_cast<std::size_t>(DesktopStage::kPrepareCpu)] == "prepare_cpu");
+    require(kDesktopStageNames[static_cast<std::size_t>(DesktopStage::kGpuSyncWait)] == "gpu_sync_wait");
+    require(kDesktopStageNames[static_cast<std::size_t>(DesktopStage::kReadbackReady)] == "readback_ready");
+}
+void pipeline() {
+    using namespace ultraterimal;
+    using namespace server;
+    DesktopPipelineDiagnostics diagnostics;
+    const auto now = DesktopPipelineDiagnostics::Clock::now();
+    const auto summary = [&](DesktopStage stage) { return diagnostics.stages[static_cast<std::size_t>(stage)].summary(); };
+    wire::DesktopStageTiming timing;
+    diagnostics.observe(timing);
+    require(summary(DesktopStage::kWorkerQueue).samples == 0);
+    timing.set_worker_queue_microseconds(0);
+    timing.set_video_encode_microseconds(100);
+    timing.set_source_age_microseconds(60000001);
+    diagnostics.observe(timing);
+    require(summary(DesktopStage::kWorkerQueue).samples == 1 && summary(DesktopStage::kWorkerQueue).meanMicroseconds == 0);
+    require(summary(DesktopStage::kVideoEncode).maximumMicroseconds == 100);
+    require(summary(DesktopStage::kSourceAge).samples == 0);
+    wire::DesktopBrowserTiming browser;
+    browser.set_canvas_submit_microseconds(0);
+    diagnostics.observe(browser);
+    require(summary(DesktopStage::kBrowserCanvasSubmit).samples == 1 && summary(DesktopStage::kBrowserDecode).samples == 0);
+    wire::DesktopPipelineReport report;
+    auto* sample = report.add_samples();
+    sample->set_generation(1);
+    sample->set_frame_id(5);
+    sample->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
+    sample->set_ipc_write_microseconds(0);
+    diagnostics.report(report, now);
+    require(diagnostics.pendingSamples() == 1 && summary(DesktopStage::kWorkerIpcWrite).samples == 0);
+    diagnostics.generation(1, now);
+    diagnostics.frame({1, 5, 0}, now + std::chrono::milliseconds(100));
+    require(diagnostics.pendingSamples() == 0 && summary(DesktopStage::kWorkerIpcWrite).samples == 1 && summary(DesktopStage::kWorkerIpcWrite).meanMicroseconds == 0);
+    diagnostics.report(report, now + std::chrono::milliseconds(499));
+    require(summary(DesktopStage::kWorkerIpcWrite).samples == 1 && diagnostics.dropped == 1);
+    diagnostics.report(report, now + std::chrono::milliseconds(500));
+    require(summary(DesktopStage::kWorkerIpcWrite).samples == 2);
+    sample->set_batch_id(7);
+    sample->set_ipc_write_microseconds(12);
+    diagnostics.report(report, now + std::chrono::seconds(1));
+    require(diagnostics.pendingSamples() == 1);
+    diagnostics.frame({1, 5, 7}, now + std::chrono::milliseconds(1100));
+    require(summary(DesktopStage::kWorkerIpcWrite).samples == 3 && summary(DesktopStage::kWorkerIpcWrite).meanMicroseconds == 4);
+    sample->set_frame_id(6);
+    diagnostics.report(report, now + std::chrono::milliseconds(1500));
+    diagnostics.expire(now + std::chrono::milliseconds(3499));
+    require(diagnostics.pendingSamples() == 1);
+    diagnostics.frame({1, 6, 7}, now + std::chrono::milliseconds(3500));
+    require(diagnostics.pendingSamples() == 0 && summary(DesktopStage::kWorkerIpcWrite).samples == 3);
+    sample->set_source(wire::DesktopPipelineSample::AGENT_RELAY); // Field/source mismatch.
+    diagnostics.report(report, now + std::chrono::seconds(4));
+    require(diagnostics.pendingSamples() == 0);
+    sample->clear_ipc_write_microseconds();
+    sample->set_native_write_microseconds(20);
+    diagnostics.report(report, now + std::chrono::milliseconds(4500));
+    require(diagnostics.pendingSamples() == 0 && summary(DesktopStage::kRelayNativeWrite).samples == 1);
+    sample->set_generation(2);
+    diagnostics.report(report, now + std::chrono::seconds(5));
+    diagnostics.generation(3, now + std::chrono::milliseconds(5100));
+    require(diagnostics.pendingSamples() == 0); // Old generation cannot be observed later.
+    diagnostics.report(report, now + std::chrono::milliseconds(5500));
+    require(diagnostics.pendingSamples() == 0);
+
+    DesktopPipelineDiagnostics bounded;
+    report.Clear();
+    for (std::uint64_t frame = 1; frame <= 32; ++frame) {
+        auto* item = report.add_samples();
+        item->set_generation(1);
+        item->set_frame_id(frame);
+        item->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
+        item->set_ipc_write_microseconds(1);
+    }
+    bounded.report(report, now);
+    require(bounded.pendingSamples() == 16 && bounded.dropped == 16);
+    bounded.expire(now + std::chrono::seconds(2));
+    require(bounded.pendingSamples() == 0 && bounded.dropped == 32);
+    for (auto& item : *report.mutable_samples()) {
+        item.set_frame_id(1);
+    }
+    bounded.report(report, now + std::chrono::seconds(3));
+    require(bounded.pendingSamples() == 32);
+    bounded.report(report, now + std::chrono::milliseconds(3500));
+    require(bounded.pendingSamples() == 32 && bounded.dropped == 64);
+    bounded.expire(now + std::chrono::seconds(5));
+    // Byte budget includes wire unknown fields without retaining their payload.
+    report.mutable_samples(0)->GetReflection()->MutableUnknownFields(report.mutable_samples(0))->AddLengthDelimited(100, std::string(8193, 'x'));
+    bounded.report(report, now + std::chrono::seconds(6));
+    require(bounded.pendingSamples() == 31 && bounded.dropped == 97);
+    report.add_samples();
+    bounded.report(report, now + std::chrono::seconds(7));
+    require(bounded.pendingSamples() == 31 && bounded.dropped == 130);
+    require(kDesktopStageNames[static_cast<std::size_t>(DesktopStage::kServerVideoWsWrite)] == "server_video_ws_write");
+}
 } // namespace
 int main() {
     try {
+        pipeline();
+        stagePresence();
         ultraterimal::server::DesktopEncodingWindow window;
         require(window.summary().samples == 0);
         window.observe(0);

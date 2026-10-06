@@ -101,22 +101,23 @@ DesktopDelivery::~DesktopDelivery() {
         global_->used -= bytes_.size();
     }
 }
-DesktopEndpoint::DesktopEndpoint(ruvia::WorkerHandle worker, protocol::DesktopChannelBinding binding)
-    : validator_(binding), queue_(ruvia::makeChannel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
-      space_(ruvia::makeChannel<bool>(std::move(worker), {.capacity = 1})) {}
-ruvia::Task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::StopToken stop) {
+DesktopEndpoint::DesktopEndpoint(ruvia::execution_handle worker, protocol::DesktopChannelBinding binding)
+    : validator_(binding), queue_(ruvia::make_channel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity_ = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
+      space_(ruvia::make_channel<bool>(std::move(worker), {.capacity_ = 1})) {}
+ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::stop_token stop) {
     auto result = co_await queue_.second.receive(std::move(stop));
-    if (!result.hasValue()) {
+    if (!result.has_value()) {
         co_return nullptr;
     }
-    auto delivery = std::move(result).takeValue();
+    auto delivery = std::move(result).take_value();
+    delivery->received_ = std::chrono::steady_clock::now();
     if (waiting_) {
         (void)space_.first.send(true);
     }
     if (closed_) {
         delivery.reset();
         // close() wakes the single writer; release its remaining queue before it exits.
-        while ((co_await queue_.second.receive()).hasValue()) {
+        while ((co_await queue_.second.receive()).has_value()) {
         }
         co_return nullptr;
     }
@@ -127,7 +128,7 @@ void DesktopEndpoint::close() {
     queue_.first.close();
     space_.first.close();
 }
-DesktopSession::DesktopSession(ruvia::WorkerHandle worker, std::shared_ptr<DesktopBudget> global)
+DesktopSession::DesktopSession(ruvia::execution_handle worker, std::shared_ptr<DesktopBudget> global)
     : worker_(std::move(worker)), global_(std::move(global)) {
     if (!global_) {
         throw std::invalid_argument("Desktop session requires a Worker budget");
@@ -169,20 +170,77 @@ std::shared_ptr<DesktopEndpoint> DesktopSession::attach(const ChannelAuthorizati
     }
     return endpoint;
 }
-ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::StopToken stop) {
+ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop) {
     const auto found = std::ranges::find(endpoints_, sender);
     if (!ready() || !sender || found == endpoints_.end()) {
         co_return false;
     }
+    const auto admissionStarted = std::chrono::steady_clock::now();
     const auto slot = static_cast<std::size_t>(found - endpoints_.begin());
     const auto origin = originForSlot(slot);
+    if (!optimizationActive_ &&
+        ((message.has_video_frame() && message.video_frame().has_stage_timing()) ||
+         (message.has_desktop_region_update() && message.desktop_region_update().has_stage_timing()) ||
+         (message.has_video_refinement() && message.video_refinement().has_stage_timing()))) {
+        close(DesktopCloseReason::kInvalidFrameState, origin);
+        co_return false;
+    }
     if (const auto valid = sender->validator_.accept(message); !valid) {
         close(validationReason(valid.error()), origin);
         co_return false;
     }
+    if (message.has_video_config()) {
+        optimizationBarrier(message);
+        diagnostics_.pipeline.generation(message.generation());
+    }
+    if (message.has_desktop_video_capabilities()) {
+        browserOptimizationRequest_ = message.desktop_video_capabilities().desktop_optimization_contract();
+        // Only the exact request permits the NEXT configuration to activate v2.
+        endpoints_[3]->validator_.setOptimizationContract(browserOptimizationRequest_ == 2 ? 2 : 0);
+    }
+    if (message.has_desktop_pipeline_report()) {
+        if (!optimizationActive_ && browserOptimizationRequest_ != 2) {
+            // Unnegotiated diagnostics never activate v2 or enter a peer queue.
+            diagnostics_.pipeline.dropped += message.desktop_pipeline_report().samples_size();
+            co_return true;
+        }
+        // Authenticated diagnostics can overtake config on the other stream.
+        // Keys become observable ONLY after a matching v2 config and frame;
+        // capability-missing/high-version frames never match buffered samples.
+        diagnostics_.pipeline.report(message.desktop_pipeline_report());
+        co_return true; // Never enters the browser queue or creates more diagnostics.
+    }
+    if (outstandingRefinement_ && std::chrono::steady_clock::now() - outstandingRefinement_->sent >= std::chrono::seconds(2)) {
+        pausedRefinementGeneration_ = outstandingRefinement_->key.generation;
+        // Keep the exact unacknowledged tuple, including across generation
+        // barriers. Timeout cannot prove the Browser's PNG lease has ended.
+    }
+    if (message.has_desktop_refinement_ack()) {
+        const auto result = refinementAck(message);
+        if (result == RefinementAckResult::kInvalid) {
+            close(DesktopCloseReason::kInvalidFrameState, origin);
+            co_return false;
+        }
+        if (result == RefinementAckResult::kIgnore) {
+            co_return true;
+        }
+    }
+    if (message.has_video_refinement() && (outstandingRefinement_ || (optimizationActive_ && pausedRefinementGeneration_ == message.generation()))) {
+        // A new video frame may retire a batch, but cannot manufacture credit.
+        close(DesktopCloseReason::kInvalidFrameState, origin);
+        co_return false;
+    }
     // Browser diagnostics terminate here; they never consume worker IPC or
-    // influence Agent QoS. Strip only the infrequent report, not every frame.
+    // influence Agent QoS. Strip only present diagnostics, preserving QoS fields.
     std::optional<wire::Envelope> forwarded;
+    if (message.has_quality_feedback() && message.quality_feedback().has_browser_timing()) {
+        const auto& feedback = message.quality_feedback();
+        if (optimizationActive_ && !feedback.background() && diagnostics_.pipeline.known({feedback.displayed_generation(), feedback.displayed_frame(), 0})) {
+            diagnostics_.pipeline.observe(feedback.browser_timing());
+        }
+        forwarded = message;
+        forwarded->mutable_quality_feedback()->clear_browser_timing();
+    }
     if (message.has_quality_feedback() && message.quality_feedback().has_visible_frame_timing()) {
         const auto& feedback = message.quality_feedback();
         const auto now = std::chrono::steady_clock::now();
@@ -193,7 +251,9 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
             diagnostics_.visibleFrames.observe(report.sample_count(), report.p95_microseconds(), report.p99_microseconds(), report.long_gap_count(), report.observed_fps_milli());
             diagnostics_.renderReportedAt = now;
         }
-        forwarded = message;
+        if (!forwarded) {
+            forwarded = message;
+        }
         forwarded->mutable_quality_feedback()->clear_visible_frame_timing();
     }
     auto bytes = protocol::encodeMessage(forwarded ? *forwarded : message);
@@ -211,16 +271,22 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
     }
     auto delivery = std::unique_ptr<DesktopDelivery>(new DesktopDelivery());
     delivery->bytes_ = std::move(*bytes);
+    delivery->browserVideo_ = slot == 3;
     delivery->local_ = local_;
     delivery->global_ = global_;
     local_->used += delivery->bytes_.size();
     global_->used += delivery->bytes_.size();
     diagnostics_.peakPendingBytes = std::max(diagnostics_.peakPendingBytes, local_->used);
     const auto target = endpoints_[slot ^ 1];
-    while (ready() && !stop.stopRequested()) {
+    while (ready() && !stop.stop_requested()) {
         const auto size = delivery->bytes_.size();
+        delivery->enqueued_ = std::chrono::steady_clock::now();
         auto sent = target->queue_.first.send(std::move(delivery));
         if (sent.accepted()) {
+            const auto admittedAt = std::chrono::steady_clock::now();
+            if (slot == 3) {
+                diagnostics_.pipeline.observe(DesktopStage::kServerVideoAdmission, static_cast<std::uint32_t>(std::min<std::int64_t>(60000000, std::chrono::duration_cast<std::chrono::microseconds>(admittedAt - admissionStarted).count())));
+            }
             ++diagnostics_.forwardedMessages;
             diagnostics_.forwardedBytes += size;
             diagnostics_.videoFrames += message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_desktop_region_update();
@@ -239,7 +305,30 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.latestHardwareEncoding = false;
                 diagnostics_.latestGpuEncoding = false;
             }
+            if (message.has_full_frame() && message.generation() != diagnostics_.videoGeneration) {
+                // Lossless fallback retires submission eligibility, not the
+                // unacknowledged v2 lease or its cleanup ACK route.
+                optimizationActive_ = false;
+                endpoints_[0]->validator_.setOptimizationContract(0);
+                endpoints_[1]->validator_.setOptimizationContract(0);
+                diagnostics_.pipeline.generation(message.generation(), admittedAt);
+                diagnostics_.videoGeneration = message.generation();
+            }
+            if (message.has_video_frame() || message.has_desktop_region_update() || message.has_full_frame() || message.has_diff_batch()) {
+                if (optimizationActive_) {
+                    diagnostics_.pipeline.frame({message.generation(), message.frame_id(), 0}, admittedAt);
+                }
+            }
             if (message.has_video_frame()) {
+                // v2 writes the final cumulative worker stages after dynamic
+                // detail preparation. A present encode stage (including zero)
+                // identifies that complete sample, unlike an absent/empty body.
+                cumulativeVideoStages_ = optimizationActive_ && message.video_frame().has_stage_timing() && message.video_frame().stage_timing().has_video_encode_microseconds()
+                                             ? DesktopFrameKey{message.generation(), message.frame_id(), 0}
+                                             : DesktopFrameKey{};
+                if (optimizationActive_ && message.video_frame().has_stage_timing()) {
+                    diagnostics_.pipeline.observe(message.video_frame().stage_timing());
+                }
                 diagnostics_.latestVideoFrame = message.frame_id();
                 const auto& frame = message.video_frame();
                 diagnostics_.encoding.observe(frame.encode_microseconds());
@@ -252,6 +341,9 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 }
             }
             if (message.has_desktop_region_update()) {
+                if (optimizationActive_ && message.desktop_region_update().has_stage_timing()) {
+                    diagnostics_.pipeline.observe(message.desktop_region_update().stage_timing());
+                }
                 diagnostics_.latestVideoFrame = message.frame_id();
                 ++diagnostics_.regionMessages;
                 diagnostics_.regionBytes += size;
@@ -277,6 +369,16 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 }
             }
             if (message.has_video_refinement()) {
+                if (optimizationActive_) {
+                    const DesktopFrameKey key{message.generation(), message.frame_id(), message.video_refinement().batch_id()};
+                    outstandingRefinement_ = RefinementRecord{key, admittedAt};
+                    diagnostics_.pipeline.frame(key, admittedAt);
+                    const bool duplicateWorkerStages = message.video_refinement().kind() == wire::DYNAMIC_DETAIL &&
+                                                       cumulativeVideoStages_ == DesktopFrameKey{message.generation(), message.frame_id(), 0};
+                    if (message.video_refinement().has_stage_timing() && !duplicateWorkerStages) {
+                        diagnostics_.pipeline.observe(message.video_refinement().stage_timing());
+                    }
+                }
                 ++diagnostics_.refinementMessages;
                 diagnostics_.refinementBytes += size;
                 for (const auto& patch : message.video_refinement().patches()) {
@@ -285,24 +387,73 @@ ruvia::Task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
             }
             co_return true;
         }
-        if (sent.status() != ruvia::ChannelSendStatus::kFull) {
+        if (sent.status() != ruvia::channel_send_status::full) {
             break;
         }
         // Keep ownership and accounting while the downstream writer is busy.
         // Waiting suspends this channel's reader, so no input or frame is lost.
-        delivery = std::move(*std::move(sent).takeRejected());
+        delivery = std::move(*std::move(sent).take_rejected());
         ++diagnostics_.backpressureEvents;
         const auto waitStarted = std::chrono::steady_clock::now();
         target->waiting_ = true;
         const auto available = co_await target->space_.second.receive(stop);
         target->waiting_ = false;
         diagnostics_.backpressureMilliseconds += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waitStarted).count();
-        if (!available.hasValue()) {
+        if (!available.has_value()) {
             break;
         }
     }
     close(DesktopCloseReason::kQueueClosed, origin);
     co_return false;
+}
+void DesktopSession::optimizationBarrier(const wire::Envelope& message) {
+    // The validator retires the old canvas. Preserve the sent tuple and its
+    // original deadline: a new config is NOT an auxiliary-lease completion.
+    // The timeout marker remains generation-scoped; outstanding credit remains
+    // session-scoped until an exact cleanup ACK, regardless of this barrier.
+    cumulativeVideoStages_ = {};
+    agentOptimizationCapability_ = message.video_config().desktop_optimization_contract();
+    optimizationActive_ = browserOptimizationRequest_ == 2 && agentOptimizationCapability_ == 2;
+    // Both native and WSS ingress use these same authenticated endpoints.
+    endpoints_[0]->validator_.setOptimizationContract(optimizationActive_ ? 2 : 0);
+    endpoints_[1]->validator_.setOptimizationContract(optimizationActive_ ? 2 : 0);
+}
+void DesktopSession::completeRefinement() {
+    if (outstandingRefinement_) {
+        evictedRefinement_ = retiredRefinements_[nextRetiredRefinement_];
+        retiredRefinements_[nextRetiredRefinement_] = outstandingRefinement_->key;
+        nextRetiredRefinement_ = (nextRetiredRefinement_ + 1) % retiredRefinements_.size();
+        outstandingRefinement_.reset();
+    }
+}
+DesktopSession::RefinementAckResult DesktopSession::refinementAck(const wire::Envelope& message) {
+    const DesktopFrameKey key{message.generation(), message.frame_id(), message.desktop_refinement_ack().batch_id()};
+    // Beyond bounded exact tombstones, a monotonically older ACK is harmless:
+    // it is consumed, never forwarded and can never release any credit.
+    if (evictedRefinement_.generation && (key.generation < evictedRefinement_.generation ||
+                                          (key.generation == evictedRefinement_.generation && key.batch <= evictedRefinement_.batch))) {
+        return RefinementAckResult::kIgnore;
+    }
+    if (outstandingRefinement_ && outstandingRefinement_->key == key) {
+        // Cleanup releases the exact lease even after a config/frame change or
+        // timeout. Forward once; never synthesize a video QualityFeedback ACK.
+        completeRefinement();
+        return RefinementAckResult::kForward;
+    }
+    if (std::ranges::find(retiredRefinements_, key) != retiredRefinements_.end()) {
+        return RefinementAckResult::kIgnore;
+    }
+    return RefinementAckResult::kInvalid;
+}
+void DesktopSession::writeCompleted(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed) {
+    if (!delivery.browserVideo_ || delivery.ready()) {
+        return;
+    }
+    const auto micros = [](auto value) {
+        return static_cast<std::uint32_t>(std::clamp<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(value).count(), 0, 60000000));
+    };
+    diagnostics_.pipeline.observe(DesktopStage::kServerVideoQueueWait, micros(delivery.received_ - delivery.enqueued_));
+    diagnostics_.pipeline.observe(DesktopStage::kServerVideoWsWrite, micros(elapsed));
 }
 void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin) {
     if (closed_) {
@@ -320,6 +471,7 @@ void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin)
 }
 void DesktopSession::logHealth() {
     if (bound_ && ready()) {
+        diagnostics_.pipeline.expire();
         logDiagnostics("desktop_session_health");
         diagnostics_.visibleFrames.clear();
     }
@@ -327,6 +479,13 @@ void DesktopSession::logHealth() {
 void DesktopSession::logDiagnostics(std::string_view event) const {
     if (!bound_) {
         return;
+    }
+    // Fixed names and numeric summaries only; stages overlap and are NOT summed.
+    for (std::size_t index = 0; index < kDesktopStageNames.size(); ++index) {
+        const auto stage = diagnostics_.pipeline.stages[index].summary();
+        spdlog::info("desktop_pipeline_stage session_id={} stage={} samples={} mean_us={} p95_us={} p99_us={} peak_us={} scope=local_only overlap=true end_to_end=false window_capacity=256 diagnostic_dropped={} pending_samples={} browser_requested_contract={} agent_capability_contract={} active_contract={}",
+                     identity_.sessionId, kDesktopStageNames[index], stage.samples, stage.meanMicroseconds, stage.p95Microseconds, stage.p99Microseconds, stage.maximumMicroseconds,
+                     diagnostics_.pipeline.dropped, diagnostics_.pipeline.pendingSamples(), browserOptimizationRequest_, agentOptimizationCapability_, optimizationActive_ ? 2 : 0);
     }
     spdlog::info("desktop_region_transport session_id={} region_messages={} region_bytes={} copied_pixels={} tile_cache_hits={}",
                  identity_.sessionId, diagnostics_.regionMessages, diagnostics_.regionBytes, diagnostics_.copiedPixels, diagnostics_.tileCacheHits);

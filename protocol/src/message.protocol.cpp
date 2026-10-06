@@ -30,6 +30,25 @@ bool dimensions(std::uint32_t width, std::uint32_t height) {
 bool rectangle(const wire::Rectangle& r) {
     return dimensions(r.width(), r.height()) && r.x() <= 16384 - r.width() && r.y() <= 16384 - r.height();
 }
+constexpr std::uint32_t kMaximumDurationMicroseconds = 60000000;
+bool stageTiming(const wire::DesktopStageTiming& timing) {
+    return timing.worker_queue_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.acquire_wait_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.source_age_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.pacing_credit_wait_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.gpu_sync_wait_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.readback_ready_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.prepare_cpu_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.png_encode_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.video_encode_microseconds() <= kMaximumDurationMicroseconds;
+}
+bool browserTiming(const wire::DesktopBrowserTiming& timing) {
+    return timing.receive_queue_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.decode_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.canvas_submit_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.png_decode_microseconds() <= kMaximumDurationMicroseconds &&
+           timing.baseline_wait_microseconds() <= kMaximumDurationMicroseconds;
+}
 bool boundedPatches(const google::protobuf::RepeatedPtrField<wire::PatchRect>& patches) {
     if (patches.size() > 32) {
         return false;
@@ -291,6 +310,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kVideoFrame: {
         const auto& frame = m.video_frame();
         if (!m.generation() || !m.frame_id() || frame.data().empty() || (frame.gpu_encoding() && !frame.hardware_encoding()) ||
+            !stageTiming(frame.stage_timing()) ||
             (frame.has_target_frames_per_second() != frame.has_target_bitrate()) ||
             (frame.has_target_frames_per_second() &&
              (frame.target_frames_per_second() < 5 || frame.target_frames_per_second() > 60 ||
@@ -321,7 +341,8 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kQualityFeedback: {
         const auto& feedback = m.quality_feedback();
-        if (!wire::QualityFeedback_Preference_IsValid(feedback.preference()) || feedback.maximum_pending_video_frames() > 128) {
+        if (!wire::QualityFeedback_Preference_IsValid(feedback.preference()) || feedback.maximum_pending_video_frames() > 128 ||
+            !browserTiming(feedback.browser_timing()) || (feedback.has_browser_timing() && (!feedback.displayed_generation() || !feedback.displayed_frame()))) {
             return invalid();
         }
         if (feedback.has_visible_frame_timing()) {
@@ -341,8 +362,41 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         if (!m.generation() || !m.frame_id() || m.base_frame_id() != m.frame_id() || !refinement.patches_size() || refinement.patches_size() > 32) {
             return invalid();
         }
-        if (!boundedPatches(refinement.patches())) {
+        if (!boundedPatches(refinement.patches()) || !stageTiming(refinement.stage_timing()) ||
+            !wire::RefinementKind_IsValid(refinement.kind()) ||
+            (refinement.batch_id() ? refinement.kind() == wire::UNSPECIFIED : refinement.kind() != wire::UNSPECIFIED)) {
             return invalid();
+        }
+        if (refinement.batch_id()) {
+            for (const auto& patch : refinement.patches()) {
+                if (patch.cache_slot() || patch.png().empty()) {
+                    return invalid();
+                }
+            }
+        }
+        break;
+    }
+    case wire::Envelope::kDesktopRefinementAck: {
+        const auto& ack = m.desktop_refinement_ack();
+        if (!identifier(m.channel_id()) || !m.generation() || !m.frame_id() || m.base_frame_id() || !ack.batch_id() ||
+            (ack.status() != wire::DesktopRefinementAck::APPLIED && ack.status() != wire::DesktopRefinementAck::SUPERSEDED)) {
+            return invalid();
+        }
+        break;
+    }
+    case wire::Envelope::kDesktopPipelineReport: {
+        const auto& report = m.desktop_pipeline_report();
+        if (!identifier(m.channel_id()) || m.generation() || m.frame_id() || m.base_frame_id() || report.samples_size() > 32 ||
+            (!report.samples_size() && !report.dropped_samples())) {
+            return invalid();
+        }
+        for (const auto& sample : report.samples()) {
+            if (!sample.generation() || !sample.frame_id() ||
+                (sample.source() != wire::DesktopPipelineSample::DESKTOP_WORKER && sample.source() != wire::DesktopPipelineSample::AGENT_RELAY) ||
+                sample.ipc_write_microseconds() > kMaximumDurationMicroseconds || sample.send_queue_wait_microseconds() > kMaximumDurationMicroseconds ||
+                sample.native_write_microseconds() > kMaximumDurationMicroseconds) {
+                return invalid();
+            }
         }
         break;
     }
@@ -351,7 +405,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         if (!m.generation() || !m.base_frame_id() || m.frame_id() <= m.base_frame_id() ||
             update.copies_size() > 32 || (!update.copies_size() && !update.patches_size()) || !boundedPatches(update.patches()) ||
             update.target_frames_per_second() < 5 || update.target_frames_per_second() > 60 ||
-            update.target_bitrate() < 64000 || update.target_bitrate() > 100000000 || update.encode_microseconds() > 5000000) {
+            update.target_bitrate() < 64000 || update.target_bitrate() > 100000000 || update.encode_microseconds() > 5000000 || !stageTiming(update.stage_timing())) {
             return invalid();
         }
         std::uint64_t pixels = 0;

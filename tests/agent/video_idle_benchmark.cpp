@@ -1,5 +1,6 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
+#include <asio/use_future.hpp>
 #include <chrono>
 #include <exception>
 #include <iostream>
@@ -7,7 +8,8 @@
 
 #include <windows.h>
 
-#include <ruvia/core/EventLoopAttachment.h>
+#include <ruvia/core/asio_task.h>
+#include <ruvia/core/execution_domain.h>
 
 #include "features/desktop/video.runtime.h"
 
@@ -56,15 +58,19 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video) {
 int main() {
     try {
         asio::io_context io;
-        auto attachment = ruvia::attachEventLoop(io);
-        ultraterimal::agent::DesktopVideoRuntime video(attachment.loop(), 0);
+        ruvia::execution_domain attachment(io);
+        ultraterimal::agent::DesktopVideoRuntime video(attachment.handle(), 0);
         std::exception_ptr failure;
-        asio::co_spawn(io, measure(video), [&](std::exception_ptr error) {
+        asio::co_spawn(attachment.executor(), measure(video), [&](std::exception_ptr error) {
             failure = error;
             video.stop();
-            attachment.stop();
+            attachment.request_stop();
         });
-        attachment.run();
+        io.run();
+        io.restart();
+        auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
+        io.run();
+        retired.get();
         if (failure) {
             std::rethrow_exception(failure);
         }

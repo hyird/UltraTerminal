@@ -14,8 +14,8 @@
 #include <map>
 #include <type_traits>
 
-#include <ruvia/core/AsioTask.h>
-#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/core/asio_task.h>
+#include <ruvia/core/io_runtime.h>
 #include <spdlog/spdlog.h>
 
 #include "config/server.runtime.h"
@@ -31,31 +31,31 @@ namespace ultraterimal::server {
 namespace {
 class NativeContext {
   public:
-    NativeContext(ruvia::WebWorkerContext& context, DeviceIdentity device, std::shared_ptr<NativeChannel> channel)
+    NativeContext(ruvia::service_context& context, DeviceIdentity device, std::shared_ptr<NativeChannel> channel)
         : context_(context), device_(std::move(device)), channel_(std::move(channel)) {}
-    const ruvia::WorkerHandle& worker() const { return context_.worker(); }
+    const ruvia::execution_handle& execution() const { return context_.execution(); }
     template <typename T>
-    T& workerState() { return context_.workerState<T>(); }
+    T& connection_state() { return context_.service_state<T>(); }
     template <typename Fn>
-    auto runBlocking(Fn&& operation) { return context_.runBlocking(std::forward<Fn>(operation)); }
+    auto run_blocking(Fn&& operation) { return context_.run_blocking(std::forward<Fn>(operation)); }
     template <typename T>
-    const T& requestState() const {
+    const T& request_state() const {
         if constexpr (std::is_same_v<T, DeviceIdentity>) {
             return device_;
         } else {
             throw std::logic_error("Native connections cannot impersonate browser users");
         }
     }
-    std::string_view transportCloseCause() const { return nativeCloseCauseName(channel_->closeCause.load()); }
+    std::string_view transport_close_cause() const { return nativeCloseCauseName(channel_->closeCause.load()); }
 
   private:
-    ruvia::WebWorkerContext& context_;
+    ruvia::service_context& context_;
     DeviceIdentity device_;
     std::shared_ptr<NativeChannel> channel_;
 };
-ruvia::Task<void> serveNative(ruvia::WebWorkerContext& context, std::shared_ptr<NativeChannel> channel) {
+ruvia::task<void> serveNative(ruvia::service_context& context, std::shared_ptr<NativeChannel> channel) {
     try {
-        channel->attach(context.worker());
+        channel->attach(context.execution());
         auto first = co_await channel->read();
         if (!first) {
             channel->abort();
@@ -68,11 +68,11 @@ ruvia::Task<void> serveNative(ruvia::WebWorkerContext& context, std::shared_ptr<
             co_return;
         }
         const auto purpose = request->purpose();
-        auto& runtime = context.workerState<ServerRuntime>();
+        auto& runtime = *context.service_state<std::shared_ptr<ServerRuntime>>();
         wire::NativeAccepted response;
         response.set_protocol_version(protocol::kVersion);
         if (purpose == wire::NativeConnect::ENROLLMENT) {
-            auto registration = co_await context.runBlocking([service = runtime.devices, code = request->enrollment_code(), name = request->device_name()] { return service.registerDevice(code, name); });
+            auto registration = (co_await context.run_blocking([service = runtime.devices, code = request->enrollment_code(), name = request->device_name()] { return service.registerDevice(code, name); })).value();
             request->Clear();
             if (registration) {
                 response.set_accepted(true);
@@ -81,7 +81,7 @@ ruvia::Task<void> serveNative(ruvia::WebWorkerContext& context, std::shared_ptr<
             }
             co_await channel->binary(response.SerializeAsString());
         } else {
-            auto device = co_await context.runBlocking([service = runtime.devices, credential = request->credential()] { return service.authenticate(credential); });
+            auto device = (co_await context.run_blocking([service = runtime.devices, credential = request->credential()] { return service.authenticate(credential); })).value();
             request->Clear();
             if (device) {
                 channel->authorizeNetwork(purpose == wire::NativeConnect::CONTROL ? protocol::kMaximumControlBytes : protocol::kMaximumMessageBytes);
@@ -106,7 +106,7 @@ ruvia::Task<void> serveNative(ruvia::WebWorkerContext& context, std::shared_ptr<
     channel->abort();
 }
 struct NativePeer : std::enable_shared_from_this<NativePeer> {
-    ruvia::EventLoop loop;
+    ruvia::execution_handle loop;
     std::unique_ptr<NativeStream> stream;
     asio::steady_timer authDeadline, readDeadline, writeDeadline;
     std::shared_ptr<NativeChannel> channel;
@@ -114,8 +114,8 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
     std::size_t maximum = protocol::kMaximumNativeHandshakeBytes;
     bool stopped = false;
 
-    NativePeer(ruvia::EventLoop owner, std::unique_ptr<NativeStream> transport, std::shared_ptr<std::atomic<std::size_t>> receiveBudget)
-        : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner.handle())), budget(std::move(receiveBudget)) {}
+    NativePeer(ruvia::execution_handle owner, std::unique_ptr<NativeStream> transport, std::shared_ptr<std::atomic<std::size_t>> receiveBudget)
+        : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner)), budget(std::move(receiveBudget)) {}
     void bind() {
         channel->abortNetwork = [weak = weak_from_this(), owner = loop] {
             (void)owner.post([weak] {
@@ -173,8 +173,8 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
                 if (!channel->incoming->first.send(NativeMessage(std::move(payload))).accepted()) {
                     throw std::runtime_error("Native receive queue closed");
                 }
-                const auto credit = co_await ruvia::asAwaitable(channel->readCredit.second.receive());
-                if (!credit.hasValue()) {
+                const auto credit = co_await ruvia::as_awaitable(channel->readCredit.second.receive());
+                if (!credit.has_value()) {
                     break;
                 }
             }
@@ -190,11 +190,11 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
     asio::awaitable<void> write() {
         try {
             while (!stopped) {
-                auto result = co_await ruvia::asAwaitable(channel->outgoing.second.receive());
-                if (!result.hasValue()) {
+                auto result = co_await ruvia::as_awaitable(channel->outgoing.second.receive());
+                if (!result.has_value()) {
                     break;
                 }
-                auto bytes = std::move(result).takeValue();
+                auto bytes = std::move(result).take_value();
                 const auto header = protocol::encodeStreamHeader(bytes.size(), maximum);
                 if (!header) {
                     throw std::runtime_error("Native write exceeds limit");
@@ -216,19 +216,19 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
         }
         stop();
     }
-    static asio::awaitable<void> run(std::shared_ptr<NativePeer> self, ruvia::WebWorkerHandle businessWorker) {
+    static asio::awaitable<void> run(std::shared_ptr<NativePeer> self, ruvia::service_handle businessWorker) {
         bool handshaken = false;
         try {
             self->bind();
             self->arm(self->authDeadline, NativeCloseCause::kAuthorizationTimeout);
             co_await self->stream->handshake();
             handshaken = true;
-            auto posted = businessWorker.post([channel = self->channel](ruvia::WebWorkerContext& context) { return serveNative(context, channel); });
+            auto posted = businessWorker.post([channel = self->channel](ruvia::service_context& context) { return serveNative(context, channel); });
             if (!posted.accepted()) {
                 throw std::runtime_error("Native business worker unavailable");
             }
-            const auto initialized = co_await ruvia::asAwaitable(self->channel->initialized.second.receive());
-            if (!initialized.hasValue() || self->stopped) {
+            const auto initialized = co_await ruvia::as_awaitable(self->channel->initialized.second.receive());
+            if (!initialized.has_value() || self->stopped) {
                 self->stop();
                 co_await self->stream->close();
                 co_return;
@@ -246,15 +246,15 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
 };
 } // namespace
 struct NativeServer::State : std::enable_shared_from_this<State> {
-    ruvia::EventLoopPool pool{{.loopCount = 1, .mailboxCapacity = 1024}};
-    ruvia::EventLoop loop = pool.loop(0);
+    ruvia::io_runtime pool{{.thread_count_ = 1, .submission_capacity_ = 1024}};
+    ruvia::execution_handle loop = pool.control();
     asio::ssl::context tls{asio::ssl::context::tls_server};
     asio::ip::tcp::acceptor acceptor{loop.executor()};
     std::unique_ptr<QuicListener> quic;
     std::shared_ptr<std::atomic<std::size_t>> budget = std::make_shared<std::atomic<std::size_t>>(0);
     std::map<std::uint64_t, std::shared_ptr<NativePeer>> peers;
-    ruvia::EventLoopStopRegistration stopping;
-    ruvia::WebWorkerHandle business;
+    ruvia::execution_stop_registration stopping;
+    ruvia::service_handle business;
     std::string alpn;
     std::uint64_t sequence = 0;
     asio::steady_timer peersDone{loop.executor()};
@@ -335,12 +335,13 @@ NativeServer::NativeServer(const ServerConfig& config) : state_(std::make_shared
     });
 }
 NativeServer::~NativeServer() { stop(); }
-void NativeServer::start(ruvia::WebWorkerHandle businessWorker) {
+void NativeServer::start(ruvia::service_handle businessWorker) {
     state_->business = std::move(businessWorker);
-    state_->stopping = state_->loop.onStop([weak = std::weak_ptr<State>(state_)] {
+    state_->stopping = state_->loop.on_stop([weak = std::weak_ptr<State>(state_)]() -> ruvia::task<void> {
         if (const auto state = weak.lock()) {
             state->stop();
         }
+        co_return;
     });
     state_->pool.start();
     state_->started = true;

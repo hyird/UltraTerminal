@@ -9,7 +9,7 @@
 #include "ultraterimal/protocol/native.protocol.h"
 
 namespace ultraterimal::agent {
-asio::awaitable<EnrollmentIdentity> exchangeEnrollment(ruvia::EventLoop loop, ConnectionConfig config, std::string code, std::string name) {
+asio::awaitable<EnrollmentIdentity> exchangeEnrollment(ruvia::execution_handle loop, ConnectionConfig config, std::string code, std::string name) {
     wire::NativeConnect request;
     request.set_protocol_version(protocol::kVersion);
     request.set_purpose(wire::NativeConnect::ENROLLMENT);

@@ -40,6 +40,8 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 网关负责用户认证、设备权限、连接配对和会话转发。首版单网关运行，管理 API、浏览器 Web 入口和 Agent 原生入口位于同一进程；Web 入口使用 Ruvia 的 HTTP、WebSocket、路由与中间件能力，以 HTTP/WS 监听并由边缘代理终止 TLS。浏览器到 Cloudflare 等边缘优先使用 HTTP/3，HTTP/3 协商失败或不可用时，浏览器与边缘通过 TCP/TLS ALPN 协商 HTTP/2 或 HTTP/1.1；这不是 Ruvia listener 的 HTTP/3 支持或自动回退。WebSocket 回源固定使用 HTTP/1.1 Upgrade；本架构不在网关增加 TLS/HTTP/3 listener，也不宣称 HTTP/3 支持 WebSocket。
 
+网关目前只启用一个 Ruvia I/O 线程。Web 连接和服务拥有各自的执行域，共享主入口创建的 `ServerRuntime`。其可变业务状态依赖该单线程串行访问；增加 I/O 线程前必须重新划分状态所有权。原生传输在独立运行时处理 I/O，通过有界服务调度进入业务执行域。
+
 ### 技术栈
 
 | 模块 | 技术 |
@@ -70,7 +72,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 服务复制自身主令牌并绑定当前控制台会话，启动前再次检查会话未改变；启动特权仅在线程作用域内启用。桌面进程核验父进程为 Session 0 的 LocalSystem，管道 ACL 限制为服务身份并校验双方 PID 与目标会话。
 - 高权限桌面工作进程只承担桌面功能。SSH/ConPTY 由 Agent 服务进程启动并继承其运行账户，不另做操作系统用户映射；LocalSystem 服务对应 SYSTEM 终端。
 
-服务和桌面工作进程各使用一个由 `ruvia::core` 接管的 standalone Asio 事件循环，连接与 IPC 的读写、心跳和取消以协程在所属线程串行调度。服务的全局设置操作使用独立的单线程阻塞池；每个桌面会话另拥有一个单线程系统操作池，进程启动完成后，由登录准备与 `SendSAS` 共用。两者各自最多等待一项任务；队列容量为 2，容纳工作线程唤醒前的同时提交。桥接组件与登录代理仅借用该池，会话等待两者结束后再销毁线程池。
+服务和桌面工作进程各持有一个 standalone Asio `io_context`。Ruvia `execution_domain` 提供所属 strand，连接、IPC、心跳和取消的协程在该 strand 启动。退出先取消并等待原生 I/O，再等待执行域 `join()` 完成。服务的全局设置操作使用独立的单线程阻塞池；每个桌面会话另拥有一个单线程系统操作池，进程启动完成后，由登录准备与 `SendSAS` 共用。两者各自最多等待一项任务；队列容量为 2，容纳工作线程唤醒前的同时提交。桥接组件与登录代理仅借用该池，会话等待两者结束后再销毁线程池。
 
 桌面工作进程在独占采编线程上依次执行 DXGI 采集、颜色转换和编码，采集与编码器对象也在该线程创建及销毁；事件循环继续处理输入与 IPC。x264 仅对同一帧的切片并行，线程数按像素规模和逻辑 CPU 数限制为 1～4。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
 
@@ -109,15 +111,63 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - CPU 颜色转换统一校验 BGRA 尺寸、行跨度和缓冲区边界，使用同一 BT.601 limited-range 矩阵输出软编 I420 或硬编 NV12；编码器负责匹配的颜色元数据，不维护两套转换规则。
 - 视频模式无变化不编码；无损模式使用 `FULL_FRAME`、`COPY_RECT`、`PATCH_RECT`、`FRAME_COMMIT` 更新持久画布。
 - 视频模式允许 `DesktopRegionUpdate` 更新组合画布。DXGI 的 dirty/move 元数据在尚未编码的快照之间合并；只有一次采集的 move 才能复制上一张组合画布。合并多次采集后，move 目的区域改传最终像素。所有 CopyRect 从同一旧画布读取，再一次性绘制 PNG。区域消息绑定当前 `generation/base_frame_id` 并推进 `frame_id`，不推进视频编码器的参考帧或时间戳；下一张视频仍由编码器的原参考链解码并覆盖画布。
-- 区域更新最多 32 个复制、32 个 128×64 图块，PNG 不超过 256 KiB。实际 PNG 字节预算最多为当前视频帧预算的一半。区域准备的时间预算为当前帧周期的四分之一，限制在 1～4 ms。逐块编码前检查剩余时间和最近实测成本；慢编码最多每秒重新探测一次。同步 WIC 调用不能中途取消，调用后超时也弃用整批候选。区域或预算不合适时继续视频，失败尝试的耗时仍计入编码压力。
-- 有完整的已提交原始像素基准时，先按图块比较 RGB，排除未变化像素。CPU 比较自身的完整原图，GPU 在显存中比较已提交纹理，只读回图块变化标志。基准不随未提交采集推进，代次或采集重建时清空。元数据未知时比较整张图；比较不可用时沿用 DXGI 元数据。CopyRect 可能覆盖的 dirty 图块保留纠正补丁。完全相同的更新不编码、不推进帧号。
+- 区域更新最多 32 个复制、32 个 128×64 图块，PNG 不超过 256 KiB。legacy 的实际 PNG 字节预算最多为当前视频帧预算的一半，区域准备时间预算为当前帧周期的四分之一，限制在 1～4 ms；v2 使用下节的成本准入、正常编码前重叠时间和有界可选工作预算。逐块编码前检查剩余时间和最近实测成本；慢编码最多每秒重新探测一次。同步 WIC 调用不能中途取消，调用后超时也弃用整批候选。区域或预算不合适时继续视频，失败尝试的耗时仍计入编码压力。
+- 有完整的原始像素基准时，先按图块比较 RGB，忽略 alpha 的独立变化。CPU 比较自身的完整原图；legacy GPU 使用原同步图块比较；v2 GPU 使用下节同槽、非阻塞的融合比较，不调用 legacy 同步方法。v2 只能筛选已知、完整覆盖的 dirty 与 move 目的区域；未知、过多、缺项、错配或过期结果不能证明画面相同。比较基准是完整合法主输出使用的原始 Source RGB，不是有损视频解码结果，不随 Acquire、部分 PNG、缓存或辅助精修推进。私有 VIDEO/REGION 被 owner 拒绝时，必须在下一次比较前 discard 并重建；仅拒绝辅助工作不得回滚已经接受的主基准。CopyRect 可能覆盖的 dirty 图块即使 RGB 未变也保留纠正补丁。完整全零证明不编码、不推进帧号，光标仍独立更新；比较不可用时保留合法像素区域或视频回退。
 - GPU 区域路径用 `CopySubresourceRegion` 将至多 32 块打包到复用的 1 MiB staging atlas，只回读候选图块；仅 CopyRect 无需读回像素。稀疏 BGRA 缓冲不得作为完整 CPU 基准。GPU 比较按需动态探测系统 shader compiler，不可用时仍可局部读回。CPU staging 路径同样只复制有效 dirty/move 目的区域；基准不完整时整帧重建。复制、无损区域与视频共同受接收确认和有界发送额度约束。
-- 每个画面代次最多缓存 128 块。Agent 比较尺寸、指纹及完整像素，复用已编码 PNG；浏览器缓存解码后的 ImageBitmap，每批最多同时解码 4 个 PNG；错误清理等待全部解码任务结束。首次发送 PNG 和槽位定义，后续只发槽位与位置。整批成功才提交缓存；单批引用的槽位不得被该批淘汰。新代次清空两端缓存，未知槽位、尺寸不符和旧基准明确拒绝。
+- 可靠区域更新及 legacy 精修每个画面代次最多缓存 128 块。Agent 比较尺寸、指纹及完整像素，复用已编码 PNG；浏览器缓存解码后的 ImageBitmap，每批最多同时解码 4 个 PNG；错误清理等待全部解码任务结束。首次发送 PNG 和槽位定义，后续只发槽位与位置。整批成功才提交缓存；单批引用的槽位不得被该批淘汰。新代次清空两端缓存，未知槽位、尺寸不符和旧基准明确拒绝。优化契约 v2 的可退休精修禁止定义或引用跨端缓存槽，不能让退休批次改变可靠区域缓存事务；Agent 本地 PNG 复用不受此限制。
 - QoS 使用非关键帧的实际字节数和变化面积估算每帧开销。小更新可在相同码率下恢复 FPS，大面积或高熵更新降低 FPS；链路容量、编码与解码压力仍是上限。关键帧突发不充当稳定场景样本。
 - Agent 通过 `VideoConfig.desktop_optimization` 声明新能力；浏览器收到声明后才发送 `DesktopVideoCapabilities`，独立声明区域、缓存及可解码的 AVC/HEVC/AV1。升级先部署 Server 与前端，再更新 Agent；旧 Agent 继续原视频链路。服务端在健康和结束日志记录区域数、字节、复制像素和缓存命中，指标不进入界面。
-- 整帧视频与整帧无损模式互斥；视频模式允许附加静止区域无损补丁。画面至少静止 180 ms、接收端已确认当前视频帧、质量选择非流畅且浏览器声明 `video_refinement` 时，优先选择高对比、低色数的 128×64 区域，以系统 WIC 编码 PNG。单次最多 32 块、256 KiB 压缩数据和 256 Ki 像素，每视频帧最多一次，不把整屏扫描或 PNG 编码放进网络循环。补丁绑定同一 `generation` 与最近 `frame_id/base_frame_id`，不推进视频帧号、不改变 AVC 参考帧；Server 和浏览器拒绝过期、重复、越界及尺寸不符的补丁。浏览器等待对应视频帧解码显示后一次提交补丁，后续视频完整覆盖画布。旧浏览器不声明该能力，Agent 不发送新消息；升级先部署 Server 与前端，再升级 Agent，回滚三者成套进行。
+- 整帧视频与整帧无损模式互斥；视频模式允许附加静止区域无损补丁。legacy 路径保持单批串行行为：画面至少静止 180 ms、接收端已确认当前帧、质量选择非流畅且浏览器声明 `video_refinement` 时，优先选择高对比、低色数的 128×64 区域，以系统 WIC 编码 PNG。单次最多 32 块、256 KiB 压缩数据和 256 Ki 像素，每组合画布基准最多一次，不把整屏扫描或 PNG 编码放进网络循环。补丁绑定同一 `generation` 与最近组合画布的 `frame_id/base_frame_id`，不推进帧号、不改变视频编码参考链；Server 和浏览器拒绝过期、重复、越界及尺寸不符的补丁。浏览器等待对应基准显示后一次提交补丁，后续视频完整覆盖画布。legacy 的 `batch_id=0/kind=UNSPECIFIED` 与 `refined_` 单批校验继续保留，不把 v2 批次静默解释为 legacy。v2 分批行为见下节。
 - VNC 与原生远控共享采集、光标、输入和控制权仲裁。
+- PNG 的 COM apartment 与 WIC factory 由采集工作线程创建并释放。首轮完整编码用私有像素完成延迟初始化；缓存复用 factory。初始化耗时单独记录，不改变每批准入预算。
+- Windows 画面调度用高精度可等待计时器，在同一 Asio executor 异步接收唤醒。取消、重设和停止均释放旧等待；唤醒迟到仍按原截止时间退休可选工作。
 - SSH 路径为 `xterm.js → 网关 libssh2 → Agent libssh → ConPTY`。
+
+### 桌面优化契约 v2
+
+此节是四项桌面优化的实施契约，不是全部运行端、部署或物理体验已验收的声明。`Envelope.protocol_version` 仍为 1，新增 Protobuf 字段向后兼容；行为升级必须显式门禁，不能仅凭字段存在激活。
+
+#### 版本屏障与公开装配
+
+- Server 在各桌面通道 `ChannelReady.desktop_optimization_contract=2` 声明门禁；Agent 服务把实际 Server 门禁通过 `DesktopStart.desktop_optimization_contract` 传给工作进程。Agent 的 `VideoConfig.desktop_optimization_contract=2` 声明支持，Browser 仅在相关通道 Server 门禁和 Agent 支持均精确为 2 时，通过 `DesktopVideoCapabilities.desktop_optimization_contract=2` 请求使用。Runtime 的构造参数保留不可变 Server 支持，`setOptimizationContract` 仅更新联合 pending permission；Worker 初始 allow0 不抹去首 Config2 的支持声明，Server、联合 permission、Browser caps 都为 2 才在新配置代次激活，旧 in-flight 计算结果拒绝。缺省、0、1 或未知值均不激活 v2，不把未知值当作更高兼容版本；已有 `desktop_optimization` 布尔与区域/缓存能力声明仍独立存在。
+- `DesktopChannelBinding.optimizationContract` 和 `DesktopPipeBinding.optimizationContract` 默认 0。公开 `DesktopChannelValidator::setOptimizationContract(uint32_t)` 设置允许契约：仅 2 允许 v2，其他值规范化为 0。允许值与当前活跃值分离，只有下一个合法新 `VideoConfig/generation` 且配置声明为 2 时激活；修改允许值不改变同代次行为，校验失败的配置不提交屏障。新无损代次不激活视频精修。`DesktopPipeValidator` 同名 setter 传播到子 validator；调用方负责从已认证 Server 门禁装配，不自动信任 Browser 的能力声明。
+- 每个方向独立验证 binding、单调消息序号、来源/渠道白名单和输入格式。v2 精修只能由 Agent 画面方向发送；原生独立 ACK 只能由 Browser 输入方向发送。服务仅可通过现有 IPC 输入队列对尚未进入原生队列的本地精修返回 `SUPERSEDED`，不能伪造已转发批次的 Browser 清理。流水线诊断只能由 Agent 输入方向发送，IPC 对应工作进程到服务的 `input`。Browser 自报数据不得解释为 Agent 阶段数据。ACK 格式校验不依赖当前最新画面、不要求当前允许值仍为 2；退休、重复和迟到的合法三元组交由运行 owner 判断，无操作而非自动协议断线，消息序号重放仍拒绝。
+
+#### 分阶段本机 duration 与汇总
+
+- `VideoFrame.stage_timing`、`DesktopRegionUpdate.stage_timing`、`VideoRefinement.stage_timing` 共用 `DesktopStageTiming`。可选 uint32 微秒字段依次为工作等待 `worker_queue_microseconds`、DXGI 获取等待 `acquire_wait_microseconds`、选择时源快照本机年龄 `source_age_microseconds`、节奏/接收额度等待 `pacing_credit_wait_microseconds`、必要 GPU 同步等待 `gpu_sync_wait_microseconds`、ROI 提交至可读就绪 `readback_ready_microseconds`、CPU 准备 `prepare_cpu_microseconds`、PNG 编码 `png_encode_microseconds`、视频编码 `video_encode_microseconds`；`coalesced_captures` 为合并的采集数。实际实现须按本机单调钟测量相应阶段，未执行/不可测不填字段，实测零保留 presence。阶段可重叠，不能直接相加，也不能跨机器相减时间戳。现有 `encode_microseconds` 保留更新准备与编码（含拒绝的区域/PNG 尝试）口径，不包含采集、节奏等待、网络和浏览器阶段，legacy 零仍表示未提供数据。同一次计算同时产生 VideoFrame 与 DYNAMIC_DETAIL 时，两者携带的累计 Worker 阶段仅汇总一次；独立 STATIC_DETAIL 正常计样本，各消息真正完成的 IPC、原生与 WebSocket 写入仍分别计数。
+- `QualityFeedback.browser_timing` 的可选微秒字段为 `receive_queue_microseconds`、`decode_microseconds`、`canvas_submit_microseconds`、`png_decode_microseconds`、`baseline_wait_microseconds`，必须关联非零 `displayed_generation/displayed_frame`。Server 消费并在转发 Agent 前剥离，不进入 QoS；现有 `QualityFeedback.decode_microseconds` 的调速口径不变。Browser 值是已授权浏览器的自报软件诊断，Server 仍独立检查范围与样本关联，不能据此证明 Agent 耗时或物理显示。
+- 上述每项 duration 及 report 的 duration 均不超过 60000000 微秒；presence 区分缺失与零。画布提交/ACK 仅表示软件提交，rAF 仍为物理呈现前观察；这些字段不能冒充输入到物理显示延迟，也不能凭相加得到端到端延迟。
+- 写完成后才知道的阶段走 `DesktopPipelineReport`（Envelope body 47）。每批最多 32 个 `DesktopPipelineSample`，样本键为非零 `generation/frame_id`、可选精修 `batch_id`（普通帧为 0），固定来源 `DESKTOP_WORKER` 或 `AGENT_RELAY`；可选字段为 `ipc_write_microseconds`、`send_queue_wait_microseconds`、`native_write_microseconds`。Envelope 的 generation/frame/base 均为 0，使用已鉴权桌面输入通道和正常序号；没有样本时仅允许非零 `dropped_samples` 的丢失摘要。不增加诊断 ACK、自由文本、绝对时戳或通用 trace。
+- Server 消费 report，不转 Browser、不推进画面基准；样本不要求逐帧必达。生产端独立有界缓冲，事件触发且发送间隔至少 500 ms，视频 writer 不等待诊断队列。Server 提前到达的样本最多暂存 16 帧键、32 样本、8 KiB、2 秒，超限/过期仅丢诊断，不关闭会话。协议 validator 只完成格式和方向检查，样本关联、剥离、汇总和上述运行缓冲由各端 owner 实现。
+
+#### 可退休分批精修与动态细节
+
+- `VideoRefinement.batch_id` 为 uint64，在 generation 内严格单调、允许跳号、不得复用；新视频或可靠区域推进组合画布仅重置该基准的资源/网格，不重置批号水位。Envelope `frame_id==base_frame_id` 为当前组合画布而非视频参考链。`kind=STATIC_DETAIL/DYNAMIC_DETAIL` 区分有效期、预算和统计；不设置 `final_batch`，巡游结束留在 Agent 状态与诊断中。
+- v2 每块都必须 `cache_slot=0` 且 PNG 非空。规范网格为从画布原点开始的 128×64 图块：x/y 分别为 128/64 的倍数，宽高恰为图块尺寸，右/下边缘恰好裁至画布边界。同基准不得重复块，包括批内重复；每批硬界 32 块、256 KiB PNG、256 Ki 像素（单 PNG 至多 64 KiB），每基准累计至多 2048 块、8 MiB PNG 且不超过画布网格。批号、序号、网格和累计资源只在全批校验成功后提交；失败不得留下缓存或部分块定义。
+- 正常调度每批至多 8 块、64 KiB、64 Ki 像素；静止巡游每片最多 32 候选，空间公平，不因持续帧更新总从左上重新开始。新像素、刷新、配置或 geometry 改变立即退休旧候选；同步单块 WIC 结束后才能响应，不声称可强取消 WIC。
+- `DesktopRefinementAck`（Envelope body 46）独立于可合并 QualityFeedback，body 为非零 `batch_id` 和 `APPLIED/SUPERSEDED`，Envelope generation/frame 非零、base 为 0。全会话只有一个 outstanding 精修；只有精确匹配 `(generation, frame_id, batch_id)` 释放其信用。APPLIED 表示画布提交完毕，SUPERSEDED 表示永不提交；重复或不匹配 ACK 无操作；退休、超时或新代次不释放工作进程 Flow 持有的未确认三元组，匹配旧 ACK 仅清理该资源信用，不恢复退休画面或超时代次的精修。2 秒未 ACK 仅暂停该三元组所属 generation 精修，不误停后续代次，不阻视频、不重发、不虚假返还已发送字节。服务侧 DesktopRelay 持有原生队列已准入的 wire 三元组，detach/替换工作进程仍保留；在 Worker/Continuity 过滤前消费精确旧 cleanup ACK，不将其交给新工作进程。信用占用或队列满时，尚未转发的 v2 批次通过原有有界 IPC 返回其本地三元组的 SUPERSEDED，视频与可靠区域不因此停顿。validator 不承担 outstanding 匹配或超时调度。
+- Browser 最多一个未结束辅助批次（包含已退休），批内最多 4 个 PNG 解码；仅 v2 精修脱离串行 receive。压缩字节 reservation 转移到辅助 lease，所有结束路径仅释放一次；退休并不等于任务资源已经完成，晚完成 bitmap 必须关闭且不能提交，不得循环新开任务绕过上限。已验证而尚未启动 PNG 的排队批次被换代或拒绝配置跳过时，发送一次精确 SUPERSEDED；已启动批次仍等实际资源清理。可靠区域更新仍 FIFO、不可退休，沿原有缓存事务。
+- 动态候选来自 known dirty/move ROI 及增量空间特征，以 RGB/色度横纵边缘评分，不以低色数作硬门槛，覆盖奇数行/列的 1px 彩色细线和文字边缘。小损伤可完整表达时优先可靠区域更新；大面积视频可附 DYNAMIC_DETAIL 至多 8 块、64 KiB、64 Ki 像素，与对应视频同一源快照绑定，Browser 接收后有 50 ms 本地有效期，后台不应用。机会性增强不保证逐帧无损，不引入 AVC444/RemoteFX。
+- 动态 token 按时间补充并封顶，约占可用链路 20%；新帧不重置 token，退休不返还已消耗成本。静止补丁也受吞吐×允许占用时间和发送剩余额度约束，低带宽缩小批次，不能只用消息硬上限当预算。
+
+#### 可选 GPU ROI 与可抢占边界
+
+- 初始使用一个可选固定槽，公开 submit/tryComplete/retire 及自有 ROI 结果，成功 submit 后对同一 immediate context 做一次异步 Flush 以提交 Copy，CPU 调用成本计入准备；Flush 不是就绪或 GPU 完成信号。Map 使用 DO_NOT_WAIT，WAS_STILL_DRAWING 返回 Pending。每采集回合/有界调度检查一次，不忙轮询；retire 不提前复用尚未完成的槽。已知 damage 优先 ROI，不把全屏 GPU 比较塞进关键路径。
+- v2 融合提交在源覆写前冻结全部候选 BGRA，并相对独立 GPU Source 基准生成精确 RGB 掩码；current 与 baseline 各有完整标签，serial 不同合法。掩码与全部候选像素共用一个 GPU 输出、一个 staging buffer 和一次非阻塞 Map，不分成先掩码后像素的两次读回。仅复制实际 payload 前缀：128 字节掩码头加候选像素，不因预分配容量而固定搬运 1 MiB。普通 ROI 与融合任务共用同一物理槽；未变化候选也保留像素以满足 CopyRect 纠正，不能只保留 mask=1 的块。独立基准使用完整 GPU CopyResource；其显存、完整复制字节、初始化及实际 caller CPU 成本均需计量，Queued 只表示入队。基准 unavailable/Busy 不丢弃已成功的主输出，也不能沿用旧 composed base。
+- 任务带 capture_epoch/source_serial/generation/base_frame/geometry。ROI Copy 必须在源纹理覆写前提交，ComPtr 持有不等于冻结像素。过期结果不得修改 damage、缓存或画面基准。设备或桌面切换清空旧工作并按有界恢复预算建立新基准。
+- `encodeAt` 是最早视频启动时间。完整 CPU 像素只在可立即执行的编码决策中准入；异步 ROI 可提前提交。区域准入固定绝对期限 `D=T+max(encodeAt-T,0)+A`。可靠区域与融合比较的 A 为一个帧周期，限制在 4～16 ms；辅助精修仍为半个帧周期，限制在 4～12 ms。已准入工作不因迟到、换源或预测变化续期。
+- 合法同源 Pending 在 D 前通过有界 timer 返回调度，每回合最多一次非阻塞检查。Ready 在 D 及源覆写前消费。到 D 仍 Pending 或唤醒迟到，退休并走视频。新源、权限、配置或基准变化立即退休；连续新源不能反复开启期限来无限延迟视频。动态细节只在正常视频编码的自然重叠结束后检查一次。退休槽的 drain 已消耗本回合检查资格时，不再提交新可选任务。
+- 此策略允许有界的视频启动延迟，须验证实际源年龄与尾部。必要 CPU 采集、MFT 与单块 WIC 仍可能同步，不保证硬实时。
+- 可选工作开始前即启动原绝对计算预算。比较/读回就绪/拷贝/PNG 的固定窗口尾部和 EWMA 只与剩余计算期限比较；准备预测加预计发送成本再与视频成本做约 20% 迟滞选择，实际字节、token 与接收信用独立约束。发送额度不是预计产物体积；按实际生成的 PNG、候选面积/数量及消息开销做有界字节预测，超字节或超时被弃用的产物仍记录尺寸，失败无产物保持未知。可靠已提交缓存引用与 v2 本地完整 PNG 复用的发送语义分开，不为预测在预算外扫描或编码。完整 CPU 与未知 ROI 的准备历史不可互相冒充，失败沉没成本保留，合法重叠仅扣一次并保留实际 CPU 下界。回退冷却、region/detail 共享的慢探测最多每秒一次属于策略而非线上消息契约，换来源不能绕过频率限制。可抢占边界为快照选择、ROI 就绪检查及单块同步编码之间，不能用退休掩盖 GPU/PNG 长尾。
+
+- 融合比较与后续 PNG 使用独立准备历史、共享同一慢探测资格及原绝对 D。比较的预计发送成本为真实零，不代表未知 PNG 体积已知为零；冷比较已消费资格时，未知 PNG 不能再获得第二次探测。PNG 的 FIT 只测试剩余准备是否落在 D-now 内，判优则将已花比较成本加到预计 PNG 准备与发送成本上，对比原视频 alternative；不得重新开启 allowance、重复扣沉没成本或重叠时间。成功 PNG、失败及退休工作继续按真实来源和工作单位记账。
+- 本地准入证据绑定实际 Worker 的 Rate、原绝对准备期限、准入时剩余时间、成本预测与完整源标记；静态精修以自有不可变 sidecar 关联实际 generation/frame/batch，Owner 只在批次被接受发送后保存关联。不可用历史 VIDEO 的帧率、可变的最后诊断或累计计数替代该批次准入预算；私有拒绝结果不得覆盖已发布关联。该证据不进入线协议，也不作为跨机时间戳。
+- Windows 桌面 Runtime 仅在已启用 v2 的前台采集期间，由实际 Worker 进程持有成对的计时器分辨率请求；legacy、后台及 owner 结束释放。请求失败不得阻止启动或视频回退，成功也不保证 1 ms 唤醒或满足准备期限。不创建可见窗口规避系统策略，不修改电源节流策略，不以 QPC 微秒测量精度冒充调度保证；请求的 CPU 与功耗影响需实测。
+
+#### 发布、回滚与未验收范围
+
+先部署 Server 与 Web，再升级 Agent；三方门禁与新 generation 屏障就绪前保留 legacy。升级或回滚结束旧桌面会话，保留 Server/Web/Agent 成套可回滚版本，核对实际版本和服务状态；未知版本或关闭门禁仅在下一配置屏障回到 legacy，不在同代次混用。协议单测不能替代各运行 owner 的单 outstanding、辅助 lease、诊断有界汇总、GPU Pending/退休与真实网络验证。最终仍需同设备同分辨率的文字/细线/滚动、慢 PNG/弱网、可选组件缺失与 Windows 静态部署验收；软件 ACK 或本机模拟 benchmark 不替代物理呈现测量。不保证所有 codec/GPU/分辨率有相同收益。
 
 ### 远控设计参考
 
@@ -152,6 +202,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 移动矩形先于变化矩形应用，复制源为上一完整帧快照；一个差分批次完成后原子显示。
 - 光标独立传输，避免与采集画面中的光标重复绘制。形状使用至多 1024×1024 的 RGBA 像素；x/y 表示所选显示器内的热点位置，绘制原点为位置减热点。仅更新位置或可见性时不携带像素、尺寸和热点，接收端保留已有形状；刷新请求重发完整形状。单色和掩码光标的 XOR 像素按同次采集的桌面背景转换，并在背景或位置变化时更新。
 - 浏览器检查具体解码配置并试解码；编码封装与解码配置保持一致。低延迟编码禁用 B 帧并限制内部缓冲。
+- 光标无屏内 XOR 像素时无需背景读回。v2 只读回实际需要的光标范围；超过稀疏读回上限时使用完整背景。稀疏光标数据不建立完整 CPU 画面基准，也不占用可选比较槽位。
 - 编码器重建、尺寸或模式变化时递增 `generation`；视频发送新配置与关键帧，无损模式发送完整基准。
 - 差分基准不匹配时停止应用补丁并请求全量同步。分辨率、DPI、旋转或采集失效时重建资源，失败时明确上报状态。
 - 网页仅列出目标显示器驱动报告的分辨率；调整需要控制权限，以请求 ID 关联结果，不修改永久显示配置。成功后重建采集、编码和输入坐标，发送新代次配置与关键帧；不支持或应用失败时保留当前会话并提示。调整期间释放已按下的键鼠，丢弃尚未重新绑定坐标的输入；已提交到 WSS、跨通道晚于新绑定抵达的旧输入仍需下文所述代次契约处理。
@@ -163,14 +214,14 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 队列策略按数据语义决定：输入保持顺序，源端仅合并相邻的可替代位置状态；未编码画面保留最新状态，已编码依赖帧通过显示确认窗口反压编码端。参考 [Moonlight 输入合并](https://github.com/moonlight-stream/moonlight-common-c/blob/master/src/InputStream.c)、[视频溢出后的关键帧恢复](https://github.com/moonlight-stream/moonlight-common-c/blob/master/src/VideoDepacketizer.c)及 [RustDesk 排队延迟反馈](https://github.com/rustdesk/rustdesk/blob/master/src/server/video_qos.rs)。本项目的可靠有序转发不直接套用 UDP 解码队列丢帧策略；若引入已编码帧丢弃，必须同时实现画面基准恢复。
 - 采集仅保留最新待编码画面；编码、发送、日志和浏览器队列均限制容量与等待时间。
 - 硬件首帧和显式刷新均验证独立解码，包括同代次刷新。每个采集实例遇到 GPU 刷新失败时最多重建一次当前硬件编码器，并发布新的画面基准；再次失败时降级或切换内嵌软件编码，不能反复重置代次绕过显示确认窗口。
-- 像素筛选后仍不能使用区域更新的大范围变化，在随后 100 ms 内按原始损伤信息直接走视频；之后重新探测。小范围候选继续逐帧比较，避免持续运动时反复同步 GPU 读回。
+- legacy 像素筛选后仍不能使用区域更新的大范围变化，在随后 100 ms 内按原始损伤信息直接走视频；之后重新探测。小范围候选继续逐帧比较，避免持续运动时反复同步 GPU 读回。
 - Windows 采集由 DXGI 新画面事件唤醒，不固定等待一帧周期；短超时用于响应取消与调速，采集失效时才进入退避。编码频率独立于采样，由显示反馈与处理能力决定。
 - 首次采集取得完整像素；后续仅光标变化时不进行 GPU 像素读回，沿用同一采集实例及相同几何的上一份像素，仍更新光标形状与位置。采集重建后禁止沿用旧像素。
 - 桌面采集仅使用 DXGI Desktop Duplication，桌面切换或设备丢失后重建采集与画面基准。光标形状、热点和位置独立传输，不主动叠加到视频；允许 DXGI 返回的纹理包含系统光标，不为移除内嵌光标引入其他采集后端或像素修补。
 - 远控采集开始时请求唤醒显示，采集存活期间持有显示与系统电源请求，防止空闲省电阻止首帧；采集结束或失败时释放请求，不修改系统电源计划。
 - 桌面通道每 2 秒使用 `DesktopProbe` 确认浏览器与工作进程存活。高延迟不暂停输入、不释放长按、不等待恢复握手；最近 60 秒内发出的有效探针回复均可续期。连续 60 秒无有效确认才关闭会话并释放输入，明确断线、撤权与协议错误立即关闭。浏览器保留同样的 60 秒存活期限。首帧与控制通道均就绪后才绑定输入并启动存活计时，连接阶段仍有独立 60 秒期限。画面代次校验、失焦释放与有界发送队列继续生效。升级时同时更新 Agent 与前端并结束旧会话；旧 Worker 仍具有四秒冻结行为。`reset_input` 仅保留用于兼容旧 Worker 的释放通知，新 Worker 不再发送此标记。
 - 采集与发送管线参考 [FreeRDP 帧确认](https://github.com/FreeRDP/FreeRDP/blob/master/channels/rdpgfx/client/rdpgfx_main.c) 和 [RustDesk 接收反馈](https://github.com/rustdesk/rustdesk/blob/master/src/server/video_service.rs)：接收确认释放有界帧额度，独立 RTT 探针区分传播延迟与持续排队，排队时降低码率和采集频率。目标上限 60 FPS，编码压力、持续解码压力及每帧像素预算共同决定实际目标；低于清晰度预算的链路优先减少帧数，码率合法下限 64 kbps，不能保证极窄链路画质。健康反馈持续两秒后逐步恢复，静态桌面的空闲间隔不计入吞吐估算。
-- DXGI 仅保留一张待编码的最新 GPU 快照；比较另持有上一张已提交纹理作为基准。支持 D3D11 的硬件 MFT 通过同一采集设备、DXGI Device Manager 和 GPU Video Processor 将 BGRA 转成 NV12，直接送入编码器，正常视频帧不进行整帧 CPU 读回或 CPU 颜色转换。四张 NV12 surface 由 `IMFTrackedSample` 的释放回调归还，MFT 仍持有的 surface 不覆写；回调只持有独立原子槽位状态。Media Foundation 和 EVR sample 分配入口均动态探测，缺失或运行失败时转 CPU 硬编/内嵌软件编码并重建基准，不影响 Agent 启动。静止区域补丁及需要背景 XOR 的光标按需读回当前快照。`VideoFrame.gpu_encoding` 与服务端日志记录实际使用的路径，不能用硬编标志代替 GPU 直传证明。CPU 路径仅在编码期限和接收额度同时允许时读回像素；延迟读回后重建完整 CPU 基准，随后继续使用 move/dirty 区域；只替换尚未编码的原始图像，不丢已编码的 AVC 依赖帧。桌面或图形设备变化时丢弃 GPU、CPU 和编码基准，按有界恢复策略重建。后台暂停采集和编码；前台确认立即唤醒等待并刷新关键帧。
+- DXGI 仅保留一张待编码的最新 GPU 快照；legacy 比较另持有上一张已提交纹理，v2 另持有带显式 Source key 的独立 GPU 基准，且只做同槽非阻塞候选比较。支持 D3D11 的硬件 MFT 通过同一采集设备、DXGI Device Manager 和 GPU Video Processor 将 BGRA 转成 NV12，直接送入编码器，正常视频帧不进行整帧 CPU 读回或 CPU 颜色转换。四张 NV12 surface 由 `IMFTrackedSample` 的释放回调归还，MFT 仍持有的 surface 不覆写；回调只持有独立原子槽位状态。Media Foundation 和 EVR sample 分配入口均动态探测，缺失或运行失败时转 CPU 硬编/内嵌软件编码并重建基准，不影响 Agent 启动。静止区域补丁及需要背景 XOR 的光标按需读回当前快照。`VideoFrame.gpu_encoding` 与服务端日志记录实际使用的路径，不能用硬编标志代替 GPU 直传证明。CPU 路径仅在编码期限和接收额度同时允许时读回像素；延迟读回后重建完整 CPU 基准，随后继续使用 move/dirty 区域；只替换尚未编码的原始图像，不丢已编码的 AVC 依赖帧。桌面或图形设备变化时丢弃 GPU、CPU 和编码基准，按有界恢复策略重建。后台暂停采集和编码；前台确认立即唤醒等待并刷新关键帧。
 - 输入与视频保持独立加密原生连接及单写入器，Agent 视频中继和 Server 视频端点各只容纳两条排队消息，局部队列满时逐级背压。跨链路未确认帧按 RTT × 自适应 FPS 加两帧余量，取客户端容量与 128 帧硬上限的最小值；字节额度按带宽时延积加 50 ms 估算，限制在 16 KiB–4 MiB。首个大关键帧允许单独超过窗口以保证启动，后续必须等确认；未确认帧龄超过路径基线加 150 ms 暂停编码，等待确认释放额度。QUIC 的重传、拥塞和加密继续由 OpenSSL 负责，UDP 不可用时使用已校验证书的 TLS/TCP；浏览器仍经 CDN WSS，不引入 P2P。
 - `QualityFeedback.maximum_pending_video_frames` 是浏览器声明可接收、尚未显示的帧数：缺省/0 表示旧客户端 16，显式范围为 1–128。Agent 每代次默认 16，仅在收到当前代次、已发送帧的合法显示确认后更新该能力；当前帧重复确认可更新能力但不重复调速，旧代次、未知帧和超范围值不能改变能力。新版浏览器声明 128；旧页面无需刷新即可继续以 16 帧上限工作，新 Agent 不会向其发送超出声明的在途帧。旧 Agent 忽略新增 Protobuf 字段，仍维持 16 帧行为。浏览器视频 WebSocket 的串行接收队列容纳启动/配置消息及最多 128 个帧消息；WebCodecs 同时提交、等待输出的帧独立限制为 4。队列中的消息与提交解码帧的压缩负载合计仍受 32 MiB 字节界和单消息 16 MiB 上限约束；该字节预算不约束 WebCodecs 内部解码 surface。满 4 帧时当前 receive 在原有串行队列中等待输出槽，保留消息字节预算；槽等待最多 5 秒，停止、解码错误和代次重配会唤醒清理，不静默丢弃同代次增量帧。配置检查不能导致合法首批帧被拒绝。控制通道就绪时补发最近已显示帧及当前可见性，避免跨通道到达顺序使显示确认丢失。
 - 增量视频与差分不得任意丢弃，恢复时重建基准；SSH/VNC 超限时背压或关闭，禁止静默删字节。

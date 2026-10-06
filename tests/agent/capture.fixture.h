@@ -135,6 +135,30 @@ class TestSurface {
             throw std::runtime_error("Desktop compositor unavailable");
         }
     }
+    // ClearType-like fringes plus odd-position horizontal/vertical 1px colored
+    // strokes. High palette deliberately prevents a low-color text shortcut.
+    void paintDetail(unsigned frame) {
+        detailTexture_.resize(static_cast<std::size_t>(size_) * size_);
+        for (int y = 0; y < size_; ++y) {
+            for (int x = 0; x < size_; ++x) {
+                const auto blue = static_cast<unsigned>(x % 128), green = static_cast<unsigned>(y % 64);
+                auto pixel = (100u << 16) | (green << 8) | blue;
+                if (x % 128 == 3 || x % 128 == 127 || y % 64 == 5 || y % 64 == 63) {
+                    pixel = (16u << 16) | (50u << 8) | (170u + frame % 50);
+                } else if (x % 128 == 4 || y % 64 == 6) {
+                    pixel = (55u << 16) | (75u << 8) | 120u;
+                }
+                detailTexture_[static_cast<std::size_t>(y) * size_ + x] = pixel;
+            }
+        }
+        activeTexture_ = &detailTexture_;
+        renderFailed_ = false;
+        InvalidateRect(window_, nullptr, FALSE);
+        UpdateWindow(window_);
+        if (renderFailed_ || FAILED(DwmFlush())) {
+            throw std::runtime_error("Cannot render detail test texture");
+        }
+    }
     void paint(COLORREF color) {
         activeTexture_ = nullptr;
         MSG message{};
@@ -185,6 +209,7 @@ class TestSurface {
     HWND window_ = nullptr;
     COLORREF color_ = RGB(0, 0, 0);
     std::vector<std::vector<std::uint32_t>> textures_;
+    std::vector<std::uint32_t> detailTexture_;
     const std::vector<std::uint32_t>* activeTexture_ = nullptr;
     bool renderFailed_ = false;
 };

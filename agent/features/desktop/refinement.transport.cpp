@@ -64,4 +64,68 @@ wire::VideoRefinement refineVideoDetails(std::span<const std::uint8_t> bgra, std
     tiles.commit();
     return result;
 }
+DesktopRefinementAttempt prepareVideoDetail(DesktopDetailPixels pixels, DesktopDetailTile destination, DesktopTileCache& cache,
+                                            DesktopDetailTokens& tokens, DesktopRegionCost& cost, std::size_t sendRemaining,
+                                            std::chrono::microseconds videoCost, std::optional<std::chrono::microseconds> estimatedSend, bool completeAttempt) {
+    DesktopRefinementAttempt result;
+    const auto started = DesktopRegionCost::Clock::now();
+    const auto byteBudget = tokens.available(started, std::min(sendRemaining, std::size_t{65536}));
+    if (byteBudget <= 64 || destination.width != pixels.width || destination.height != pixels.height ||
+        !pixels.valid() || !cost.within(started)) {
+        result.failed = true;
+        if (completeAttempt && cost.admitted()) {
+            cost.finish(started, false); // abandoned optional platform preparation
+        }
+        return result;
+    }
+    if (!cost.admitted() && !cost.admit(started, videoCost, estimatedSend)) {
+        return result;
+    }
+    result.admitted = true;
+    result.candidate = classifyDesktopDetail(pixels).candidate;
+    if (!result.candidate) {
+        const auto finished = DesktopRegionCost::Clock::now();
+        result.stages.prepareCpu = DesktopStageDurations::microseconds(started, finished);
+        if (completeAttempt) {
+            cost.finish(finished, true);
+        }
+        return result;
+    }
+    std::vector<std::uint8_t> contiguous(static_cast<std::size_t>(pixels.width) * pixels.height * 4);
+    for (std::uint32_t y = 0; y < pixels.height; ++y) {
+        std::copy_n(pixels.bgra.data() + y * pixels.stride, static_cast<std::size_t>(pixels.width) * 4, contiguous.data() + static_cast<std::size_t>(y) * pixels.width * 4);
+    }
+    const auto copied = DesktopRegionCost::Clock::now();
+    if (!cost.within(copied)) {
+        result.stages.prepareCpu = DesktopStageDurations::microseconds(started, copied);
+        result.failed = true;
+        if (completeAttempt) {
+            cost.finish(copied, false);
+        }
+        return result;
+    }
+    wire::Rectangle area;
+    area.set_width(pixels.width);
+    area.set_height(pixels.height);
+    result.patch = cache.prepareLocal(contiguous, pixels.width, pixels.height, area, byteBudget - 64, nullptr, &result.stages, &result.tile);
+    result.failed = !result.patch;
+    result.stages.prepareCpu = std::min(60000000u, result.stages.prepareCpu.value_or(0) + DesktopStageDurations::microseconds(started, copied));
+    const auto finished = DesktopRegionCost::Clock::now();
+    // Spend bytes even if the deadline/source was invalidated during synchronous
+    // PNG. A late result is discarded, not reimbursed or published.
+    if (result.patch) {
+        if (!tokens.consume(finished, result.patch->png().size() + 64, sendRemaining) || !cost.within(finished)) {
+            result.patch.reset();
+            result.failed = true;
+        } else {
+            auto* target = result.patch->mutable_destination();
+            target->set_x(destination.x);
+            target->set_y(destination.y);
+        }
+    }
+    if (completeAttempt) {
+        cost.finish(finished, result.patch.has_value());
+    }
+    return result;
+}
 } // namespace ultraterimal::agent

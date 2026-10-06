@@ -5,28 +5,28 @@
 #include <string>
 #include <vector>
 
-#include <ruvia/core/Channel.h>
+#include <ruvia/core/channel.h>
 
 namespace ultraterimal::server {
 // Worker-owned invalidations. Only identifiers are queued; the writer rereads
 // authorized state before delivery, so stale queued data cannot grant access.
 class StatusSubscription {
   public:
-    StatusSubscription(ruvia::WorkerHandle worker, std::string user);
+    StatusSubscription(ruvia::execution_handle worker, std::string user);
     const std::string userId;
     bool enqueue(std::string event);
-    ruvia::Task<std::optional<std::string>> receive(ruvia::StopToken stop);
+    ruvia::task<std::optional<std::string>> receive(ruvia::stop_token stop);
     void close();
     bool closed() const { return closed_; }
 
   private:
-    std::pair<ruvia::ChannelSender<std::string>, ruvia::ChannelReceiver<std::string>> queue_;
+    std::pair<ruvia::channel_sender<std::string>, ruvia::channel_receiver<std::string>> queue_;
     std::set<std::string> pending_;
     bool closed_ = false;
 };
 class StatusHub {
   public:
-    std::shared_ptr<StatusSubscription> subscribe(ruvia::WorkerHandle worker, const std::string& user);
+    std::shared_ptr<StatusSubscription> subscribe(ruvia::execution_handle worker, const std::string& user);
     void publish(const std::string& event);
     void invalidate();
 

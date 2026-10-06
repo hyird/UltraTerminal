@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "features/connection/connection.transport.h"
+#include "optimization.runtime.h"
 #include "ultraterimal/protocol/desktop.protocol.h"
 
 namespace ultraterimal::agent {
@@ -20,13 +21,15 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
     std::array<std::unique_ptr<protocol::DesktopChannelValidator>, 2> outgoing;
     std::unique_ptr<protocol::DesktopChannelValidator> incoming;
     std::array<std::uint64_t, 2> sequences{1, 1};
+    std::array<std::uint32_t, 2> serverOptimizationContracts{0, 0};
     std::string sessionId;
     asio::steady_timer deadline;
     bool started = false;
     bool ready = false;
     bool cancelled = false;
+    bool browserRequestedV2 = false;
 
-    State(ruvia::EventLoop loop, ConnectionConfig config, const wire::Envelope& open) : deadline(loop.executor()) {
+    State(ruvia::execution_handle loop, ConnectionConfig config, const wire::Envelope& open) : deadline(loop.executor()) {
         if (!protocol::validateMessage(open) || !open.has_session_open() || open.session_open().kind() != wire::DESKTOP || !open.channel_id().empty()) {
             throw std::invalid_argument("Invalid desktop session grant");
         }
@@ -40,6 +43,9 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
             outgoing[slot] = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{sessionId, grant.channel_id(), grant.purpose(), protocol::ChannelSource::kAgent, open.session_open().write_control()});
         }
         incoming = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{sessionId, channelIds[0], wire::DESKTOP_INPUT, protocol::ChannelSource::kBrowser, open.session_open().write_control()});
+    }
+    std::uint32_t serverOptimizationContract() const {
+        return ready ? DesktopOptimizationGate::serverContract(serverOptimizationContracts[0], serverOptimizationContracts[1]) : 0;
     }
     void cancel() {
         cancelled = true;
@@ -83,6 +89,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
             if (!message || !message->has_channel_ready() || message->session_id() != sessionId || message->channel_id() != channelIds[slot] || message->channel_ready().purpose() != purpose) {
                 throw std::runtime_error("Invalid desktop channel readiness");
             }
+            serverOptimizationContracts[slot] = message->channel_ready().desktop_optimization_contract();
         } catch (...) {
             cancel();
             throw;
@@ -106,13 +113,20 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
                 throw std::runtime_error("Desktop pairing cancelled");
             }
             self->ready = true;
+            // Input cleanup ACKs remain independent of writable/frame binding.
+            // Video starts with allow0 even when both Server gates are 2:
+            // Config2 must advertise support without activating v2 early.
+            const auto contract = self->serverOptimizationContract();
+            self->outgoing[0]->setOptimizationContract(contract);
+            self->outgoing[1]->setOptimizationContract(0);
+            self->incoming->setOptimizationContract(contract);
             self->deadline.cancel();
         } catch (...) {
             self->cancel();
             throw;
         }
     }
-    static asio::awaitable<void> sendOwned(std::shared_ptr<State> self, std::size_t slot, wire::Envelope message) {
+    static asio::awaitable<std::chrono::microseconds> sendOwned(std::shared_ptr<State> self, std::size_t slot, wire::Envelope message, std::uint32_t allowedOptimizationContract = 0) {
         try {
             if (!self->ready || self->sequences[slot] == std::numeric_limits<std::uint64_t>::max()) {
                 throw std::runtime_error("Desktop channel is not writable");
@@ -121,6 +135,14 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
             message.set_session_id(self->sessionId);
             message.set_channel_id(self->channelIds[slot]);
             message.set_sequence(++self->sequences[slot]);
+            if (slot == 1 && message.has_video_config()) {
+                // This snapshot travelled with the queue entry. Do not replace
+                // it with newer capabilities received while that entry waited.
+                if (allowedOptimizationContract == 2 && !self->browserRequestedV2) {
+                    throw std::runtime_error("Desktop v2 configuration preceded browser negotiation");
+                }
+                self->outgoing[1]->setOptimizationContract(self->serverOptimizationContract() == 2 ? allowedOptimizationContract : 0);
+            }
             if (!self->outgoing[slot]->accept(message)) {
                 throw std::runtime_error("Invalid outgoing desktop message");
             }
@@ -134,8 +156,11 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
                     state->cancel();
                 }
             });
+            const auto started = std::chrono::steady_clock::now();
             co_await self->sockets[slot]->send(std::move(*encoded));
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started);
             self->writeDeadlines[slot]->cancel();
+            co_return elapsed;
         } catch (...) {
             self->cancel();
             throw;
@@ -150,6 +175,9 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
             auto message = protocol::decodeMessage(bytes);
             if (!message || !self->incoming->accept(*message)) {
                 throw std::runtime_error("Invalid incoming desktop input");
+            }
+            if (message->has_desktop_video_capabilities() && message->desktop_video_capabilities().desktop_optimization_contract() == 2) {
+                self->browserRequestedV2 = true;
             }
             co_return std::move(*message);
         } catch (...) {
@@ -170,13 +198,14 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
         }
     }
 };
-DesktopTransport::DesktopTransport(ruvia::EventLoop loop, ConnectionConfig config, wire::Envelope sessionOpen)
+DesktopTransport::DesktopTransport(ruvia::execution_handle loop, ConnectionConfig config, wire::Envelope sessionOpen)
     : state_(std::make_shared<State>(std::move(loop), std::move(config), sessionOpen)) {}
 DesktopTransport::~DesktopTransport() { state_->cancel(); }
 asio::awaitable<void> DesktopTransport::connect(std::string credential) { return State::connectOwned(state_, std::move(credential)); }
-asio::awaitable<void> DesktopTransport::sendVideo(wire::Envelope message) { return State::sendOwned(state_, 1, std::move(message)); }
-asio::awaitable<void> DesktopTransport::sendCursor(wire::Envelope message) { return State::sendOwned(state_, 0, std::move(message)); }
+asio::awaitable<std::chrono::microseconds> DesktopTransport::sendVideo(wire::Envelope message, std::uint32_t allowedOptimizationContract) { return State::sendOwned(state_, 1, std::move(message), allowedOptimizationContract); }
+asio::awaitable<void> DesktopTransport::sendCursor(wire::Envelope message) { (void)co_await State::sendOwned(state_, 0, std::move(message)); }
 asio::awaitable<wire::Envelope> DesktopTransport::receiveInput() { return State::receiveOwned(state_); }
 asio::awaitable<void> DesktopTransport::watchVideo() { return State::watchOwned(state_); }
+std::uint32_t DesktopTransport::serverOptimizationContract() const { return state_->serverOptimizationContract(); }
 void DesktopTransport::cancel() { state_->cancel(); }
 } // namespace ultraterimal::agent

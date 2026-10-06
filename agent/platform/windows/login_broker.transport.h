@@ -5,8 +5,8 @@
 #include <filesystem>
 #include <memory>
 
-#include <ruvia/core/BlockingPool.h>
-#include <ruvia/core/EventLoop.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/execution_handle.h>
 
 namespace ultraterimal::agent {
 // Own one login attempt for an already paired writable desktop connection.
@@ -14,7 +14,7 @@ namespace ultraterimal::agent {
 // run() belong to the session's event loop; join run() before destroying its pool.
 class WindowsLoginBroker {
   public:
-    static std::unique_ptr<WindowsLoginBroker> create(ruvia::EventLoop loop, ruvia::BlockingPool& pool,
+    static std::unique_ptr<WindowsLoginBroker> create(ruvia::execution_handle loop, ruvia::blocking_pool& pool,
                                                       std::filesystem::path credentialFile, std::uint32_t session) noexcept;
     ~WindowsLoginBroker();
     asio::awaitable<void> run();

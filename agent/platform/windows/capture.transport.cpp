@@ -1,6 +1,7 @@
 #include "capture.transport.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <limits>
 #include <span>
@@ -24,6 +25,15 @@ namespace ultraterimal::agent {
 namespace {
 using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
+std::atomic<std::uint64_t> nextCaptureEpoch{1};
+std::uint32_t microseconds(Clock::time_point start, Clock::time_point end) {
+    return static_cast<std::uint32_t>(std::clamp<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count(), 0, 60000000));
+}
+bool sameSource(DesktopReadbackTag left, DesktopReadbackTag right) {
+    left.generation = right.generation = 0;
+    left.composedBase = right.composedBase = 0;
+    return left == right;
+}
 double milliseconds(Clock::time_point start, Clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - start).count();
 }
@@ -79,6 +89,7 @@ struct DesktopCapture::State {
     ComPtr<ID3D11Texture2D> staging;
     ComPtr<ID3D11Texture2D> latest;
     std::unique_ptr<DesktopTextureRegions> textureRegions;
+    std::unique_ptr<DesktopTextureRegions> synchronousRegions;
     std::optional<CapturedFrame> deferred;
     DXGI_OUTDUPL_DESC description{};
     DXGI_OUTDUPL_POINTER_SHAPE_INFO pointerInfo{};
@@ -87,11 +98,29 @@ struct DesktopCapture::State {
     RECT bounds{};
     std::wstring displayName;
     std::uint64_t desktopGeneration = 0;
+    const std::uint64_t captureEpoch = nextCaptureEpoch.fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t sourceSerial = 0;
+    DesktopReadbackTag retainedTag;
+    std::optional<DesktopReadbackTag> pendingTag;
     bool pixelsCaptured = false;
     std::uint32_t lastPixelsWidth = 0, lastPixelsHeight = 0;
     std::vector<DXGI_OUTDUPL_MOVE_RECT> moved;
     std::vector<RECT> dirty, regions;
     bool partialDamage = false;
+    std::uint64_t inputDesktopGeneration() {
+        try {
+            const auto generation = requireInputDesktop();
+            if (generation != desktopGeneration && textureRegions) {
+                textureRegions->invalidateBaseline();
+            }
+            return generation;
+        } catch (...) {
+            if (textureRegions) {
+                textureRegions->invalidateBaseline();
+            }
+            throw;
+        }
+    }
     bool changedRegions(const DXGI_OUTDUPL_FRAME_INFO& info, CapturedFrame& frame, CaptureTiming* timing) {
         partialDamage = false;
         constexpr UINT maximumMetadata = 1024 * 1024;
@@ -161,7 +190,12 @@ struct DesktopCapture::State {
         return partialDamage;
     }
     void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing, const std::vector<RECT>* changed = nullptr) {
-        if (!staging) {
+        D3D11_TEXTURE2D_DESC previous{};
+        if (staging) {
+            staging->GetDesc(&previous);
+        }
+        if (!staging || previous.Width != textureDescription.Width || previous.Height != textureDescription.Height) {
+            staging.Reset();
             auto stagingDescription = textureDescription;
             stagingDescription.BindFlags = 0;
             stagingDescription.MiscFlags = 0;
@@ -183,14 +217,18 @@ struct DesktopCapture::State {
         D3D11_MAPPED_SUBRESOURCE mapped{};
         require(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
         const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+        Clock::time_point rowsEnded;
         {
             MappedTexture mapping{context.Get(), staging.Get()};
             copyCapturePixels(frame.bgra, frame.width, frame.height, mapped.pData, mapped.RowPitch, changed ? std::span<const RECT>(*changed) : std::span<const RECT>{});
+            rowsEnded = timing ? Clock::now() : Clock::time_point{};
         }
         if (timing) {
             timing->copyDispatchMilliseconds = milliseconds(copyStarted, mapStarted);
             timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
-            timing->rowCopyMilliseconds = milliseconds(rowsStarted, Clock::now());
+            timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+            timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+            timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
             if (timing->verifyWithStaging) {
                 timing->matchedStaging = true;
                 if (changed) {
@@ -236,16 +274,20 @@ struct DesktopCapture::State {
             const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
             require(duplication->MapDesktopSurface(&mapped), "Map desktop surface");
             const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+            Clock::time_point rowsEnded;
             {
                 MappedDesktop mapping{duplication.Get()};
                 if (mapped.Pitch < 0) {
                     throw std::runtime_error("Invalid desktop row pitch");
                 }
                 copyCapturePixels(frame.bgra, frame.width, frame.height, mapped.pBits, static_cast<std::size_t>(mapped.Pitch), changed ? std::span<const RECT>(*changed) : std::span<const RECT>{});
+                rowsEnded = timing ? Clock::now() : Clock::time_point{};
             }
             if (timing) {
                 timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
-                timing->rowCopyMilliseconds = milliseconds(rowsStarted, Clock::now());
+                timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+                timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+                timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
                 if (timing->verifyWithStaging) {
                     CapturedFrame reference;
                     reference.width = frame.width;
@@ -380,17 +422,112 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
 }
 ID3D11Device* DesktopCapture::device() const { return state_->device.Get(); }
 ID3D11Texture2D* DesktopCapture::texture() const { return state_->latest.Get(); }
-void DesktopCapture::readTexture(CapturedFrame& frame) {
+std::expected<DesktopReadbackSubmit, HRESULT> DesktopCapture::submitTextureRegions(const DesktopReadbackTag& tag, std::span<const DesktopReadbackRegion> regions) {
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    if (state_->pendingTag) {
+        return DesktopReadbackSubmit::kBusy;
+    }
+    if (!state_->latest) {
+        return DesktopReadbackSubmit::kUnavailable;
+    }
+    if (tag.sourceSerial != state_->sourceSerial || !sameSource(tag, state_->retainedTag)) {
+        return std::unexpected(E_INVALIDARG);
+    }
+    if (!state_->textureRegions) {
+        state_->textureRegions = std::make_unique<DesktopTextureRegions>(state_->device.Get());
+    }
+    auto submitted = state_->textureRegions->submit(state_->latest.Get(), tag, regions);
+    if (submitted && *submitted == DesktopReadbackSubmit::kSubmitted) {
+        state_->pendingTag = tag;
+    }
+    return submitted;
+}
+std::expected<DesktopReadbackCompletion, HRESULT> DesktopCapture::tryCompleteTextureRegions(const DesktopReadbackTag& expected) {
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    if (!state_->textureRegions || !state_->pendingTag) {
+        return DesktopReadbackCompletion{};
+    }
+    if (expected != *state_->pendingTag || expected.sourceSerial != state_->sourceSerial || !sameSource(expected, state_->retainedTag)) {
+        state_->textureRegions->retire();
+    }
+    auto completed = state_->textureRegions->tryComplete();
+    if (completed && completed->status != DesktopReadbackStatus::kPending) {
+        state_->pendingTag.reset();
+    }
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    return completed;
+}
+void DesktopCapture::retireTextureRegions() {
+    if (state_->textureRegions) {
+        state_->textureRegions->retire();
+    }
+}
+std::expected<DesktopTextureBaselineResult, HRESULT> DesktopCapture::rememberTextureBaseline(const DesktopReadbackTag& tag) {
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    if (!state_->latest || tag.sourceSerial != state_->sourceSerial || !sameSource(tag, state_->retainedTag)) {
+        return DesktopTextureBaselineResult{};
+    }
+    if (!state_->textureRegions) {
+        state_->textureRegions = std::make_unique<DesktopTextureRegions>(state_->device.Get());
+    }
+    auto result = state_->textureRegions->rememberBaseline(state_->latest.Get(), tag);
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    return result;
+}
+std::expected<DesktopReadbackSubmit, HRESULT> DesktopCapture::submitTextureComparison(const DesktopReadbackTag& currentTag, const DesktopReadbackTag& expectedBaselineTag, std::span<const DesktopReadbackRegion> regions) {
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    if (state_->pendingTag) {
+        return DesktopReadbackSubmit::kBusy;
+    }
+    if (!state_->latest || currentTag.sourceSerial != state_->sourceSerial || !sameSource(currentTag, state_->retainedTag) || !state_->textureRegions) {
+        return DesktopReadbackSubmit::kUnavailable;
+    }
+    auto submitted = state_->textureRegions->submitComparison(state_->latest.Get(), currentTag, expectedBaselineTag, regions);
+    if (submitted && *submitted == DesktopReadbackSubmit::kSubmitted) {
+        state_->pendingTag = currentTag;
+    }
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
+        throw CaptureReset();
+    }
+    return submitted;
+}
+void DesktopCapture::clearTextureBaseline() {
+    if (state_->textureRegions) {
+        state_->textureRegions->invalidateBaseline();
+    }
+}
+void DesktopCapture::readTexture(CapturedFrame& frame, CaptureTiming* timing) {
     if (!state_->latest || requireInputDesktop() != state_->desktopGeneration) {
         throw CaptureReset();
     }
     D3D11_TEXTURE2D_DESC description{};
     state_->latest->GetDesc(&description);
-    if (description.Width != frame.width || description.Height != frame.height) {
+    if (description.Width != frame.width || description.Height != frame.height ||
+        frame.sourceSerial != state_->sourceSerial || !sameSource(frame.readbackTag(0, 0), state_->retainedTag)) {
         throw CaptureReset();
     }
     frame.bgra.resize(static_cast<std::size_t>(frame.width) * frame.height * 4);
-    state_->copyStagingPixels(state_->latest, description, frame, nullptr);
+    CaptureTiming localTiming;
+    if (!timing) {
+        timing = &localTiming;
+    }
+    timing->stages.mapMicroseconds.reset();
+    timing->stages.rowCopyMicroseconds.reset();
+    state_->copyStagingPixels(state_->latest, description, frame, timing);
+    frame.stageTiming.mapMicroseconds = timing->stages.mapMicroseconds;
+    frame.stageTiming.rowCopyMicroseconds = timing->stages.rowCopyMicroseconds;
     state_->deferred.reset();
     state_->pixelsCaptured = true;
     state_->lastPixelsWidth = frame.width;
@@ -399,20 +536,26 @@ void DesktopCapture::readTexture(CapturedFrame& frame) {
         throw CaptureReset();
     }
 }
-std::uint64_t DesktopCapture::readTextureRegions(CapturedFrame& frame, std::span<const wire::Rectangle> regions) {
+std::uint64_t DesktopCapture::readTextureRegions(CapturedFrame& frame, std::span<const wire::Rectangle> regions, CaptureTiming* timing) {
     if (!state_->latest || requireInputDesktop() != state_->desktopGeneration) {
         throw CaptureReset();
     }
     D3D11_TEXTURE2D_DESC description{};
     state_->latest->GetDesc(&description);
-    if (description.Width != frame.width || description.Height != frame.height) {
+    if (description.Width != frame.width || description.Height != frame.height ||
+        frame.sourceSerial != state_->sourceSerial || !sameSource(frame.readbackTag(0, 0), state_->retainedTag)) {
         throw CaptureReset();
     }
-    if (!state_->textureRegions) {
-        state_->textureRegions = std::make_unique<DesktopTextureRegions>(state_->device.Get());
+    if (!state_->synchronousRegions) {
+        state_->synchronousRegions = std::make_unique<DesktopTextureRegions>(state_->device.Get());
     }
     frame.bgra.resize(static_cast<std::size_t>(frame.width) * frame.height * 4);
-    auto copied = state_->textureRegions->read(state_->latest.Get(), regions, frame.bgra);
+    DesktopReadbackTiming measured;
+    auto copied = state_->synchronousRegions->read(state_->latest.Get(), regions, frame.bgra, timing ? &measured : nullptr);
+    if (timing) {
+        timing->stages.mapMicroseconds = measured.mapMicroseconds;
+        timing->stages.rowCopyMicroseconds = measured.rowCopyMicroseconds;
+    }
     if (!copied) {
         require(copied.error(), "Read desktop texture regions");
     }
@@ -456,8 +599,12 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     if (timeout.count() < 0 || timeout.count() > 5000) {
         throw std::invalid_argument("Capture wait must be between 0 and 5000 milliseconds");
     }
-    if (requireInputDesktop() != state_->desktopGeneration) {
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
         throw CaptureReset();
+    }
+    CaptureTiming localTiming;
+    if (!timing) {
+        timing = &localTiming;
     }
     DXGI_OUTDUPL_FRAME_INFO info{};
     ComPtr<IDXGIResource> resource;
@@ -472,7 +619,9 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     const auto acquireStarted = timing ? Clock::now() : Clock::time_point{};
     const auto result = state_->duplication->AcquireNextFrame(static_cast<UINT>(timeout.count()), &info, &resource);
     if (timing) {
-        timing->acquireMilliseconds = milliseconds(acquireStarted, Clock::now());
+        const auto acquireEnded = Clock::now();
+        timing->acquireMilliseconds = milliseconds(acquireStarted, acquireEnded);
+        timing->stages.acquireWaitMicroseconds = microseconds(acquireStarted, acquireEnded);
     }
     if (result == DXGI_ERROR_WAIT_TIMEOUT) {
         if (readPixels && state_->deferred) {
@@ -488,12 +637,16 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
             state_->pixelsCaptured = true;
             state_->lastPixelsWidth = frame.width;
             state_->lastPixelsHeight = frame.height;
-            if (requireInputDesktop() != state_->desktopGeneration) {
+            if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
                 throw CaptureReset();
             }
+            frame.stageTiming = timing->stages;
             return frame;
         }
         return std::nullopt;
+    }
+    if (FAILED(result)) {
+        clearTextureBaseline();
     }
     require(result, "AcquireNextFrame (recreate capture after access loss)");
     AcquiredFrame acquired{state_->duplication.Get()};
@@ -516,10 +669,25 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     // synchronization and a full-frame allocation/copy for those updates.
     const bool desktopUpdated = (!state_->pixelsCaptured && !state_->deferred) || info.LastPresentTime.QuadPart != 0;
     if (desktopUpdated) {
+        if (state_->sourceSerial == std::numeric_limits<std::uint64_t>::max()) {
+            clearTextureBaseline();
+            throw CaptureReset();
+        }
+        ++state_->sourceSerial;
+        retireTextureRegions();
         state_->changedRegions(info, frame, timing);
     }
+    frame.captureEpoch = state_->captureEpoch;
+    frame.sourceSerial = state_->sourceSerial;
     if ((!readPixels || retainTexture) && desktopUpdated) {
-        if (!state_->latest) {
+        D3D11_TEXTURE2D_DESC previous{};
+        if (state_->latest) {
+            state_->latest->GetDesc(&previous);
+        }
+        if (!state_->latest || previous.Width != description.Width || previous.Height != description.Height) {
+            clearTextureBaseline();
+            state_->latest.Reset();
+            state_->staging.Reset();
             auto latestDescription = description;
             latestDescription.Usage = D3D11_USAGE_DEFAULT;
             latestDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -528,6 +696,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
             require(state_->device->CreateTexture2D(&latestDescription, nullptr, &state_->latest), "Create latest desktop texture");
         }
         state_->context->CopyResource(state_->latest.Get(), source.Get());
+        state_->retainedTag = frame.readbackTag(0, 0);
     }
     if (readPixels && (desktopUpdated || state_->deferred)) {
         if (state_->deferred && !frame.captureTicks) {
@@ -574,9 +743,10 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         state_->deferred->captureTicks = present;
     }
     // Do not publish pixels from a desktop that changed during acquisition.
-    if (requireInputDesktop() != state_->desktopGeneration) {
+    if (state_->inputDesktopGeneration() != state_->desktopGeneration) {
         throw CaptureReset();
     }
+    frame.stageTiming = timing->stages;
     return frame;
 }
 } // namespace ultraterimal::agent

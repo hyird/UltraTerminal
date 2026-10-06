@@ -10,8 +10,8 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/AsioTask.h>
-#include <ruvia/core/BlockingPool.h>
+#include <ruvia/core/asio_task.h>
+#include <ruvia/core/blocking_pool.h>
 
 #include "bridge.runtime.h"
 #include "desktop.transport.h"
@@ -33,8 +33,8 @@ struct Resources {
 bool validSession(std::uint32_t session) { return session && session != 0xffffffff; }
 } // namespace
 struct DesktopSession::State : std::enable_shared_from_this<State> {
-    ruvia::EventLoop loop;
-    ruvia::BlockingPool systemPool{{.threadCount = 1, .queueCapacity = 2}};
+    ruvia::execution_handle loop;
+    ruvia::blocking_pool systemPool{{.thread_count_ = 1, .queue_capacity_ = 2}};
     DesktopTransport remote;
     DesktopRelay relay;
     asio::steady_timer grace, transition;
@@ -51,7 +51,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     DesktopHandoffBudget handoffs;
     std::exception_ptr bridgeFailure;
 
-    State(ruvia::EventLoop owner, ConnectionConfig config, wire::Envelope grant,
+    State(ruvia::execution_handle owner, ConnectionConfig config, wire::Envelope grant,
           std::filesystem::path path, std::uint32_t selected, ConsoleSessionEvents* events)
         : loop(owner), remote(owner, config, grant), relay(owner, remote), grace(owner.executor()), transition(owner.executor()),
           executable(std::move(path)), loginCredential(config.credentialFile.parent_path() / "windows_login.credential"), session(grant.session_id()), binding(selected),
@@ -235,15 +235,15 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                 bridgeFailure = {};
                 const char* stage = "worker_launch";
                 try {
-                    auto launch = ruvia::runBlocking(systemPool, loop.handle(),
-                                                     [executor = loop.executor(), selected = binding.session(), path = executable] {
-                                                         DesktopIdentity user(selected);
-                                                         Resources resources;
-                                                         resources.pipe = std::make_unique<NamedPipeTransport>(executor, user.pipeSid());
-                                                         resources.child = std::make_unique<DesktopProcess>(executor, user, path, resources.pipe->name());
-                                                         return resources;
-                                                     });
-                    resources = co_await ruvia::asAwaitable(std::move(launch));
+                    auto launch = ruvia::run_blocking(systemPool, loop,
+                                                      [executor = loop.executor(), selected = binding.session(), path = executable] {
+                                                          DesktopIdentity user(selected);
+                                                          Resources resources;
+                                                          resources.pipe = std::make_unique<NamedPipeTransport>(executor, user.pipeSid());
+                                                          resources.child = std::make_unique<DesktopProcess>(executor, user, path, resources.pipe->name());
+                                                          return resources;
+                                                      });
+                    resources = (co_await ruvia::as_awaitable(std::move(launch))).value();
                     result.processId = resources.child->id();
                     if (ended || binding.changed(currentDesktopSession())) {
                         throw std::runtime_error("Console changed during worker launch");
@@ -342,7 +342,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
         co_return std::move(self->result);
     }
 };
-DesktopSession::DesktopSession(ruvia::EventLoop loop, ConnectionConfig config, wire::Envelope grant,
+DesktopSession::DesktopSession(ruvia::execution_handle loop, ConnectionConfig config, wire::Envelope grant,
                                std::filesystem::path executable, std::uint32_t windowsSession, ConsoleSessionEvents* consoleEvents)
     : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(grant), std::move(executable), windowsSession, consoleEvents)) {}
 DesktopSession::~DesktopSession() { stop(); }

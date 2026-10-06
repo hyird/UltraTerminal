@@ -5,7 +5,7 @@
 #include <mutex>
 #include <stdexcept>
 
-#include <ruvia/web/App.h>
+#include <ruvia/web/application.h>
 
 #include "modules/sessions/session.service.h"
 
@@ -33,7 +33,7 @@ void GatewayRuntime::start() {
             }
         }
     });
-    if (status != ruvia::BlockingSubmitStatus::kAccepted) {
+    if (status != ruvia::blocking_submit_status::accepted) {
         throw std::runtime_error("Cannot watch gateway database lease");
     }
 }

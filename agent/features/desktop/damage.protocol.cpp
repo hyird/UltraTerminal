@@ -150,6 +150,36 @@ void DesktopDamage::filterTiles(std::span<const std::uint32_t> changed) {
         }
     }
 }
+bool DesktopDamage::filterComparedTiles(std::span<const DesktopDamageComparisonTile> compared) {
+    if (!known_ || !updates_) {
+        return false;
+    }
+    const auto expected = detailCandidates();
+    if (expected.empty() || compared.size() != expected.size()) {
+        return false;
+    }
+    std::vector<bool> seen(dirty_.size(), false);
+    std::vector<std::uint32_t> changed(dirty_.size(), 0);
+    for (const auto& tile : compared) {
+        const auto match = std::lower_bound(expected.begin(), expected.end(), tile, [](const auto& candidate, const auto& value) {
+            return candidate.y < value.y || (candidate.y == value.y && candidate.x < value.x);
+        });
+        if (tile.changed > 1 || match == expected.end() || tile.x != match->x || tile.y != match->y || tile.width != match->width || tile.height != match->height) {
+            return false;
+        }
+        const auto index = static_cast<std::size_t>(tile.y / 64) * columns_ + tile.x / 128;
+        if (seen[index]) {
+            return false;
+        }
+        seen[index] = true;
+        changed[index] = tile.changed;
+    }
+    // Equal counts, exact geometry and unique membership prove full coverage.
+    // Only now may absent (noncandidate) tiles be treated as unchanged. Never
+    // use this sparse proof to restore unknown damage as the full-image API can.
+    filterTiles(changed);
+    return true;
+}
 bool DesktopDamage::unchanged() const {
     return known_ && updates_ && copies_.empty() &&
            std::ranges::none_of(dirty_, [](bool value) { return value; }) &&
@@ -191,6 +221,21 @@ std::vector<wire::Rectangle> DesktopDamage::patches() const {
             area.set_width(std::min(128u, width_ - area.x()));
             area.set_height(std::min(64u, height_ - area.y()));
         }
+    }
+    return result;
+}
+std::vector<DesktopDetailTile> DesktopDamage::detailCandidates() const {
+    std::vector<DesktopDetailTile> result;
+    if (!known_ || !updates_) {
+        return result;
+    }
+    for (std::size_t index = 0; index < dirty_.size(); ++index) {
+        if (!dirty_[index] && !moved_[index]) {
+            continue;
+        }
+        const auto x = static_cast<std::uint32_t>(index % columns_) * 128;
+        const auto y = static_cast<std::uint32_t>(index / columns_) * 64;
+        result.push_back({x, y, std::min(128u, width_ - x), std::min(64u, height_ - y)});
     }
     return result;
 }

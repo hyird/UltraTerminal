@@ -1,32 +1,58 @@
 #include "image_encoder.transport.h"
 
+#include <array>
 #include <wincodec.h>
 
 #include <wrl/client.h>
 
 namespace ultraterimal::agent {
-std::expected<std::string, HRESULT> encodeDetailPng(std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height) {
+struct DesktopPngEncoder::State {
+    HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    HRESULT status = initialized;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    State() {
+        if (SUCCEEDED(status)) {
+            status = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+        }
+    }
+    ~State() {
+        factory.Reset();
+        if (SUCCEEDED(initialized)) {
+            CoUninitialize();
+        }
+    }
+};
+DesktopPngEncoder::DesktopPngEncoder() : state_(std::make_unique<State>()) {
+    if (SUCCEEDED(state_->status)) {
+        // WIC defers codec initialization until the first write and commit.
+        // Complete it once with private pixels before optional work is admitted.
+        const std::array<std::uint8_t, 128 * 64 * 4> pixels{};
+        const auto initialized = encodeDetailPng(*this, pixels, 128, 64);
+        if (!initialized) {
+            state_->status = initialized.error();
+        }
+    }
+}
+DesktopPngEncoder::~DesktopPngEncoder() = default;
+
+std::expected<std::string, HRESULT> encodeDetailPng(DesktopPngEncoder& pngEncoder, std::span<const std::uint8_t> bgra, std::uint32_t width, std::uint32_t height) {
     using Microsoft::WRL::ComPtr;
     if (!width || !height || width > 128 || height > 64 || bgra.size() != static_cast<std::size_t>(width) * height * 4) {
         return std::unexpected(E_INVALIDARG);
     }
-    const auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(initialized)) {
-        return std::unexpected(initialized);
+    auto& resources = *pngEncoder.state_;
+    if (FAILED(resources.status)) {
+        return std::unexpected(resources.status);
     }
-    struct Apartment {
-        ~Apartment() { CoUninitialize(); }
-    } apartment;
-    ComPtr<IWICImagingFactory> factory;
     ComPtr<IWICBitmapEncoder> encoder;
     ComPtr<IWICBitmapFrameEncode> frame;
     ComPtr<IStream> stream;
-    auto status = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+    auto status = S_OK;
     if (SUCCEEDED(status)) {
         status = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
     }
     if (SUCCEEDED(status)) {
-        status = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        status = resources.factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
     }
     if (SUCCEEDED(status)) {
         status = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);

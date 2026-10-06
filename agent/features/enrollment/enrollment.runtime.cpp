@@ -8,7 +8,7 @@
 #include "platform/windows/credential.transport.h"
 
 namespace ultraterimal::agent {
-asio::awaitable<ConnectionConfig> enrollDevice(ruvia::EventLoop loop, ConnectionConfig config, std::string input) {
+asio::awaitable<ConnectionConfig> enrollDevice(ruvia::execution_handle loop, ConnectionConfig config, std::string input) {
     if (input.size() > 4096 || !config.deviceId.empty()) {
         throw std::runtime_error("Invalid enrollment input");
     }

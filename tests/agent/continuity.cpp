@@ -4,6 +4,8 @@
 
 #include "features/desktop/continuity.protocol.h"
 #include "features/desktop/handoff.runtime.h"
+#include "features/desktop/optimization.runtime.h"
+#include "ultraterimal/protocol/desktop_ipc.protocol.h"
 
 namespace {
 using namespace ultraterimal;
@@ -36,9 +38,172 @@ wire::Envelope key(std::uint64_t generation) {
     message.mutable_input_event()->set_kind(wire::InputEvent::KEY);
     return message;
 }
+// Exercise the actual protocol validators at all L-owned chain boundaries.
+// Config2 support is deliberately unchanged; permission is a separate snapshot.
+class NegotiationLink {
+  public:
+    explicit NegotiationLink(std::uint32_t inputServer, std::uint32_t videoServer)
+        : server_(agent::DesktopOptimizationGate::serverContract(inputServer, videoServer)),
+          worker_(server_), bridge_(server_),
+          workerOutput_({"negotiation", 1, false, protocol::DesktopPipeSource::kDesktop}),
+          bridgeInput_({"negotiation", 1, false, protocol::DesktopPipeSource::kDesktop}),
+          bridgeOutput_({"negotiation", 1, false, protocol::DesktopPipeSource::kService}),
+          workerInput_({"negotiation", 1, false, protocol::DesktopPipeSource::kService}),
+          nativeVideo_({"negotiation", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false}),
+          browserVideo_({"negotiation", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false}),
+          nativeInput_({"negotiation", "input", wire::DESKTOP_INPUT, protocol::ChannelSource::kBrowser, false}) {
+        auto ready = packet(1, "");
+        ready.mutable_desktop_ready();
+        require(workerOutput_.accept(ready).has_value() && bridgeInput_.accept(ready).has_value(), "IPC readiness rejected");
+        auto start = packet(1, "");
+        start.mutable_desktop_start()->set_windows_session_id(1);
+        start.mutable_desktop_start()->set_desktop_optimization_contract(server_);
+        require(bridgeOutput_.accept(start).has_value() && workerInput_.accept(start).has_value(), "IPC start rejected");
+    }
+    void request(std::uint32_t version) {
+        auto caps = packet(++inputSequence_, "input");
+        caps.mutable_desktop_video_capabilities()->add_codecs(wire::AVC);
+        caps.mutable_desktop_video_capabilities()->set_desktop_optimization_contract(version);
+        require(nativeInput_.accept(caps).has_value() && bridgeOutput_.accept(caps).has_value() && workerInput_.accept(caps).has_value(), "Browser capabilities did not reach both IPC validators");
+        bridge_.request(version);
+        worker_.request(version);
+        bridgeInput_.setOptimizationContract(bridge_.allowedContract());
+        bridgeOutput_.setOptimizationContract(bridge_.allowedContract());
+        workerOutput_.setOptimizationContract(worker_.allowedContract());
+        workerInput_.setOptimizationContract(worker_.allowedContract());
+    }
+    void configure(std::uint64_t generation, std::uint32_t declaration = 2) {
+        auto message = packet(++videoSequence_, "video");
+        message.set_generation(generation);
+        auto* config = message.mutable_video_config();
+        config->set_codec("avc1.42E01F");
+        config->set_width(256);
+        config->set_height(128);
+        config->set_desktop_optimization_contract(declaration);
+        require(workerOutput_.accept(message).has_value() && bridgeInput_.accept(message).has_value(), "IPC capability declaration rejected");
+        worker_.configure(*config);
+        bridge_.configure(*config);
+        // Relay captures this value with the queue entry; native validation
+        // cannot substitute a newer request for the queued barrier's snapshot.
+        nativeVideo_.setOptimizationContract(bridge_.activeContract());
+        browserVideo_.setOptimizationContract(bridge_.activeContract());
+        require(nativeVideo_.accept(message).has_value() && browserVideo_.accept(message).has_value(), "Native/browser capability declaration rejected");
+        require(worker_.activeContract() == bridge_.activeContract(), "IPC activation diverged");
+        generation_ = generation;
+        frame_ = batch_ = 0;
+        frame();
+    }
+    void frame() {
+        auto message = packet(++videoSequence_, "video");
+        message.set_generation(generation_);
+        message.set_frame_id(++frame_);
+        auto* body = message.mutable_video_frame();
+        body->set_data("key");
+        body->set_key_frame(true);
+        body->set_timestamp_microseconds(frame_ * 1000);
+        require(acceptVideo(message), "Video progress failed across negotiation");
+    }
+    void detail(bool v2, bool accepted) {
+        auto message = packet(videoSequence_ + 1, "video");
+        message.set_generation(generation_);
+        message.set_frame_id(frame_);
+        message.set_base_frame_id(frame_);
+        auto* body = message.mutable_video_refinement();
+        body->set_batch_id(v2 ? batch_ + 1 : 0);
+        body->set_kind(v2 ? wire::STATIC_DETAIL : wire::UNSPECIFIED);
+        auto* patch = body->add_patches();
+        patch->mutable_destination()->set_width(128);
+        patch->mutable_destination()->set_height(64);
+        std::string png(33, '\0');
+        png.replace(0, 8, "\211PNG\r\n\032\n", 8);
+        png[11] = 13;
+        png.replace(12, 4, "IHDR");
+        png[19] = static_cast<char>(128);
+        png[23] = 64;
+        patch->set_png(png); // Validator-only fixture, not a decoder test.
+        require(workerOutput_.accept(message).has_value() == accepted, "Worker IPC activated incorrectly");
+        require(bridgeInput_.accept(message).has_value() == accepted, "Bridge IPC activated incorrectly");
+        require(nativeVideo_.accept(message).has_value() == accepted, "Native video activated incorrectly");
+        require(browserVideo_.accept(message).has_value() == accepted, "Browser video activated incorrectly");
+        if (accepted) {
+            ++videoSequence_;
+            if (v2) {
+                ++batch_;
+            }
+        }
+    }
+    bool active() const { return worker_.activeContract() == 2; }
+
+  private:
+    static wire::Envelope packet(std::uint64_t sequence, const char* channel) {
+        wire::Envelope message;
+        message.set_protocol_version(protocol::kVersion);
+        message.set_session_id("negotiation");
+        message.set_channel_id(channel);
+        message.set_sequence(sequence);
+        return message;
+    }
+    bool acceptVideo(const wire::Envelope& message) {
+        return workerOutput_.accept(message).has_value() && bridgeInput_.accept(message).has_value() && nativeVideo_.accept(message).has_value() && browserVideo_.accept(message).has_value();
+    }
+    std::uint32_t server_;
+    agent::DesktopOptimizationGate worker_, bridge_;
+    protocol::DesktopPipeValidator workerOutput_, bridgeInput_, bridgeOutput_, workerInput_;
+    protocol::DesktopChannelValidator nativeVideo_, browserVideo_, nativeInput_;
+    std::uint64_t inputSequence_ = 1, videoSequence_ = 1, generation_ = 0, frame_ = 0, batch_ = 0;
+};
+void negotiation() {
+    NegotiationLink link(2, 2);
+    link.configure(1); // FIRST Config2: no Browser request yet.
+    require(!link.active(), "First capability declaration activated v2");
+    link.detail(true, false);
+    link.detail(false, true);
+    for (const auto version : {0u, 1u, 3u, UINT32_MAX}) {
+        link.request(version);
+        link.frame();
+        link.detail(true, false);
+        link.detail(false, true);
+    }
+    link.request(2);
+    link.frame();
+    link.detail(true, false); // Allow2 is NOT active2 in this old generation.
+    link.detail(false, true);
+    link.configure(2);
+    require(link.active(), "Requested v2 did not activate at the next barrier");
+    link.detail(true, true);
+    link.request(99);
+    link.frame();
+    link.detail(true, true); // Revocation also waits for a NEW generation.
+    link.configure(3);
+    link.detail(true, false);
+    link.detail(false, true);
+    link.request(2);
+    link.configure(4, 99);
+    link.detail(true, false);
+    link.detail(false, true);
+    link.configure(5);
+    link.detail(true, true);
+    for (const auto input : {0u, 2u, 99u}) {
+        for (const auto video : {0u, 2u, 99u}) {
+            if (input == 2 && video == 2) {
+                continue;
+            }
+            NegotiationLink legacy(input, video);
+            legacy.configure(1);
+            legacy.detail(true, false);
+            legacy.detail(false, true);
+            legacy.request(2);
+            legacy.configure(2);
+            require(!legacy.active(), "Mixed/legacy Server channels activated v2");
+            legacy.detail(true, false);
+            legacy.detail(false, true);
+        }
+    }
+}
 } // namespace
 int main() {
     try {
+        negotiation();
         agent::DesktopContinuity stream;
         stream.beginWorker();
         auto config = configuration(1);
@@ -66,6 +231,31 @@ int main() {
         require(first.desktop_probe().accepted_response_nonce() == 1, "Browser's acknowledged nonce went backwards");
         auto newInput = key(3);
         require(!stream.incoming(newInput), "Input admitted before new binding");
+        wire::Envelope ack;
+        ack.set_generation(3);
+        ack.set_frame_id(1);
+        ack.mutable_desktop_refinement_ack()->set_batch_id(17);
+        ack.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::SUPERSEDED);
+        auto currentAck = ack;
+        require(stream.incoming(currentAck) && currentAck.generation() == 1 && currentAck.frame_id() == 1 && currentAck.desktop_refinement_ack().batch_id() == 17, "Independent refinement ACK waited for probe/frame/input barriers");
+        auto staleAck = ack;
+        staleAck.set_generation(2);
+        require(!stream.incoming(staleAck), "Old worker's refinement ACK leaked");
+        auto duplicateAck = ack;
+        require(stream.incoming(duplicateAck), "Current tuple duplicate must reach credit owner for no-op handling");
+        wire::Envelope report;
+        auto* sample = report.mutable_desktop_pipeline_report()->add_samples();
+        sample->set_generation(1);
+        sample->set_frame_id(1);
+        sample->set_batch_id(17);
+        sample->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
+        sample->set_ipc_write_microseconds(123);
+        require(stream.outgoing(report) && !report.generation() && report.desktop_pipeline_report().samples(0).generation() == 3 && report.desktop_pipeline_report().samples(0).batch_id() == 17, "Nested diagnostic generation not rebased");
+        auto futureReport = wire::Envelope{};
+        futureReport.mutable_desktop_pipeline_report()->add_samples()->set_generation(99);
+        require(!stream.outgoing(futureReport), "Diagnostic invented a future generation");
+        auto futureInput = key(101);
+        require(!stream.incoming(futureInput) && !stream.incoming(newInput), "Diagnostic advanced generation or unlocked input");
         auto displayed = feedback(3);
         require(stream.incoming(displayed) && displayed.quality_feedback().displayed_generation() == 1, "Feedback not rebased");
         require(!stream.incoming(newInput), "Video feedback bypassed input reset barrier");
@@ -80,8 +270,16 @@ int main() {
         auto resize = wire::Envelope{};
         resize.mutable_desktop_resize()->set_request_id(123);
         require(stream.incoming(resize), "Bound resize rejected");
+        auto nextConfiguration = configuration(2);
+        require(stream.outgoing(nextConfiguration) && nextConfiguration.generation() == 4, "Current worker generation advance failed");
+        auto cleanup = ack;
+        require(stream.incoming(cleanup) && cleanup.generation() == 1, "Same-worker previous-generation cleanup ACK was filtered before the credit owner");
         stream.beginWorker();
         require(!stream.incoming(resize), "Untagged old resize replayed during handoff");
+        require(!stream.incoming(ack), "Refinement ACK crossed another worker replacement");
+        auto oldReport = wire::Envelope{};
+        oldReport.mutable_desktop_pipeline_report()->add_samples()->set_generation(1);
+        require(!stream.outgoing(oldReport), "Diagnostic without new worker configuration advanced continuity");
 
         agent::DesktopContinuity overflow;
         overflow.beginWorker();

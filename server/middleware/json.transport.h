@@ -1,8 +1,8 @@
 #pragma once
 #include <boost/json.hpp>
-#include <ruvia/web/Context.h>
+#include <ruvia/web/context.h>
 namespace ultraterimal::server {
-inline ruvia::HttpResponse jsonResponse(ruvia::Context& context, const boost::json::value& value) {
+inline ruvia::http_response jsonResponse(ruvia::context& context, const boost::json::value& value) {
     context.header("Content-Type", "application/json; charset=utf-8");
     context.header("Cache-Control", "no-store");
     const auto bytes = boost::json::serialize(value);

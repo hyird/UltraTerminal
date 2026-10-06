@@ -8,18 +8,18 @@ namespace {
 bool boolean(const boost::json::object& object, std::string_view name) {
     const auto* field = object.if_contains(name);
     if (!field || !field->is_bool()) {
-        throw ruvia::HttpError({.status = ruvia::http_status::kBadRequest, .code = "invalid_field", .message = "Expected a boolean"});
+        throw ruvia::http_error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_field", .message_ = "Expected a boolean"});
     }
     return field->as_bool();
 }
 } // namespace
-ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& context) {
+ruvia::task<ruvia::http_response> SessionController::create(ruvia::context& context) const {
     const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id", "verification_code", "reconnect_session_id"});
     SessionRequest request;
     request.verificationCode = optionalText(body, "verification_code", 6);
     request.reconnectSessionId = optionalText(body, "reconnect_session_id", 128);
-    request.userId = context.requestState<UserIdentity>().id;
-    request.loginHash = context.requestState<UserIdentity>().loginHash;
+    request.userId = context.request_state<UserIdentity>().id;
+    request.loginHash = context.request_state<UserIdentity>().loginHash;
     if (body.contains("approval_id")) {
         request.approvalId = requestText(body, "approval_id", 32);
     }
@@ -31,37 +31,37 @@ ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& conte
     request.writeControl = boolean(body, "write_control");
     const auto* preempt = body.if_contains("preempt");
     if (preempt && !preempt->is_bool()) {
-        co_return context.error({.status = ruvia::http_status::kBadRequest, .code = "invalid_field", .message = "Expected a boolean"});
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_field", .message_ = "Expected a boolean"});
     }
     request.preempt = preempt && preempt->as_bool();
     if (request.kind == wire::SESSION_UNSPECIFIED) {
-        co_return context.error({.status = ruvia::http_status::kBadRequest, .code = "invalid_kind", .message = "Unsupported session kind"});
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_kind", .message_ = "Unsupported session kind"});
     }
     const auto* contract = body.if_contains("desktop_input_contract");
     if (request.kind == wire::DESKTOP && request.writeControl) {
         if (!contract || !contract->is_int64() || contract->as_int64() != 2) {
-            co_return context.error({.status = ruvia::http_status::kBadRequest, .code = "desktop_input_upgrade_required", .message = "Writable desktop requires the input generation contract"});
+            co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "desktop_input_upgrade_required", .message_ = "Writable desktop requires the input generation contract"});
         }
         request.desktopInputContract = 2;
     } else if (contract) {
-        co_return context.error({.status = ruvia::http_status::kBadRequest, .code = "invalid_field", .message = "Input contract only applies to writable desktop sessions"});
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_field", .message_ = "Input contract only applies to writable desktop sessions"});
     }
-    auto& runtime = context.workerState<ServerRuntime>();
+    auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
     const auto found = runtime.controlConnections.find(request.deviceId);
     std::shared_ptr<ControlConnection> control = found == runtime.controlConnections.end() ? nullptr : found->second;
     request.agentInputContractSupported = control && control->ready && control->capabilities.capture_available() && control->capabilities.desktop_input_contract() == 2;
     // Authorize before exposing online/capability state or dispatching to the device.
-    const auto issued = co_await context.runBlocking([service = runtime.sessions, request] { return service.create(request); });
+    const auto issued = (co_await context.run_blocking([service = runtime.sessions, request] { return service.create(request); })).value();
     if (!issued) {
         if (issued.error() == SessionFailure::kVerificationRequired || issued.error() == SessionFailure::kVerificationFailed) {
-            co_return context.error({.status = ruvia::http_status::kForbidden, .code = issued.error() == SessionFailure::kVerificationRequired ? "connection_verification_required" : "connection_verification_failed", .message = "Authenticator verification required"});
+            co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = issued.error() == SessionFailure::kVerificationRequired ? "connection_verification_required" : "connection_verification_failed", .message_ = "Authenticator verification required"});
         }
         if (issued.error() == SessionFailure::kApprovalRequired) {
-            co_return context.error({.status = ruvia::http_status::kConflict, .code = "approval_required", .message = "Requester Telegram verification required"});
+            co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "approval_required", .message_ = "Requester Telegram verification required"});
         }
-        const auto status = issued.error() == SessionFailure::kDenied ? ruvia::http_status::kForbidden : issued.error() == SessionFailure::kInvalid ? ruvia::http_status::kBadRequest
-                                                                                                                                                    : ruvia::http_status::kConflict;
-        co_return context.error({.status = status, .code = issued.error() == SessionFailure::kIncompatible ? "desktop_input_upgrade_required" : "session_rejected", .message = "Session request rejected"});
+        const auto status = issued.error() == SessionFailure::kDenied ? ruvia::http_status::forbidden : issued.error() == SessionFailure::kInvalid ? ruvia::http_status::bad_request
+                                                                                                                                                   : ruvia::http_status::conflict;
+        co_return context.error({.status_ = status, .code_ = issued.error() == SessionFailure::kIncompatible ? "desktop_input_upgrade_required" : "session_rejected", .message_ = "Session request rejected"});
     }
     for (const auto& sessionId : issued->preemptedSessions) {
         const auto active = runtime.desktopSessions.find(sessionId);
@@ -100,31 +100,31 @@ ruvia::Task<ruvia::HttpResponse> SessionController::create(ruvia::Context& conte
         channels.push_back(boost::json::object{{"id", channel.id}, {"purpose", static_cast<int>(channel.purpose)}, {"ticket", channel.browserTicket}});
     }
     if (!capable || !control->enqueue(std::move(command))) {
-        co_await context.runBlocking([service = runtime.sessions, user = request.userId, session = issued->id] { service.close(user, session, SessionEnd::kFailure); });
-        co_return context.error({.status = ruvia::http_status::kConflict, .code = "device_unavailable", .message = "Device capability or control connection unavailable"});
+        (co_await context.run_blocking([service = runtime.sessions, user = request.userId, session = issued->id] { service.close(user, session, SessionEnd::kFailure); })).value();
+        co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "device_unavailable", .message_ = "Device capability or control connection unavailable"});
     }
-    context.status(ruvia::http_status::kAccepted);
+    context.status(ruvia::http_status::accepted);
     co_return jsonResponse(context, {{"id", issued->id}, {"state", "pending"}, {"expires_in", 60}, {"channels", std::move(channels)}});
 }
-ruvia::Task<ruvia::HttpResponse> SessionController::get(ruvia::Context& context) {
-    const auto info = co_await context.runBlocking([service = context.workerState<ServerRuntime>().sessions, user = context.requestState<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] { return service.get(user, session); });
+ruvia::task<ruvia::http_response> SessionController::get(ruvia::context& context) const {
+    const auto info = (co_await context.run_blocking([service = (*context.connection_state<std::shared_ptr<ServerRuntime>>()).sessions, user = context.request_state<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] { return service.get(user, session); })).value();
     if (!info) {
-        co_return context.error({.status = ruvia::http_status::kNotFound, .code = "not_found", .message = "Session not found"});
+        co_return context.error({.status_ = ruvia::http_status::not_found, .code_ = "not_found", .message_ = "Session not found"});
     }
     co_return jsonResponse(context, {{"id", info->id}, {"device_id", info->deviceId}, {"state", info->state}, {"end_reason", info->endReason}});
 }
-ruvia::Task<ruvia::HttpResponse> SessionController::close(ruvia::Context& context) {
+ruvia::task<ruvia::http_response> SessionController::close(ruvia::context& context) const {
     (void)requestObject(co_await context.req().text(), {});
-    auto& runtime = context.workerState<ServerRuntime>();
-    const auto info = co_await context.runBlocking([service = runtime.sessions, user = context.requestState<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] {
-        const auto info = service.get(user, session);
-        if (info) {
-            service.close(user, session, SessionEnd::kUser);
-        }
-        return info;
-    });
+    auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
+    const auto info = (co_await context.run_blocking([service = runtime.sessions, user = context.request_state<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] {
+                          const auto info = service.get(user, session);
+                          if (info) {
+                              service.close(user, session, SessionEnd::kUser);
+                          }
+                          return info;
+                      })).value();
     if (!info) {
-        co_return context.error({.status = ruvia::http_status::kNotFound, .code = "not_found", .message = "Session not found"});
+        co_return context.error({.status_ = ruvia::http_status::not_found, .code_ = "not_found", .message_ = "Session not found"});
     }
     if (info->state != "closed") {
         const auto active = runtime.desktopSessions.find(info->id);

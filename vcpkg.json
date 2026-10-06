@@ -24,6 +24,7 @@
         "brotli",
         "zlib",
         "zstd",
+        { "name": "ngtcp2", "default-features": false },
         "libmariadb",
         "spdlog"
       ]

@@ -113,7 +113,25 @@ export interface DesktopVideoMessageReservation {
   active: boolean;
 }
 
+// Native PNG decoding cannot be cancelled. This lease remains charged even
+// after retirement, reconfiguration or channel close, until all decodes finish.
+export class DesktopAuxiliaryLease {
+  private released = false;
+
+  constructor(
+    private readonly budget: DesktopVideoReceiveBudget,
+    readonly bytes: number,
+  ) {}
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    this.budget.finishAuxiliary(this);
+  }
+}
+
 export class DesktopVideoReceiveBudget {
+  private auxiliary: DesktopAuxiliaryLease | null = null;
   private queuedMessages = 0;
   private queuedBytes = 0;
   private pendingFrames = new Map<number, number>();
@@ -127,7 +145,8 @@ export class DesktopVideoReceiveBudget {
       bytes < 0 ||
       bytes > maximumDesktopMessageBytes ||
       this.queuedMessages + 1 > (this.video ? maximumVideoQueueMessages : 8) ||
-      this.queuedBytes + this.pendingBytes + bytes > maximumDesktopReceiveBytes
+      this.queuedBytes + this.pendingBytes + this.auxiliaryBytes + bytes >
+        maximumDesktopReceiveBytes
     )
       return null;
     this.queuedMessages++;
@@ -166,7 +185,11 @@ export class DesktopVideoReceiveBudget {
       bytes > message.remainingBytes ||
       this.pendingFrames.size >= maximumSubmittedDecodeFrames ||
       this.pendingFrames.has(timestamp) ||
-      this.queuedBytes - message.remainingBytes + this.pendingBytes + bytes >
+      this.queuedBytes -
+        message.remainingBytes +
+        this.pendingBytes +
+        this.auxiliaryBytes +
+        bytes >
         maximumDesktopReceiveBytes
     )
       return false;
@@ -177,6 +200,40 @@ export class DesktopVideoReceiveBudget {
     this.pendingFrames.set(timestamp, bytes);
     this.pendingBytes += bytes;
     return true;
+  }
+
+  releaseMessageBytes(message: DesktopVideoMessageReservation): void {
+    if (message.owner !== this || !message.active)
+      throw new Error("Invalid desktop message reservation");
+    this.queuedBytes -= message.remainingBytes;
+    message.remainingBytes = 0;
+  }
+
+  transferAuxiliary(
+    message: DesktopVideoMessageReservation,
+  ): DesktopAuxiliaryLease {
+    if (
+      !this.video ||
+      this.auxiliary ||
+      message.owner !== this ||
+      !message.active
+    )
+      throw new Error("Desktop auxiliary reservation unavailable");
+    const lease = new DesktopAuxiliaryLease(this, message.remainingBytes);
+    this.queuedBytes -= message.remainingBytes;
+    message.remainingBytes = 0;
+    this.auxiliary = lease;
+    return lease;
+  }
+
+  finishAuxiliary(lease: DesktopAuxiliaryLease): void {
+    if (this.auxiliary !== lease)
+      throw new Error("Desktop auxiliary accounting mismatch");
+    this.auxiliary = null;
+  }
+
+  get auxiliaryBytes(): number {
+    return this.auxiliary?.bytes ?? 0;
   }
 
   finishPendingFrame(timestamp: number): boolean {

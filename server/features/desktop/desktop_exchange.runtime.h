@@ -3,8 +3,8 @@
 #include <chrono>
 #include <optional>
 
-#include <ruvia/core/TaskScope.h>
-#include <ruvia/core/Timer.h>
+#include <ruvia/core/task_scope.h>
+#include <ruvia/core/timer.h>
 
 #include "config/server.runtime.h"
 #include "modules/identity/identity.service.h"
@@ -31,11 +31,11 @@ struct ChannelState {
     }
 };
 template <typename Connection>
-ruvia::Task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::TaskScope& scope) {
+ruvia::task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::task_scope& scope) {
     try {
-        while (!scope.stopRequested()) {
-            auto delivery = co_await state.endpoint->receive(scope.stopToken());
-            if (scope.stopRequested()) {
+        while (!scope.stop_requested()) {
+            auto delivery = co_await state.endpoint->receive(scope.stop_token());
+            if (scope.stop_requested()) {
                 break;
             }
             if (!delivery || state.session->closed()) {
@@ -52,13 +52,16 @@ ruvia::Task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::T
                 ready.set_session_id(state.authorization->sessionId);
                 ready.set_channel_id(state.authorization->channelId);
                 ready.mutable_channel_ready()->set_purpose(state.authorization->purpose);
+                ready.mutable_channel_ready()->set_desktop_optimization_contract(2);
                 auto bytes = protocol::encodeMessage(ready);
                 if (!bytes) {
                     throw std::runtime_error("Invalid channel readiness");
                 }
                 co_await socket.binary(*bytes);
             } else {
+                const auto writeStarted = Clock::now();
                 co_await socket.binary(delivery->bytes());
+                state.session->writeCompleted(*delivery, Clock::now() - writeStarted);
             }
         }
     } catch (const std::exception&) {
@@ -67,11 +70,11 @@ ruvia::Task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::T
     }
 }
 template <typename Context, typename Connection>
-ruvia::Task<void> watchChannel(Context& context, Connection& socket, ChannelState& state, ruvia::TaskScope& scope) {
+ruvia::task<void> watchChannel(Context& context, Connection& socket, ChannelState& state, ruvia::task_scope& scope) {
     auto nextAuthorization = Clock::now();
     auto nextHealth = Clock::now() + std::chrono::seconds(30);
     try {
-        while (co_await ruvia::sleepFor(context.worker(), std::chrono::seconds(1), scope.stopToken()) == ruvia::TimerSleepResult::kElapsed) {
+        while (co_await ruvia::sleep_for(context.execution(), std::chrono::seconds(1), scope.stop_token()) == ruvia::timer_sleep_result::elapsed) {
             if ((!state.session || !state.session->ready()) && Clock::now() >= state.deadline) {
                 if (state.session) {
                     state.session->close(DesktopCloseReason::kSetupTimeout, state.origin());
@@ -88,9 +91,9 @@ ruvia::Task<void> watchChannel(Context& context, Connection& socket, ChannelStat
                 nextHealth = Clock::now() + std::chrono::seconds(30);
             }
             if (state.owner && Clock::now() >= nextAuthorization) {
-                const bool authorized = co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, id = state.authorization->sessionId] { return service.authorized(id); });
+                const bool authorized = (co_await context.run_blocking([service = (*context.template connection_state<std::shared_ptr<ServerRuntime>>()).sessions, id = state.authorization->sessionId] { return service.authorized(id); })).value();
                 if (!authorized) {
-                    co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kPermissionRevoked); });
+                    (co_await context.run_blocking([service = (*context.template connection_state<std::shared_ptr<ServerRuntime>>()).sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kPermissionRevoked); })).value();
                     state.session->close(DesktopCloseReason::kPermissionRevoked, state.origin());
                     socket.abort();
                     co_return;
@@ -106,7 +109,7 @@ ruvia::Task<void> watchChannel(Context& context, Connection& socket, ChannelStat
     }
 }
 template <typename Context, typename Connection>
-ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol::ChannelSource source, ChannelState& state, ruvia::TaskScope& scope, std::optional<wire::ChannelPurpose> expectedPurpose) {
+ruvia::task<void> exchangeChannel(Context& context, Connection& socket, protocol::ChannelSource source, ChannelState& state, ruvia::task_scope& scope, std::optional<wire::ChannelPurpose> expectedPurpose) {
     auto incoming = co_await socket.read();
     if (!incoming || !incoming->binary() || incoming->payload().size() > protocol::kMaximumControlBytes) {
         co_return;
@@ -118,22 +121,22 @@ ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol
         co_return;
     }
     if (source == protocol::ChannelSource::kBrowser) {
-        state.authorization = co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, user = context.template requestState<UserIdentity>(), message = *open] {
-            return service.consumeBrowser(user, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
-        });
+        state.authorization = (co_await context.run_blocking([service = (*context.template connection_state<std::shared_ptr<ServerRuntime>>()).sessions, user = context.template request_state<UserIdentity>(), message = *open] {
+                                  return service.consumeBrowser(user, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
+                              })).value();
     } else {
-        state.authorization = co_await context.runBlocking([service = context.template workerState<ServerRuntime>().sessions, device = context.template requestState<DeviceIdentity>(), message = *open] {
-            return service.consumeAgent(device, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
-        });
+        state.authorization = (co_await context.run_blocking([service = (*context.template connection_state<std::shared_ptr<ServerRuntime>>()).sessions, device = context.template request_state<DeviceIdentity>(), message = *open] {
+                                  return service.consumeAgent(device, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
+                              })).value();
     }
     open->Clear(); // The live runtime does not retain bearer tickets.
-    if (!state.authorization || scope.stopRequested()) {
+    if (!state.authorization || scope.stop_requested()) {
         co_return;
     }
-    auto& runtime = context.template workerState<ServerRuntime>();
+    auto& runtime = (*context.template connection_state<std::shared_ptr<ServerRuntime>>());
     auto found = runtime.desktopSessions.find(state.authorization->sessionId);
     if (found == runtime.desktopSessions.end()) {
-        state.session = std::make_shared<DesktopSession>(context.worker(), runtime.desktopBudget);
+        state.session = std::make_shared<DesktopSession>(context.execution(), runtime.desktopBudget);
         runtime.desktopSessions.emplace(state.authorization->sessionId, state.session);
         state.owner = true;
     } else {
@@ -161,55 +164,56 @@ ruvia::Task<void> exchangeChannel(Context& context, Connection& socket, protocol
             state.session->close(DesktopCloseReason::kMalformedMessage, state.origin());
             break;
         }
-        if (!(co_await state.session->forward(state.endpoint, *message, scope.stopToken()))) {
+        if (!(co_await state.session->forward(state.endpoint, *message, scope.stop_token()))) {
             break;
         }
     }
 }
 template <typename Context, typename Connection>
-ruvia::Task<void> channel(Context& context, Connection& socket, protocol::ChannelSource source, std::optional<wire::ChannelPurpose> expectedPurpose = std::nullopt) {
+ruvia::task<void> channel(Context& context, Connection& socket, protocol::ChannelSource source, std::optional<wire::ChannelPurpose> expectedPurpose = std::nullopt) {
     ChannelState state;
     state.source = source;
-    auto worker = context.worker();
-    ruvia::TaskScope scope(worker);
-    scope.spawn(watchChannel(context, socket, state, scope));
-    try {
-        co_await exchangeChannel(context, socket, source, state, scope, expectedPurpose);
-    } catch (const std::exception&) {
-        if (state.session) {
-            state.session->close(DesktopCloseReason::kReadFailed, state.origin());
-        }
-    }
-    if (state.session) {
-        state.session->close(DesktopCloseReason::kPeerClosed, state.origin());
-    }
-    socket.abort();
-    scope.requestStop();
-    co_await scope.join();
-    if (state.authorization) {
-        auto& runtime = context.template workerState<ServerRuntime>();
+    auto worker = context.execution();
+    co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
+        scope.spawn(watchChannel(context, socket, state, scope));
         try {
-            co_await context.runBlocking([service = runtime.sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kFailure); });
+            co_await exchangeChannel(context, socket, source, state, scope, expectedPurpose);
         } catch (const std::exception&) {
-            // A later permission check, reconnect or gateway recovery closes the persisted session.
+            if (state.session) {
+                state.session->close(DesktopCloseReason::kReadFailed, state.origin());
+            }
         }
-        if (state.owner) {
-            runtime.desktopSessions.erase(state.authorization->sessionId);
-            auto control = runtime.controlConnections.find(state.authorization->deviceId);
-            if (control != runtime.controlConnections.end()) {
-                wire::Envelope close;
-                close.set_session_id(state.authorization->sessionId);
-                close.mutable_session_close()->set_reason("channel_closed");
-                if (!control->second->enqueue(std::move(close))) {
-                    control->second->close();
+        if (state.session) {
+            state.session->close(DesktopCloseReason::kPeerClosed, state.origin());
+        }
+        socket.abort();
+        scope.request_stop();
+        co_await scope.join();
+        if (state.authorization) {
+            auto& runtime = (*context.template connection_state<std::shared_ptr<ServerRuntime>>());
+            try {
+                (co_await context.run_blocking([service = runtime.sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kFailure); })).value();
+            } catch (const std::exception&) {
+                // A later permission check, reconnect or gateway recovery closes the persisted session.
+            }
+            if (state.owner) {
+                runtime.desktopSessions.erase(state.authorization->sessionId);
+                auto control = runtime.controlConnections.find(state.authorization->deviceId);
+                if (control != runtime.controlConnections.end()) {
+                    wire::Envelope close;
+                    close.set_session_id(state.authorization->sessionId);
+                    close.mutable_session_close()->set_reason("channel_closed");
+                    if (!control->second->enqueue(std::move(close))) {
+                        control->second->close();
+                    }
                 }
             }
         }
-    }
+    });
 }
 } // namespace
 template <typename Context, typename Connection>
-ruvia::Task<void> runDesktopChannel(Context& context, Connection& socket, protocol::ChannelSource source, std::optional<wire::ChannelPurpose> expectedPurpose = std::nullopt) {
+ruvia::task<void> runDesktopChannel(Context& context, Connection& socket, protocol::ChannelSource source, std::optional<wire::ChannelPurpose> expectedPurpose = std::nullopt) {
     co_await channel(context, socket, source, expectedPurpose);
 }
 } // namespace ultraterimal::server

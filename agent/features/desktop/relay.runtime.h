@@ -1,11 +1,12 @@
 #pragma once
 
 #include <asio/awaitable.hpp>
-#include <cstddef>
+#include <cstdint>
 #include <memory>
 
-#include <ruvia/core/EventLoop.h>
+#include <ruvia/core/execution_handle.h>
 
+#include "send_queue.runtime.h"
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::agent {
@@ -15,7 +16,7 @@ class DesktopWorkerChannel;
 // worker replacement. Destroy only after run() and all worker bridges finish.
 class DesktopRelay {
   public:
-    DesktopRelay(ruvia::EventLoop loop, DesktopTransport& transport);
+    DesktopRelay(ruvia::execution_handle loop, DesktopTransport& transport);
     ~DesktopRelay();
     asio::awaitable<void> run();
     std::shared_ptr<DesktopWorkerChannel> attach();
@@ -31,10 +32,11 @@ class DesktopRelay {
 class DesktopWorkerChannel {
   public:
     ~DesktopWorkerChannel();
-    asio::awaitable<void> sendVideo(wire::Envelope message);
+    asio::awaitable<void> sendVideo(wire::Envelope message, std::uint32_t allowedOptimizationContract);
     asio::awaitable<void> sendCursor(wire::Envelope message);
-    asio::awaitable<wire::Envelope> receiveInput();
-    void completeInput(std::size_t bytes);
+    asio::awaitable<DesktopSendQueue::Entry> receiveInput();
+    void completeInput(DesktopSendQueue::Entry& entry);
+    std::uint32_t serverOptimizationContract() const;
     void cancel();
     bool cancelled() const;
 

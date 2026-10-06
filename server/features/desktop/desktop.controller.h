@@ -1,12 +1,12 @@
 #pragma once
 #include <chrono>
 
-#include <ruvia/web/Controller.h>
+#include <ruvia/web/controller.h>
 
 #include "middleware/authentication.h"
 
 namespace ultraterimal::server {
-class DesktopController final : public ruvia::Controller<DesktopController> {
+class DesktopController final : public ruvia::controller<DesktopController> {
   public:
     RUVIA_CONTROLLER_GROUP("/api/desktop")
     RUVIA_ROUTES_BEGIN
@@ -15,11 +15,11 @@ class DesktopController final : public ruvia::Controller<DesktopController> {
     RUVIA_ROUTES_END
 
   private:
-    static ruvia::WebSocketRouteConfig socketOptions() {
+    static ruvia::websocket_route_config socketOptions() {
         // The video channel can be idle independently of the input probes.
-        return {.lifecycle = {.heartbeat = {.pingInterval = std::chrono::seconds(15), .pongTimeout = std::chrono::seconds(15)}}};
+        return {.lifecycle_ = {.heartbeat_ = {.ping_interval_ = std::chrono::seconds(15), .pong_timeout_ = std::chrono::seconds(15)}}};
     }
-    ruvia::Task<void> control(ruvia::Context& context);
-    ruvia::Task<void> video(ruvia::Context& context);
+    ruvia::task<void> control(ruvia::context& context) const;
+    ruvia::task<void> video(ruvia::context& context) const;
 };
 } // namespace ultraterimal::server

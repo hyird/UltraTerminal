@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include <ruvia/core/AsioTask.h>
+#include <ruvia/core/asio_task.h>
 #include <sddl.h>
 
 #include "login_peer.transport.h"
@@ -35,8 +35,8 @@ struct ProtectedRecord {
 };
 } // namespace
 struct WindowsLoginBroker::State : std::enable_shared_from_this<State> {
-    ruvia::EventLoop loop;
-    ruvia::BlockingPool& pool;
+    ruvia::execution_handle loop;
+    ruvia::blocking_pool& pool;
     std::filesystem::path credentialFile;
     DWORD session;
     asio::windows::object_handle ready;
@@ -45,7 +45,7 @@ struct WindowsLoginBroker::State : std::enable_shared_from_this<State> {
     UniqueHandle peer;
     bool stopped = false, started = false;
 
-    State(ruvia::EventLoop owner, ruvia::BlockingPool& blocking, std::filesystem::path path, DWORD selected)
+    State(ruvia::execution_handle owner, ruvia::blocking_pool& blocking, std::filesystem::path path, DWORD selected)
         : loop(owner), pool(blocking), credentialFile(std::move(path)), session(selected), ready(owner.executor()), pipe(owner.executor()), deadline(owner.executor()) {
         PSECURITY_DESCRIPTOR descriptor = nullptr;
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;;GA;;;SY)", SDDL_REVISION_1, &descriptor, nullptr)) {
@@ -126,10 +126,10 @@ struct WindowsLoginBroker::State : std::enable_shared_from_this<State> {
                 }
                 ProtectedRecord record;
                 {
-                    auto preparation = ruvia::runBlocking(self->pool, self->loop.handle(), [path = self->credentialFile, scenario] {
+                    auto preparation = ruvia::run_blocking(self->pool, self->loop, [path = self->credentialFile, scenario] {
                         return prepareSavedWindowsLogon(path, scenario);
                     });
-                    auto prepared = co_await ruvia::asAwaitable(std::move(preparation));
+                    auto prepared = (co_await ruvia::as_awaitable(std::move(preparation))).value();
                     if (!prepared || self->stopped || WaitForSingleObject(self->peer.get(), 0) != WAIT_TIMEOUT) {
                         break;
                     }
@@ -170,7 +170,7 @@ struct WindowsLoginBroker::State : std::enable_shared_from_this<State> {
 };
 WindowsLoginBroker::WindowsLoginBroker(std::shared_ptr<State> state) : state_(std::move(state)) {}
 WindowsLoginBroker::~WindowsLoginBroker() { stop(); }
-std::unique_ptr<WindowsLoginBroker> WindowsLoginBroker::create(ruvia::EventLoop loop, ruvia::BlockingPool& pool, std::filesystem::path credentialFile, std::uint32_t session) noexcept {
+std::unique_ptr<WindowsLoginBroker> WindowsLoginBroker::create(ruvia::execution_handle loop, ruvia::blocking_pool& pool, std::filesystem::path credentialFile, std::uint32_t session) noexcept {
     if (!session || session == 0xffffffffUL || !credentialFile.is_absolute() || !openWindowsLoginServicePeer(GetCurrentProcessId())) {
         return nullptr;
     }

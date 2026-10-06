@@ -15,6 +15,13 @@ target_compile_features(protocol-native-tests PRIVATE cxx_std_23)
 target_link_libraries(protocol-native-tests PRIVATE ultraterimal::protocol)
 add_test(NAME protocol.native COMMAND protocol-native-tests)
 add_executable(protocol-desktop-tests desktop.cpp)
+add_executable(protocol-desktop-optimization-tests desktop_optimization.cpp)
+target_link_libraries(protocol-desktop-optimization-tests PRIVATE ultraterimal::protocol)
+target_compile_options(protocol-desktop-optimization-tests PRIVATE
+    "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
+add_test(NAME protocol.desktop_optimization COMMAND protocol-desktop-optimization-tests)
+set_tests_properties(protocol.desktop_optimization PROPERTIES LABELS unit)
 add_executable(protocol-regions-tests regions.cpp)
 target_link_libraries(protocol-regions-tests PRIVATE ultraterimal::protocol)
 add_test(NAME protocol.regions COMMAND protocol-regions-tests)

@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <string>
 
-#include <ruvia/core/BlockingPool.h>
-#include <ruvia/core/EventLoop.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/execution_handle.h>
 
 #include "ultraterimal/protocol/message.protocol.h"
 
@@ -18,7 +18,7 @@ class NamedPipeTransport;
 // owns native I/O independently. No credentials or tickets cross the pipe.
 // The session owns systemPool; await this operation before destroying the pool.
 // Returns a local terminal message for the control-channel owner to report.
-asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopWorkerChannel& remote,
+asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::execution_handle loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote,
                                               NamedPipeTransport& pipe, std::string sessionId, std::uint32_t windowsSession,
                                               std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract);
 } // namespace ultraterimal::agent

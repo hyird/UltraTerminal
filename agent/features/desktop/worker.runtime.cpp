@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "optimization.runtime.h"
+#include "pipeline.runtime.h"
 #include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/input.transport.h"
@@ -21,21 +23,28 @@
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
 #include "video.runtime.h"
+#include "worker_output.runtime.h"
 
 namespace ultraterimal::agent {
 namespace {
 class DesktopWorker {
   public:
-    DesktopWorker(ruvia::EventLoop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
+    DesktopWorker(ruvia::execution_handle loop, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
         : pipe_(pipe),
           probeTimer_(loop.executor()),
-          video_(std::move(loop), start.desktop_start().display_index()),
+          video_(std::move(loop), start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract()),
           incoming_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kService}),
           outgoing_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kDesktop}),
-          session_(start.session_id()), writeControl_(start.desktop_start().write_control()) {
+          session_(start.session_id()), writeControl_(start.desktop_start().write_control()),
+          optimization_(start.desktop_start().desktop_optimization_contract()) {
+        // Both IPC video validators begin with allow0. Start carries Server
+        // permission only; it is not a Browser request and cannot activate v2.
         if (!incoming_.accept(start)) {
             throw DesktopFailure(wire::DesktopFault::PROTOCOL_REJECTED, "Desktop startup binding rejected");
         }
+        // The constructor's immutable Server support enables the first Config2
+        // declaration; initial joint permission0 must not erase that support.
+        video_.setOptimizationContract(optimization_.allowedContract());
     }
     ~DesktopWorker() { stop(); }
     void stop() {
@@ -62,11 +71,33 @@ class DesktopWorker {
         if (!outgoing_.accept(message)) {
             throw std::runtime_error("Desktop output violates IPC contract");
         }
+        if (message.has_video_config()) {
+            optimization_.configure(message.video_config());
+            pipelineEnabled_ = optimization_.activeContract() == 2;
+            if (!pipelineEnabled_) {
+                pipeline_.clear();
+            }
+        }
         auto bytes = protocol::encodeMessage(message);
         if (!bytes) {
             throw std::runtime_error("Cannot encode desktop IPC message");
         }
+        auto sample = pipelineEnabled_ ? DesktopPipelineBuffer::sample(message, wire::DesktopPipelineSample::DESKTOP_WORKER) : std::nullopt;
+        const auto started = DesktopPipelineBuffer::Clock::now();
         co_await pipe_.send(std::move(*bytes));
+        if (sample) {
+            sample->set_ipc_write_microseconds(DesktopPipelineBuffer::duration(DesktopPipelineBuffer::Clock::now() - started));
+            pipeline_.add(std::move(*sample));
+        }
+    }
+    asio::awaitable<void> flushPipeline() {
+        const auto now = DesktopPipelineBuffer::Clock::now();
+        if (pipelineEnabled_) {
+            if (auto report = pipeline_.pending(now)) {
+                pipeline_.sent(now);
+                co_await send(std::move(*report));
+            }
+        }
     }
     asio::awaitable<void> write() {
         const char* stage = "video_start";
@@ -127,6 +158,7 @@ class DesktopWorker {
                 }
                 if (!update) {
                     refresh_ = refresh_ || refresh;
+                    co_await flushPipeline();
                     continue;
                 }
                 if (writeControl_ && update->configuration) {
@@ -153,6 +185,9 @@ class DesktopWorker {
                     ready_ = true;
                 }
                 if (update->configuration) {
+                    // Preserve the capability declaration, including the first
+                    // Config2. The validator's allow0 keeps it on the legacy path
+                    // until an actual Browser request enables the NEXT barrier.
                     wire::Envelope configuration;
                     configuration.set_channel_id("video");
                     configuration.set_generation(update->generation);
@@ -165,34 +200,12 @@ class DesktopWorker {
                     *cursor.mutable_cursor_update() = std::move(*update->cursor);
                     co_await send(std::move(cursor));
                 }
-                if (update->frame.data().empty()) {
-                    if (update->region) {
-                        wire::Envelope region;
-                        region.set_channel_id("video");
-                        region.set_generation(update->generation);
-                        region.set_frame_id(update->frameId);
-                        region.set_base_frame_id(update->baseFrameId);
-                        *region.mutable_desktop_region_update() = std::move(*update->region);
-                        co_await send(std::move(region));
-                    }
-                    if (update->refinement) {
-                        wire::Envelope refinement;
-                        refinement.set_channel_id("video");
-                        refinement.set_generation(update->generation);
-                        refinement.set_frame_id(update->frameId);
-                        refinement.set_base_frame_id(update->frameId);
-                        *refinement.mutable_video_refinement() = std::move(*update->refinement);
-                        co_await send(std::move(refinement));
-                    }
+                const bool noVideoFrame = update->frame.data().empty();
+                co_await writeDesktopPixels(*update, [this](wire::Envelope message) { return send(std::move(message)); });
+                if (noVideoFrame) {
                     refresh_ = refresh_ || refresh;
-                    continue;
                 }
-                wire::Envelope frame;
-                frame.set_channel_id("video");
-                frame.set_generation(update->generation);
-                frame.set_frame_id(update->frameId);
-                *frame.mutable_video_frame() = std::move(update->frame);
-                co_await send(std::move(frame));
+                co_await flushPipeline();
             }
         } catch (...) {
             rememberFailure(stage);
@@ -249,6 +262,8 @@ class DesktopWorker {
                     lastAck_ = now;
                     video_.observeRoundTrip(std::chrono::duration_cast<std::chrono::microseconds>(now - sentAt));
                     lastAcceptedResponseNonce_ = std::max(lastAcceptedResponseNonce_, nonce);
+                } else if (message->has_desktop_refinement_ack()) {
+                    video_.refinementAck(*message); // Independent of input binding and frame ACKs.
                 } else if (message->has_input_event()) {
                     // Old coordinates can arrive while Windows changes the mode.
                     // Resume only after the new capture configuration binds input.
@@ -284,7 +299,16 @@ class DesktopWorker {
                 } else if (message->has_quality_feedback()) {
                     video_.feedback(message->quality_feedback());
                 } else if (message->has_desktop_video_capabilities()) {
-                    video_.capabilities(message->desktop_video_capabilities());
+                    auto capabilities = message->desktop_video_capabilities();
+                    optimization_.request(capabilities.desktop_optimization_contract());
+                    incoming_.setOptimizationContract(optimization_.allowedContract());
+                    outgoing_.setOptimizationContract(optimization_.allowedContract());
+                    capabilities.set_desktop_optimization_contract(optimization_.allowedContract());
+                    // A's explicit gate receives FULL pending permission, not
+                    // Server capability. Changed permission/capabilities retire
+                    // stale results and activate only at a NEW config/generation.
+                    video_.setOptimizationContract(optimization_.allowedContract());
+                    video_.capabilities(capabilities);
                 } else if (message->has_desktop_resize()) {
                     if (!ready_ || resize_ || resizing_) {
                         throw std::runtime_error("Desktop resize request queue exceeded");
@@ -380,6 +404,9 @@ class DesktopWorker {
     std::exception_ptr releaseFailure_, failure_;
     const char* failureStage_ = "worker";
     bool writeControl_;
+    DesktopOptimizationGate optimization_;
+    bool pipelineEnabled_ = false;
+    DesktopPipelineBuffer pipeline_;
     bool rebindRequested_ = false;
     std::optional<wire::DesktopResize> resize_;
     bool resizing_ = false;
@@ -393,7 +420,7 @@ class DesktopWorker {
     bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false;
 };
 } // namespace
-asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::EventLoop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
+asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::execution_handle loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
     asio::steady_timer deadline(loop.executor());
     deadline.expires_after(std::chrono::seconds(10));
     deadline.async_wait([&pipe](std::error_code error) { if (!error) { pipe.cancel(); } });

@@ -6,15 +6,15 @@
 #include <utility>
 
 namespace ultraterimal::server {
-ControlConnection::ControlConnection(ruvia::WorkerHandle worker) : worker_(worker), queue_(ruvia::makeChannel<std::string>(std::move(worker), {.capacity = 32})) {}
-ruvia::Task<std::optional<wire::WindowsLoginResult>> ControlConnection::windowsLogin(wire::WindowsLoginRequest request) {
+ControlConnection::ControlConnection(ruvia::execution_handle worker) : worker_(worker), queue_(ruvia::make_channel<std::string>(std::move(worker), {.capacity_ = 32})) {}
+ruvia::task<std::optional<wire::WindowsLoginResult>> ControlConnection::windowsLogin(wire::WindowsLoginRequest request) {
     if (!ready || !capabilities.windows_login_settings() || loginPending_ || loginRequest_ == std::numeric_limits<std::uint64_t>::max()) {
         co_return std::nullopt;
     }
-    auto [completion, receiver] = ruvia::makeOneShot<wire::WindowsLoginResult>(worker_);
+    auto [completion, receiver] = ruvia::make_one_shot<wire::WindowsLoginResult>(worker_);
     loginPending_ = completion;
     struct Pending {
-        std::optional<ruvia::OneShotCompletion<wire::WindowsLoginResult>>& value;
+        std::optional<ruvia::one_shot_completion<wire::WindowsLoginResult>>& value;
         ~Pending() { value.reset(); }
     } pending{loginPending_};
     request.set_request_id(++loginRequest_);
@@ -23,11 +23,11 @@ ruvia::Task<std::optional<wire::WindowsLoginResult>> ControlConnection::windowsL
     if (!enqueue(std::move(envelope))) {
         co_return std::nullopt;
     }
-    auto result = co_await receiver.waitFor(std::chrono::seconds(5));
-    if (!result.hasValue()) {
+    auto result = co_await receiver.wait(ruvia::operation_timeout(std::chrono::seconds(5)));
+    if (!result.has_value()) {
         co_return std::nullopt;
     }
-    co_return std::move(result).takeValue();
+    co_return std::move(result).take_value();
 }
 bool ControlConnection::windowsLoginReply(const wire::WindowsLoginResult& result) {
     if (!result.request_id() || result.request_id() > loginRequest_) {
@@ -88,12 +88,12 @@ bool ControlConnection::enqueue(wire::Envelope message) {
     ++sequence_;
     return true;
 }
-ruvia::Task<std::optional<std::string>> ControlConnection::receive(ruvia::StopToken stop) {
+ruvia::task<std::optional<std::string>> ControlConnection::receive(ruvia::stop_token stop) {
     auto result = co_await queue_.second.receive(std::move(stop));
-    if (!result.hasValue()) {
+    if (!result.has_value()) {
         co_return std::nullopt;
     }
-    auto bytes = std::move(result).takeValue();
+    auto bytes = std::move(result).take_value();
     queuedBytes_ -= bytes.size();
     co_return bytes;
 }

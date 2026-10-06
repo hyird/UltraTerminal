@@ -1,22 +1,30 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
+#include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
+#include <asio/use_awaitable.hpp>
+#include <asio/use_future.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cwchar>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
 
-#include <ruvia/core/EventLoopAttachment.h>
+#include <ruvia/core/asio_task.h>
+#include <ruvia/core/execution_domain.h>
 
 #include "desktop_process.fixture.h"
+#include "features/desktop/optimization.runtime.h"
+#include "features/desktop/worker_output.runtime.h"
 #include "platform/windows/pipe.transport.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
@@ -25,6 +33,105 @@ namespace {
 using namespace ultraterimal;
 using test::Child;
 using test::require;
+// No dependency on the compute owner's runtime while its implementation is in
+// flight. This fake returns both bodies in ONE completed next() operation.
+struct FakeVideoUpdate {
+    wire::VideoFrame frame;
+    std::optional<wire::DesktopRegionUpdate> region;
+    std::optional<wire::VideoRefinement> refinement;
+    std::uint64_t generation = 7, frameId = 11, baseFrameId = 10;
+};
+class FakeVideoRuntime {
+  public:
+    asio::awaitable<std::optional<FakeVideoUpdate>> next() {
+        FakeVideoUpdate update;
+        update.frame.set_data("fake-video");
+        update.frame.set_key_frame(true);
+        update.frame.set_timestamp_microseconds(11000);
+        update.frame.mutable_stage_timing()->set_video_encode_microseconds(0);
+        auto& refinement = update.refinement.emplace();
+        refinement.set_batch_id(42);
+        refinement.set_kind(wire::DYNAMIC_DETAIL);
+        refinement.mutable_stage_timing()->set_png_encode_microseconds(17);
+        auto* patch = refinement.add_patches();
+        patch->mutable_destination()->set_width(128);
+        patch->mutable_destination()->set_height(64);
+        std::string png(33, '\0');
+        png.replace(0, 8, "\211PNG\r\n\032\n", 8);
+        png[11] = 13;
+        png.replace(12, 4, "IHDR");
+        png[19] = static_cast<char>(128);
+        png[23] = 64;
+        patch->set_png(png); // Header fixture: no PNG decoding in this test.
+        co_return update;
+    }
+};
+asio::awaitable<void> fakeRuntimeOutput() {
+    FakeVideoRuntime runtime;
+    auto update = co_await runtime.next();
+    require(update && !update->frame.data().empty() && update->refinement, "Fake runtime did not return frame+dynamic batch together");
+    const auto expectedFrame = update->frame.SerializeAsString();
+    const auto expectedBatch = update->refinement->SerializeAsString();
+    protocol::DesktopPipeValidator validator({"fake-worker", 1, false, protocol::DesktopPipeSource::kDesktop});
+    validator.setOptimizationContract(2);
+    wire::Envelope ready;
+    ready.set_protocol_version(protocol::kVersion);
+    ready.set_session_id("fake-worker");
+    ready.set_sequence(1);
+    ready.mutable_desktop_ready();
+    require(validator.accept(ready).has_value(), "Fake Worker readiness rejected");
+    wire::Envelope config;
+    config.set_protocol_version(protocol::kVersion);
+    config.set_session_id("fake-worker");
+    config.set_channel_id("video");
+    config.set_sequence(2);
+    config.set_generation(update->generation);
+    config.mutable_video_config()->set_codec("avc1.42E01F");
+    config.mutable_video_config()->set_width(256);
+    config.mutable_video_config()->set_height(128);
+    config.mutable_video_config()->set_desktop_optimization_contract(2);
+    require(validator.accept(config).has_value(), "Fake Worker config rejected");
+    std::uint64_t sequence = 2;
+    std::vector<wire::Envelope> packets;
+    auto send = [&](wire::Envelope envelope) -> asio::awaitable<void> {
+        envelope.set_protocol_version(protocol::kVersion);
+        envelope.set_session_id("fake-worker");
+        envelope.set_sequence(++sequence);
+        // Force a local completion turn. The auxiliary batch may not start
+        // before the preceding frame's single-writer send has completed.
+        co_await asio::post(co_await asio::this_coro::executor, asio::use_awaitable);
+        if (envelope.has_video_refinement()) {
+            require(packets.size() == 1 && packets.front().has_video_frame(), "Dynamic batch preceded frame write completion");
+        }
+        require(validator.accept(envelope).has_value(), "Worker pixel envelope violated IPC contract");
+        auto bytes = protocol::encodeMessage(envelope);
+        require(bytes.has_value(), "Fake Worker output encoding failed");
+        auto decoded = protocol::decodeMessage(*bytes);
+        require(decoded.has_value(), "Fake Worker output decoding failed");
+        packets.push_back(std::move(*decoded));
+    };
+    co_await agent::writeDesktopPixels(*update, send);
+    require(packets.size() == 2 && packets[0].has_video_frame() && packets[1].has_video_refinement(), "Worker lost attached dynamic detail or reversed pixel message ordering");
+    require(packets[0].generation() == 7 && packets[0].frame_id() == 11 && !packets[0].base_frame_id(), "Worker frame inherited the region/refinement baseline");
+    require(packets[1].generation() == 7 && packets[1].frame_id() == 11 && packets[1].base_frame_id() == 11, "Dynamic batch is not bound to its preceding composed frame");
+    require(packets[0].video_frame().SerializeAsString() == expectedFrame && packets[1].video_refinement().SerializeAsString() == expectedBatch, "Worker reconstructed/lost generated frame or batch metadata");
+    require(packets[1].video_refinement().batch_id() == 42 && packets[1].video_refinement().kind() == wire::DYNAMIC_DETAIL && packets[1].video_refinement().stage_timing().png_encode_microseconds() == 17, "Worker failed to preserve dynamic batch identity/kind/timing");
+}
+void exerciseFakeRuntime() {
+    asio::io_context io;
+    std::exception_ptr failure;
+    bool completed = false;
+    asio::co_spawn(io, fakeRuntimeOutput(), [&](std::exception_ptr error) {
+        failure = error;
+        completed = true;
+    });
+    io.run();
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    require(completed, "Fake Worker output did not finish");
+}
+#ifndef ULTRATERIMAL_WORKER_OUTPUT_ONLY
 wire::Envelope message(std::uint64_t sequence) {
     wire::Envelope result;
     result.set_protocol_version(protocol::kVersion);
@@ -44,8 +151,11 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
     start.mutable_desktop_start()->set_display_index(mode == "display_unavailable" ? 63 : 0);
     start.mutable_desktop_start()->set_write_control(mode == "writable" || mode == "probe_delayed_recover");
     start.mutable_desktop_start()->set_desktop_input_contract(start.desktop_start().write_control() ? 2 : 0);
+    start.mutable_desktop_start()->set_desktop_optimization_contract(mode == "optimization_v2" ? 2 : 0);
     co_await send(pipe, start);
     protocol::DesktopPipeValidator incoming({"worker-fixture", session, start.desktop_start().write_control(), protocol::DesktopPipeSource::kDesktop});
+    agent::DesktopOptimizationGate optimization(start.desktop_start().desktop_optimization_contract());
+    bool pipelineReceived = false;
     bool ready = false, configured = false, refreshed = false, firstFrame = false, cursorReceived = false;
     std::uint64_t videoGeneration = 0;
     bool closed = false;
@@ -70,7 +180,12 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
             require(!ready && packet->sequence() == 1, "Invalid desktop readiness");
             ready = true;
         } else if (packet->has_video_config()) {
-            require(ready && !configured && packet->video_config().width() > 0, "Missing desktop configuration");
+            require(ready && (!configured || mode == "optimization_v2") && packet->video_config().width() > 0, "Missing desktop configuration");
+            if (mode == "optimization_v2" && !configured) {
+                require(packet->video_config().desktop_optimization_contract() == 2 && optimization.allowedContract() == 0, "Initial joint permission erased immutable Server support or activated first Config2");
+            }
+            optimization.configure(packet->video_config());
+            require(mode == "optimization_v2" || optimization.activeContract() == 0, "Worker activated v2 through a legacy DesktopStart gate");
             configured = true;
             videoGeneration = packet->generation();
         } else if (packet->has_cursor_update()) {
@@ -126,8 +241,57 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
                     closeRequested = true;
                 }
             }
+        } else if (packet->has_desktop_pipeline_report()) {
+            require(mode == "optimization_v2" && firstFrame && optimization.activeContract() == 2, "Pipeline diagnostics leaked through incomplete gate");
+            for (const auto& sample : packet->desktop_pipeline_report().samples()) {
+                require(sample.generation() && sample.frame_id() && sample.source() == wire::DesktopPipelineSample::DESKTOP_WORKER && sample.has_ipc_write_microseconds() && !sample.has_native_write_microseconds(), "Worker pipeline sample lost frame key/source or measured wrong write boundary");
+                pipelineReceived = true;
+            }
+            if (pipelineReceived && !closeRequested) {
+                auto close = message(++probeSequence);
+                close.mutable_session_close()->set_reason("pipeline_verified");
+                co_await send(pipe, close);
+                closeRequested = true;
+            }
+        } else if (packet->has_video_refinement()) {
+            require(mode == "optimization_v2", "Unexpected legacy refinement in fixture");
+            if (optimization.activeContract() == 0) {
+                require(!packet->video_refinement().batch_id(), "Refinement activated before complete negotiation barrier");
+                continue;
+            }
+            if (closeRequested) {
+                continue;
+            }
+            auto ack = message(++probeSequence);
+            ack.set_channel_id("input");
+            ack.set_generation(packet->generation());
+            ack.set_frame_id(packet->frame_id());
+            ack.mutable_desktop_refinement_ack()->set_batch_id(packet->video_refinement().batch_id());
+            ack.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::SUPERSEDED);
+            co_await send(pipe, ack);
+            ack.set_sequence(++probeSequence);
+            co_await send(pipe, ack); // Duplicate must be a credit-owner no-op.
+        } else if (packet->has_desktop_region_update()) {
+            require(mode == "optimization_v2", "Unexpected region update in fixture");
         } else if (packet->has_video_frame()) {
             require(configured && !packet->video_frame().data().empty(), "Missing desktop pixels");
+            if (mode == "optimization_v2" && !closeRequested) {
+                if (!firstFrame) {
+                    auto capabilities = message(++probeSequence);
+                    capabilities.set_channel_id("input");
+                    capabilities.mutable_desktop_video_capabilities()->add_codecs(wire::AVC);
+                    capabilities.mutable_desktop_video_capabilities()->set_desktop_optimization_contract(2);
+                    optimization.request(2);
+                    incoming.setOptimizationContract(optimization.allowedContract());
+                    co_await send(pipe, capabilities);
+                }
+                auto feedback = message(++probeSequence);
+                feedback.set_channel_id("input");
+                feedback.mutable_quality_feedback()->set_displayed_generation(packet->generation());
+                feedback.mutable_quality_feedback()->set_displayed_frame(packet->frame_id());
+                feedback.mutable_quality_feedback()->set_video_refinement(true);
+                co_await send(pipe, feedback);
+            }
             if (!firstFrame) {
                 require(packet->video_frame().key_frame(), "First worker frame is not an IDR");
                 firstFrame = true;
@@ -180,6 +344,9 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
                       << " cursor=" << cursorReceived << " closed=" << closed << '\n';
             throw std::runtime_error("Worker cursor/refresh/close path incomplete");
         }
+    }
+    if (mode == "optimization_v2") {
+        require(ready && firstFrame && pipelineReceived && closed, "V2 gate/config/write-completion report path incomplete");
     }
     if (mode == "binding") {
         require(!ready, "Worker accepted wrong Windows session");
@@ -256,7 +423,7 @@ void run(const std::wstring& executable, const std::string& mode) {
     DWORD session = 0;
     require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session != 0, "Interactive test session required");
     asio::io_context io;
-    auto attachment = ruvia::attachEventLoop(io);
+    ruvia::execution_domain attachment(io);
     agent::NamedPipeTransport pipe(io.get_executor(), agent::currentLogonSid());
     Child child(executable, pipe.name(), mode == "process_session" ? session + 1 : session);
     if (mode == "process_session") {
@@ -270,18 +437,22 @@ void run(const std::wstring& executable, const std::string& mode) {
                                                                                                                 : std::chrono::seconds(10));
     deadline.async_wait([&](std::error_code error) { if (!error) { timedOut = true; pipe.cancel(); } });
     std::exception_ptr failure;
-    asio::co_spawn(io, exchange(pipe, child, session, mode), [&](std::exception_ptr error) {
+    asio::co_spawn(attachment.executor(), exchange(pipe, child, session, mode), [&](std::exception_ptr error) {
         failure = error;
         deadline.cancel();
         pipe.cancel();
-        attachment.stop();
+        attachment.request_stop();
     });
-    attachment.run();
+    io.run();
+    io.restart();
+    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
+    io.run();
+    retired.get();
     if (failure) {
         std::rethrow_exception(failure);
     }
     require(!timedOut, "Desktop worker timed out");
-    child.finish(mode == "normal" || mode == "writable" || mode == "probe_echo" || mode == "probe_recover" || mode == "probe_delayed_recover");
+    child.finish(mode == "optimization_v2" || mode == "normal" || mode == "writable" || mode == "probe_echo" || mode == "probe_recover" || mode == "probe_delayed_recover");
     if (mode == "display_unavailable" || mode == "readonly_input" || mode == "probe_replay") {
         DWORD exitCode = 0;
         require(GetExitCodeProcess(child.process.get(), &exitCode) != FALSE, "Cannot read worker diagnostic exit status");
@@ -297,6 +468,7 @@ void run(const std::wstring& executable, const std::string& mode) {
     }
     std::cout << mode << " desktop process passed\n";
 }
+#endif
 } // namespace
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2 && argc != 3) {
@@ -304,8 +476,14 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::string currentMode;
     try {
+        exerciseFakeRuntime();
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--fake-runtime") {
+            std::cout << "Fake runtime frame+dynamic batch ordering and generated metadata preservation passed\n";
+            return 0;
+        }
+#ifndef ULTRATERIMAL_WORKER_OUTPUT_ONLY
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
-        for (const std::string mode : {"normal", "binding", "display_unavailable", "readonly_input", "disconnect", "writable", "process_session", "probe_echo", "probe_recover", "probe_delayed_recover", "probe_timeout", "probe_replay"}) {
+        for (const std::string mode : {"normal", "optimization_v2", "binding", "display_unavailable", "readonly_input", "disconnect", "writable", "process_session", "probe_echo", "probe_recover", "probe_delayed_recover", "probe_timeout", "probe_replay"}) {
             if (argc == 3 && std::wstring(mode.begin(), mode.end()) != argv[2]) {
                 continue;
             }
@@ -313,6 +491,9 @@ int wmain(int argc, wchar_t** argv) {
             run(argv[1], mode);
         }
         require(!currentMode.empty(), "Unknown desktop worker test mode");
+#else
+        return 2;
+#endif
     } catch (const std::exception& error) {
         std::cerr << currentMode << ": " << error.what() << '\n';
         return 1;

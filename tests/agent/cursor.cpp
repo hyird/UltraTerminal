@@ -158,6 +158,19 @@ void monochrome() {
     frame.pointerHeight = 2; // AND row, then XOR row.
     frame.pointerPitch = 2;
     frame.pointerShape = {0x30, 0xcc, 0x50, 0xcc};
+    require(agent::DesktopCursor::requiresBackground(frame));
+    auto missingBackground = frame;
+    missingBackground.bgra.clear();
+    rejected(missingBackground);
+    auto opaque = missingBackground;
+    opaque.pointerShape[2] = 0x40; // Black, white and transparent; no inverted pixel.
+    require(!agent::DesktopCursor::requiresBackground(opaque));
+    agent::DesktopCursor opaqueCursor;
+    const auto opaqueUpdate = opaqueCursor.update(opaque);
+    require(bool(opaqueUpdate));
+    pixel(*opaqueUpdate, 0, {0, 0, 0, 255});
+    pixel(*opaqueUpdate, 1, {255, 255, 255, 255});
+    pixel(*opaqueUpdate, 2, {0, 0, 0, 0});
     agent::DesktopCursor cursor;
     auto update = cursor.update(frame);
     require(update && update->height() == 1);
@@ -179,6 +192,8 @@ void monochrome() {
     require(bool(update));
     pixel(*update, 3, {0, 0, 0, 0});
     frame.pointerX = 4;
+    frame.bgra.clear(); // All inverted pixels are clipped outside the canvas.
+    require(!agent::DesktopCursor::requiresBackground(frame));
     update = cursor.update(frame, true);
     pixel(*update, 3, {0, 0, 0, 0});
     auto bad = frame;
@@ -213,6 +228,13 @@ void masked() {
     frame.pointerHeight = 1;
     frame.pointerPitch = 12;
     frame.pointerShape = {1, 2, 3, 0, 255, 15, 240, 255, 0, 0, 0, 255};
+    require(agent::DesktopCursor::requiresBackground(frame));
+    auto opaque = frame;
+    opaque.pointerShape[7] = 0;
+    opaque.bgra.clear();
+    require(!agent::DesktopCursor::requiresBackground(opaque));
+    agent::DesktopCursor opaqueCursor;
+    require(bool(opaqueCursor.update(opaque)));
     agent::DesktopCursor cursor;
     auto update = cursor.update(frame);
     require(bool(update));

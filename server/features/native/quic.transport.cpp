@@ -18,7 +18,7 @@
 
 namespace ultraterimal::server {
 struct QuicListener::State : std::enable_shared_from_this<State> {
-    ruvia::EventLoop loop;
+    ruvia::execution_handle loop;
     asio::ip::udp::socket socket;
     asio::steady_timer timer;
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context{nullptr, SSL_CTX_free};
@@ -29,7 +29,7 @@ struct QuicListener::State : std::enable_shared_from_this<State> {
     std::string alpn;
     bool stopped = false;
 
-    State(ruvia::EventLoop owner, const ServerConfig& config, std::function<void(std::unique_ptr<NativeStream>)> accept)
+    State(ruvia::execution_handle owner, const ServerConfig& config, std::function<void(std::unique_ptr<NativeStream>)> accept)
         : loop(owner), socket(owner.executor()), timer(owner.executor()), accepted(std::move(accept)) {
         context.reset(SSL_CTX_new(OSSL_QUIC_server_method()));
         if (!context || SSL_CTX_use_certificate_chain_file(context.get(), config.nativeCertificateFile.string().c_str()) != 1 || SSL_CTX_use_PrivateKey_file(context.get(), config.nativeKeyFile.string().c_str(), SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(context.get()) != 1) {
@@ -262,7 +262,7 @@ struct QuicListener::State : std::enable_shared_from_this<State> {
         }
     }
 };
-QuicListener::QuicListener(ruvia::EventLoop loop, const ServerConfig& config, std::function<void(std::unique_ptr<NativeStream>)> accept) : state_(std::make_shared<State>(loop, config, std::move(accept))) {}
+QuicListener::QuicListener(ruvia::execution_handle loop, const ServerConfig& config, std::function<void(std::unique_ptr<NativeStream>)> accept) : state_(std::make_shared<State>(loop, config, std::move(accept))) {}
 QuicListener::~QuicListener() { stop(); }
 asio::awaitable<void> QuicListener::run() { return State::run(state_); }
 void QuicListener::stop() { state_->stop(); }

@@ -1,6 +1,7 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
+#include <asio/use_future.hpp>
 #include <chrono>
 #include <exception>
 #include <filesystem>
@@ -11,7 +12,8 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/core/EventLoopAttachment.h>
+#include <ruvia/core/asio_task.h>
+#include <ruvia/core/execution_domain.h>
 
 #include "config/command_line.config.h"
 #include "platform/windows/capture.transport.h"
@@ -22,7 +24,7 @@
 
 namespace {
 using namespace ultraterimal::agent;
-asio::awaitable<void> child(ruvia::EventLoop loop, const CommandLine& options) {
+asio::awaitable<void> child(ruvia::execution_handle loop, const CommandLine& options) {
     DesktopParent parent(options.windowsSession, options.parentProcess);
     auto pipe = NamedPipeTransport::connect(loop.executor(), options.pipeName, options.parentProcess);
     std::string result;
@@ -48,7 +50,7 @@ asio::awaitable<void> child(ruvia::EventLoop loop, const CommandLine& options) {
     co_await pipe->send(std::move(result));
     (void)co_await pipe->receive();
 }
-asio::awaitable<void> parent(ruvia::EventLoop loop, std::filesystem::path executable) {
+asio::awaitable<void> parent(ruvia::execution_handle loop, std::filesystem::path executable) {
     DesktopIdentity identity(currentDesktopSession());
     NamedPipeTransport pipe(loop.executor(), identity.pipeSid());
     DesktopProcess process(loop.executor(), identity, executable, pipe.name());
@@ -79,7 +81,7 @@ asio::awaitable<void> parent(ruvia::EventLoop loop, std::filesystem::path execut
 int wmain(int argc, wchar_t** argv) {
     try {
         asio::io_context io;
-        auto attachment = ruvia::attachEventLoop(io);
+        ruvia::execution_domain attachment(io);
         std::vector<std::wstring_view> arguments;
         for (int i = 1; i < argc; ++i) {
             arguments.emplace_back(argv[i]);
@@ -89,11 +91,15 @@ int wmain(int argc, wchar_t** argv) {
             return 2;
         }
         std::exception_ptr failure;
-        asio::co_spawn(io, argc == 1 ? parent(attachment.loop(), std::filesystem::absolute(argv[0])) : child(attachment.loop(), *options), [&](std::exception_ptr error) {
+        asio::co_spawn(attachment.executor(), argc == 1 ? parent(attachment.handle(), std::filesystem::absolute(argv[0])) : child(attachment.handle(), *options), [&](std::exception_ptr error) {
             failure = error;
-            attachment.stop();
+            attachment.request_stop();
         });
-        attachment.run();
+        io.run();
+        io.restart();
+        auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
+        io.run();
+        retired.get();
         if (failure) {
             std::rethrow_exception(failure);
         }

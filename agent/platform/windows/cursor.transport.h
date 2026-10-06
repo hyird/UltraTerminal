@@ -12,6 +12,7 @@ namespace ultraterimal::agent {
 // Empty pixel data means only position/visibility changed; force resends shape.
 class DesktopCursor {
   public:
+    static bool requiresBackground(const CapturedFrame& frame);
     std::optional<wire::CursorUpdate> update(const CapturedFrame& frame, bool force = false);
 
   private:

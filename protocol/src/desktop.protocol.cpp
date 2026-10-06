@@ -1,9 +1,21 @@
 #include "ultraterimal/protocol/desktop.protocol.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace ultraterimal::protocol {
-DesktopChannelValidator::DesktopChannelValidator(DesktopChannelBinding binding) : binding_(std::move(binding)) {}
+DesktopChannelValidator::DesktopChannelValidator(DesktopChannelBinding binding) : binding_(std::move(binding)) {
+    setOptimizationContract(binding_.optimizationContract);
+}
+void DesktopChannelValidator::setOptimizationContract(std::uint32_t contract) noexcept {
+    allowedOptimizationContract_ = contract == 2 ? 2 : 0;
+}
+void DesktopChannelValidator::resetRefinement() noexcept {
+    refined_ = false;
+    refinementBytes_ = 0;
+    refinementTiles_ = 0;
+    refinementGrid_.reset();
+}
 std::expected<void, DesktopMessageError> DesktopChannelValidator::accept(const wire::Envelope& message) {
     if (!validateMessage(message)) {
         return std::unexpected(DesktopMessageError::kMalformed);
@@ -17,9 +29,9 @@ std::expected<void, DesktopMessageError> DesktopChannelValidator::accept(const w
     bool allowed = false;
     if (binding_.purpose == wire::DESKTOP_INPUT) {
         if (binding_.source == ChannelSource::kAgent) {
-            allowed = message.has_cursor_update() || message.has_desktop_resize_result() || message.has_desktop_probe() || message.has_desktop_secure_attention_result();
+            allowed = message.has_cursor_update() || message.has_desktop_resize_result() || message.has_desktop_probe() || message.has_desktop_secure_attention_result() || message.has_desktop_pipeline_report();
         } else {
-            allowed = message.has_input_event() || message.has_quality_feedback() || message.has_request_refresh() || message.has_desktop_resize() || message.has_desktop_probe() || message.has_desktop_video_capabilities();
+            allowed = message.has_input_event() || message.has_quality_feedback() || message.has_request_refresh() || message.has_desktop_resize() || message.has_desktop_probe() || message.has_desktop_video_capabilities() || message.has_desktop_refinement_ack();
             if ((message.has_input_event() || message.has_desktop_resize()) && !binding_.writeControl) {
                 return std::unexpected(DesktopMessageError::kReadOnly);
             }
@@ -53,7 +65,9 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         width_ = message.video_config().width();
         height_ = message.video_config().height();
         mode_ = Mode::kVideo;
-        refined_ = false;
+        activeOptimizationContract_ = allowedOptimizationContract_ == 2 && message.video_config().desktop_optimization_contract() == 2 ? 2 : 0;
+        refinementBatch_ = 0;
+        resetRefinement();
         tiles_ = {};
         return true;
     }
@@ -64,18 +78,14 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         }
         frame_ = message.frame_id();
         timestamp_ = message.video_frame().timestamp_microseconds();
-        refined_ = false;
+        resetRefinement();
         return true;
     }
     if (message.has_video_refinement()) {
-        if (mode_ != Mode::kVideo || refined_ || message.generation() != generation_ || !frame_ || message.frame_id() != frame_ || message.base_frame_id() != frame_) {
+        if (mode_ != Mode::kVideo || message.generation() != generation_ || !frame_ || message.frame_id() != frame_ || message.base_frame_id() != frame_) {
             return false;
         }
-        if (!acceptPatches(message.video_refinement().patches())) {
-            return false;
-        }
-        refined_ = true;
-        return true;
+        return acceptRefinement(message.video_refinement());
     }
     if (message.has_desktop_region_update()) {
         if (mode_ != Mode::kVideo || message.generation() != generation_ || !frame_ || message.base_frame_id() != frame_ || message.frame_id() <= frame_) {
@@ -92,7 +102,7 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
             return false;
         }
         frame_ = message.frame_id();
-        refined_ = false;
+        resetRefinement();
         return true;
     }
     if (message.has_full_frame()) {
@@ -102,6 +112,12 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         const auto& full = message.full_frame();
         if (message.generation() == generation_ && (mode_ != Mode::kLossless || full.width() != width_ || full.height() != height_ || message.frame_id() <= frame_)) {
             return false;
+        }
+        if (message.generation() != generation_) {
+            activeOptimizationContract_ = 0;
+            refinementBatch_ = 0;
+            resetRefinement();
+            tiles_ = {};
         }
         mode_ = Mode::kLossless;
         generation_ = message.generation();
@@ -127,6 +143,48 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         }
     }
     frame_ = message.frame_id();
+    return true;
+}
+bool DesktopChannelValidator::acceptRefinement(const wire::VideoRefinement& refinement) {
+    if (activeOptimizationContract_ != 2) {
+        if (refinement.batch_id() || refinement.kind() != wire::UNSPECIFIED || refined_ || !acceptPatches(refinement.patches())) {
+            return false;
+        }
+        refined_ = true;
+        return true;
+    }
+    if (!refinement.batch_id() || refinement.batch_id() <= refinementBatch_ ||
+        (refinement.kind() != wire::STATIC_DETAIL && refinement.kind() != wire::DYNAMIC_DETAIL)) {
+        return false;
+    }
+    std::array<std::size_t, 32> indices{};
+    std::size_t count = 0;
+    std::size_t bytes = 0;
+    const std::size_t columns = (width_ + 127) / 128;
+    const std::size_t rows = (height_ + 63) / 64;
+    for (const auto& patch : refinement.patches()) {
+        const auto& area = patch.destination();
+        if (patch.cache_slot() || patch.png().empty() || area.x() >= width_ || area.y() >= height_ ||
+            area.x() % 128 || area.y() % 64 || area.width() != std::min(128u, width_ - area.x()) || area.height() != std::min(64u, height_ - area.y())) {
+            return false;
+        }
+        const std::size_t index = (area.y() / 64) * columns + area.x() / 128;
+        if (refinementGrid_.test(index) || std::find(indices.begin(), indices.begin() + count, index) != indices.begin() + count) {
+            return false;
+        }
+        indices[count++] = index;
+        bytes += patch.png().size();
+    }
+    if (refinementTiles_ + count > std::min(std::size_t{2048}, columns * rows) || refinementBytes_ + bytes > 8 * 1024 * 1024) {
+        return false;
+    }
+    // Commit only after all grid/resource checks, including the entire batch.
+    for (std::size_t index = 0; index < count; ++index) {
+        refinementGrid_.set(indices[index]);
+    }
+    refinementBatch_ = refinement.batch_id();
+    refinementTiles_ += count;
+    refinementBytes_ += bytes;
     return true;
 }
 bool DesktopChannelValidator::acceptPatches(const google::protobuf::RepeatedPtrField<wire::PatchRect>& patches) {

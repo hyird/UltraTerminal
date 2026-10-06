@@ -2,7 +2,7 @@
 #include <asio/awaitable.hpp>
 #include <string>
 
-#include <ruvia/core/EventLoop.h>
+#include <ruvia/core/execution_handle.h>
 
 #include "features/connection/connection.config.h"
 
@@ -11,5 +11,5 @@ struct EnrollmentIdentity {
     std::string deviceId;
     std::string credential;
 };
-asio::awaitable<EnrollmentIdentity> exchangeEnrollment(ruvia::EventLoop loop, ConnectionConfig config, std::string code, std::string name);
+asio::awaitable<EnrollmentIdentity> exchangeEnrollment(ruvia::execution_handle loop, ConnectionConfig config, std::string code, std::string name);
 } // namespace ultraterimal::agent

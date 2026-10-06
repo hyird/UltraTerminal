@@ -30,7 +30,7 @@ void validateFrame(const CapturedFrame& frame) {
     if ((!mono && !color && !masked) || !width || !height || width > 1024 || height > 1024 || (mono && frame.pointerHeight % 2) ||
         frame.hotspotX < 0 || frame.hotspotY < 0 || static_cast<std::uint32_t>(frame.hotspotX) >= width || static_cast<std::uint32_t>(frame.hotspotY) >= height ||
         frame.pointerPitch < minimumPitch || required > 4 * 1024 * 1024 || required > frame.pointerShape.size() ||
-        !frame.width || !frame.height || frame.width > 16384 || frame.height > 16384 || screenBytes > 64 * 1024 * 1024 || ((!color || !frame.bgra.empty()) && screenBytes > frame.bgra.size()) || frame.rotation != 1) {
+        !frame.width || !frame.height || frame.width > 16384 || frame.height > 16384 || screenBytes > 64 * 1024 * 1024 || (!frame.bgra.empty() && screenBytes > frame.bgra.size()) || frame.rotation != 1) {
         throw std::runtime_error("Invalid desktop cursor shape or background");
     }
 }
@@ -83,6 +83,9 @@ wire::CursorUpdate convert(const CapturedFrame& frame) {
                 if (screenX < 0 || screenY < 0 || screenX >= frame.width || screenY >= frame.height) {
                     pixel = {};
                 } else {
+                    if (frame.bgra.size() < static_cast<std::size_t>(frame.width) * frame.height * 4) {
+                        throw std::runtime_error("Desktop cursor inversion requires its captured background");
+                    }
                     const auto offset = (static_cast<std::size_t>(screenY) * frame.width + static_cast<std::size_t>(screenX)) * 4;
                     pixel[0] ^= frame.bgra[offset + 2];
                     pixel[1] ^= frame.bgra[offset + 1];
@@ -99,6 +102,40 @@ wire::CursorUpdate convert(const CapturedFrame& frame) {
     return result;
 }
 } // namespace
+bool DesktopCursor::requiresBackground(const CapturedFrame& frame) {
+    if (!frame.pointerVisible || frame.pointerShape.empty()) {
+        return false;
+    }
+    validateFrame(frame);
+    const bool mono = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME;
+    const bool masked = frame.pointerType == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR;
+    if (!mono && !masked) {
+        return false;
+    }
+    const auto height = mono ? frame.pointerHeight / 2 : frame.pointerHeight;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < frame.pointerWidth; ++x) {
+            bool inversion;
+            if (mono) {
+                const auto offset = static_cast<std::size_t>(y) * frame.pointerPitch + x / 8;
+                const auto bit = static_cast<std::uint8_t>(0x80U >> (x % 8));
+                inversion = (frame.pointerShape[offset] & frame.pointerShape[offset + static_cast<std::size_t>(height) * frame.pointerPitch] & bit) != 0;
+            } else {
+                const auto* pixel = frame.pointerShape.data() + static_cast<std::size_t>(y) * frame.pointerPitch + x * 4;
+                if (pixel[3] != 0 && pixel[3] != 255) {
+                    throw std::runtime_error("Invalid masked cursor alpha");
+                }
+                inversion = pixel[3] == 255 && (pixel[0] | pixel[1] | pixel[2]);
+            }
+            const auto screenX = static_cast<std::int64_t>(frame.pointerX) + x;
+            const auto screenY = static_cast<std::int64_t>(frame.pointerY) + y;
+            if (inversion && screenX >= 0 && screenY >= 0 && screenX < frame.width && screenY < frame.height) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 std::optional<wire::CursorUpdate> DesktopCursor::update(const CapturedFrame& frame, bool force) {
     if (!frame.pointerVisible || frame.pointerShape.empty()) {
         // DXGI's hidden pointer coordinates are undefined. Keep the last known

@@ -134,15 +134,15 @@ message Heartbeat { uint64 monotonic_milliseconds = 1; }
 message ChannelGrant { string channel_id = 1; ChannelPurpose purpose = 2; bytes ticket = 3; }
 message SessionOpen { SessionKind kind = 1; string user_id = 2; reserved 3, 4; reserved "operating_system_user"; bool write_control = 5; repeated ChannelGrant channels = 6; uint32 desktop_input_contract = 7; }
 message ChannelOpen { ChannelPurpose purpose = 1; bytes ticket = 2; }
-message ChannelReady { ChannelPurpose purpose = 1; }
+message ChannelReady { ChannelPurpose purpose = 1; uint32 desktop_optimization_contract = 2; }
 // Local service/desktop IPC only. No device credential or remote channel ticket.
-message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; }
+message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; uint32 desktop_optimization_contract = 5; }
 message DesktopReady {}
 message ChannelData { bytes data = 1; }
 message SessionClose { string reason = 1; }
 message SessionError { string code = 1; string message = 2; }
 message DisplayMode { uint32 width = 1; uint32 height = 2; }
-message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; }
+message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; uint32 desktop_optimization_contract = 7; }
 message DesktopResize { uint64 request_id = 1; uint32 width = 2; uint32 height = 3; }
 message DesktopResizeResult { uint64 request_id = 1; bool applied = 2; }
 // Service -> browser. Zero means dispatched, not confirmation of a UI transition.
@@ -178,8 +178,9 @@ message VideoFrame {
   bytes data = 1;
   bool key_frame = 2;
   uint64 timestamp_microseconds = 3;
-  // Agent wall time for color conversion and encoding only. Excludes capture,
-  // pacing, network and browser decode. Zero means unavailable (older Agent).
+  // Agent wall time for update preparation and encoding, including rejected
+  // region/PNG attempts. Excludes capture, pacing, transport and browser decode.
+  // Zero means unavailable (older Agent); stage_timing preserves measured zero.
   uint32 encode_microseconds = 4;
   // Meaningful only when encode_microseconds is nonzero.
   bool hardware_encoding = 5;
@@ -188,6 +189,29 @@ message VideoFrame {
   optional uint32 target_frames_per_second = 6;
   optional uint32 target_bitrate = 7;
   bool gpu_encoding = 8; // No full-frame CPU readback or CPU color conversion.
+  DesktopStageTiming stage_timing = 9;
+}
+// Local durations only, each <= 60000000 us. Presence distinguishes unexecuted
+// stages from measured zero. Stages may overlap: never sum as total latency.
+message DesktopStageTiming {
+  optional uint32 worker_queue_microseconds = 1;
+  optional uint32 acquire_wait_microseconds = 2;
+  optional uint32 source_age_microseconds = 3;
+  optional uint32 pacing_credit_wait_microseconds = 4;
+  optional uint32 gpu_sync_wait_microseconds = 5;
+  optional uint32 readback_ready_microseconds = 6;
+  optional uint32 prepare_cpu_microseconds = 7;
+  optional uint32 png_encode_microseconds = 8;
+  optional uint32 video_encode_microseconds = 9;
+  uint32 coalesced_captures = 10;
+}
+// Browser-local software stages, not physical presentation or remote-clock deltas.
+message DesktopBrowserTiming {
+  optional uint32 receive_queue_microseconds = 1;
+  optional uint32 decode_microseconds = 2;
+  optional uint32 canvas_submit_microseconds = 3;
+  optional uint32 png_decode_microseconds = 4;
+  optional uint32 baseline_wait_microseconds = 5;
 }
 message Rectangle { uint32 x = 1; uint32 y = 2; uint32 width = 3; uint32 height = 4; }
 message FullFrame { uint32 width = 1; uint32 height = 2; bytes rgba = 3; }
@@ -236,10 +260,42 @@ message QualityFeedback {
   bool video_refinement = 9;
   // Browser-only diagnostics, consumed by the gateway. At most once per 5 s.
   VisibleFrameTiming visible_frame_timing = 8;
+  // Gateway-consumed diagnostics associated with displayed_generation/frame.
+  // Does not participate in QoS; decode_microseconds above retains its meaning.
+  DesktopBrowserTiming browser_timing = 10;
 }
-// Applied only to the matching video frame, never to a newer canvas or baseline.
-// Envelope frame_id == base_frame_id == the latest video frame ID.
-message VideoRefinement { repeated PatchRect patches = 1; }
+enum RefinementKind { UNSPECIFIED = 0; STATIC_DETAIL = 1; DYNAMIC_DETAIL = 2; }
+// Applied only to the matching composed canvas, never to a newer baseline.
+// Envelope frame_id == base_frame_id. Legacy batch_id/kind are zero; v2 batch
+// IDs strictly increase within generation (gaps allowed), with uncached PNGs.
+message VideoRefinement {
+  repeated PatchRect patches = 1;
+  uint64 batch_id = 2;
+  RefinementKind kind = 3;
+  DesktopStageTiming stage_timing = 4;
+}
+// Independent, non-coalescible input-channel ACK. Envelope generation/frame_id
+// identify the canvas, base_frame_id=0. Late/duplicate tuples are runtime no-ops.
+message DesktopRefinementAck {
+  enum Status { UNSPECIFIED = 0; APPLIED = 1; SUPERSEDED = 2; }
+  uint64 batch_id = 1;
+  Status status = 2;
+}
+// Agent input-channel diagnostics only. Server consumes, never forwards to Browser.
+message DesktopPipelineSample {
+  uint64 generation = 1;
+  uint64 frame_id = 2;
+  uint64 batch_id = 3;
+  enum Source { UNSPECIFIED = 0; DESKTOP_WORKER = 1; AGENT_RELAY = 2; }
+  Source source = 4;
+  optional uint32 ipc_write_microseconds = 5;
+  optional uint32 send_queue_wait_microseconds = 6;
+  optional uint32 native_write_microseconds = 7;
+}
+message DesktopPipelineReport {
+  repeated DesktopPipelineSample samples = 1; // At most 32, best effort.
+  uint32 dropped_samples = 2;
+}
 // Atomic updates to the composed canvas. All copies read the PREVIOUS canvas,
 // then patches are applied. Does not change the video decoder's reference frames.
 message DesktopRegionUpdate {
@@ -248,6 +304,7 @@ message DesktopRegionUpdate {
   uint32 encode_microseconds = 3;
   uint32 target_frames_per_second = 4;
   uint32 target_bitrate = 5;
+  DesktopStageTiming stage_timing = 6;
 }
 enum VideoCodec { VIDEO_CODEC_UNSPECIFIED = 0; AVC = 1; HEVC = 2; AV1 = 3; }
 // Sent on the authenticated input channel; independent of frame ACKs. Missing
@@ -256,6 +313,7 @@ message DesktopVideoCapabilities {
   repeated VideoCodec codecs = 1;
   bool region_updates = 2;
   bool tile_cache = 3;
+  uint32 desktop_optimization_contract = 4;
 }
 message RequestRefresh {}
 // Agent issues monotonically increasing nonces on the input channel and retains
@@ -333,5 +391,7 @@ message Envelope {
     VideoRefinement video_refinement = 43;
     DesktopRegionUpdate desktop_region_update = 44;
     DesktopVideoCapabilities desktop_video_capabilities = 45;
+    DesktopRefinementAck desktop_refinement_ack = 46;
+    DesktopPipelineReport desktop_pipeline_report = 47;
   }
 }

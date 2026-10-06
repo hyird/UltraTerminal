@@ -4,11 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include <ruvia/core/Channel.h>
+#include <ruvia/core/channel.h>
 
 #include "desktop_diagnostics.types.h"
 #include "modules/sessions/session.types.h"
@@ -60,35 +61,38 @@ class DesktopDelivery {
 
   private:
     friend class DesktopSession;
+    friend class DesktopEndpoint;
     DesktopDelivery() = default;
     std::string bytes_;
     std::shared_ptr<DesktopBudget> local_;
     std::shared_ptr<DesktopBudget> global_;
+    bool browserVideo_ = false;
+    std::chrono::steady_clock::time_point enqueued_{}, received_{};
 };
 class DesktopEndpoint {
   public:
-    ruvia::Task<std::unique_ptr<DesktopDelivery>> receive(ruvia::StopToken stop);
+    ruvia::task<std::unique_ptr<DesktopDelivery>> receive(ruvia::stop_token stop);
 
   private:
     friend class DesktopSession;
-    DesktopEndpoint(ruvia::WorkerHandle worker, protocol::DesktopChannelBinding binding);
+    DesktopEndpoint(ruvia::execution_handle worker, protocol::DesktopChannelBinding binding);
     void close();
     bool closed_ = false;
     bool waiting_ = false;
     protocol::DesktopChannelValidator validator_;
-    std::pair<ruvia::ChannelSender<std::unique_ptr<DesktopDelivery>>, ruvia::ChannelReceiver<std::unique_ptr<DesktopDelivery>>> queue_;
-    std::pair<ruvia::ChannelSender<bool>, ruvia::ChannelReceiver<bool>> space_;
+    std::pair<ruvia::channel_sender<std::unique_ptr<DesktopDelivery>>, ruvia::channel_receiver<std::unique_ptr<DesktopDelivery>>> queue_;
+    std::pair<ruvia::channel_sender<bool>, ruvia::channel_receiver<bool>> space_;
 };
 class DesktopSession {
   public:
-    DesktopSession(ruvia::WorkerHandle worker, std::shared_ptr<DesktopBudget> global);
+    DesktopSession(ruvia::execution_handle worker, std::shared_ptr<DesktopBudget> global);
     ~DesktopSession();
     DesktopSession(const DesktopSession&) = delete;
     DesktopSession& operator=(const DesktopSession&) = delete;
     // Authorization is obtained from SessionService before attaching; no ticket is stored here.
     std::shared_ptr<DesktopEndpoint> attach(const ChannelAuthorization& authorization, protocol::ChannelSource source);
     // One reader per endpoint awaits admission before reading its next message.
-    ruvia::Task<bool> forward(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::StopToken stop = {});
+    ruvia::task<bool> forward(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop = {});
     bool ready() const { return ready_ && !closed_; }
     bool closed() const { return closed_; }
     void close(DesktopCloseReason reason = DesktopCloseReason::kServerStopped, DesktopCloseOrigin origin = DesktopCloseOrigin::kServer);
@@ -96,10 +100,32 @@ class DesktopSession {
     DesktopCloseOrigin closeOrigin() const { return closeOrigin_; }
     const DesktopDiagnostics& diagnostics() const { return diagnostics_; }
     void logHealth();
+    // Only completed browser video writes are sampled; never diagnostics/control.
+    void writeCompleted(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed);
 
   private:
     void logDiagnostics(std::string_view event) const;
-    ruvia::WorkerHandle worker_;
+    void optimizationBarrier(const wire::Envelope& message);
+    void completeRefinement();
+    enum class RefinementAckResult { kForward,
+                                     kIgnore,
+                                     kInvalid };
+    RefinementAckResult refinementAck(const wire::Envelope& message);
+    struct RefinementRecord {
+        DesktopFrameKey key;
+        std::chrono::steady_clock::time_point sent;
+    };
+    // Sent auxiliary lease: only exact cleanup ACK or session end completes it.
+    // Config/frame retirement and timeout must never manufacture new credit.
+    std::optional<RefinementRecord> outstandingRefinement_;
+    std::array<DesktopFrameKey, 128> retiredRefinements_{};
+    std::size_t nextRetiredRefinement_ = 0;
+    DesktopFrameKey evictedRefinement_{};
+    std::uint64_t pausedRefinementGeneration_ = 0;
+    std::uint32_t browserOptimizationRequest_ = 0, agentOptimizationCapability_ = 0;
+    bool optimizationActive_ = false;
+    DesktopFrameKey cumulativeVideoStages_{};
+    ruvia::execution_handle worker_;
     std::shared_ptr<DesktopBudget> global_;
     std::shared_ptr<DesktopBudget> local_ = std::make_shared<DesktopBudget>(32 * 1024 * 1024);
     std::array<std::shared_ptr<DesktopEndpoint>, 4> endpoints_;

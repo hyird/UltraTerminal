@@ -18,6 +18,20 @@ class DesktopContinuity {
         acknowledged_ = displayed_ = generationOffset_ == 0;
     }
     bool outgoing(wire::Envelope& message) {
+        if (message.has_desktop_pipeline_report()) {
+            // Diagnostics refer to already observed frames; they must never
+            // advance generation/probe watermarks or unlock input after handoff.
+            auto& report = *message.mutable_desktop_pipeline_report();
+            for (const auto& sample : report.samples()) {
+                if (!sample.generation() || sample.generation() > generation_ - generationOffset_) {
+                    return false;
+                }
+            }
+            for (auto& sample : *report.mutable_samples()) {
+                sample.set_generation(sample.generation() + generationOffset_);
+            }
+            return message.generation() == 0;
+        }
         if (message.generation()) {
             if (message.generation() > std::numeric_limits<std::uint64_t>::max() - generationOffset_) {
                 return false;
@@ -70,6 +84,15 @@ class DesktopContinuity {
             }
             displayed_ = true;
             feedback.set_displayed_generation(feedback.displayed_generation() - generationOffset_);
+            return true;
+        }
+        if (message.has_desktop_refinement_ack()) {
+            // Independent credit, including SUPERSEDED, must not wait for
+            // ordinary frame feedback or a writable input binding.
+            if (message.generation() <= generationOffset_ || message.generation() > generation_) {
+                return false;
+            }
+            message.set_generation(message.generation() - generationOffset_);
             return true;
         }
         if (!acknowledged_ || !displayed_) {

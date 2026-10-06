@@ -31,6 +31,8 @@ class Hook {
   public:
     Hook() : handle_(SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, GetModuleHandleW(nullptr), 0)) {
         require(handle_ != nullptr, "Cannot observe test input");
+        MSG message{};
+        PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
     }
     ~Hook() { UnhookWindowsHookEx(handle_); }
 
@@ -48,6 +50,9 @@ void pump(std::size_t count) {
         if (keys.size() < count) {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT);
         }
+    }
+    if (keys.size() != count) {
+        std::cerr << "Injected F24 transitions expected=" << count << " observed=" << keys.size() << '\n';
     }
     require(keys.size() == count, "Missing or extra injected key transitions");
 }

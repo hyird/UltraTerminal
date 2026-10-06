@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-#include <ruvia/core/EventLoop.h>
+#include <ruvia/core/execution_handle.h>
 
 #include "connection.config.h"
 #include "ultraterimal/protocol/message.protocol.h"
@@ -15,7 +15,7 @@ namespace ultraterimal::agent {
 // All operations, including cancel/destruction, belong to the owning Worker.
 class TlsTransport {
   public:
-    TlsTransport(ruvia::EventLoop loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes);
+    TlsTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes);
     ~TlsTransport();
     TlsTransport(const TlsTransport&) = delete;
     TlsTransport& operator=(const TlsTransport&) = delete;

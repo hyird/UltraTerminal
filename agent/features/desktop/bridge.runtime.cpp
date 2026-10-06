@@ -11,9 +11,10 @@
 #include <system_error>
 #include <utility>
 
-#include <ruvia/core/AsioTask.h>
-#include <ruvia/core/BlockingPool.h>
+#include <ruvia/core/asio_task.h>
+#include <ruvia/core/blocking_pool.h>
 
+#include "optimization.runtime.h"
 #include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/desktop_process.transport.h"
@@ -25,11 +26,12 @@ namespace ultraterimal::agent {
 namespace {
 class Bridge {
   public:
-    Bridge(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopWorkerChannel& remote, NamedPipeTransport& pipe,
+    Bridge(ruvia::execution_handle loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote, NamedPipeTransport& pipe,
            std::string session, std::uint32_t windowsSession, bool writeControl)
         : loop_(loop), windowsSession_(windowsSession), systemPool_(systemPool), remote_(remote), pipe_(pipe), deadline_(loop.executor()), session_(std::move(session)),
           incoming_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kDesktop}),
-          outgoing_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kService}) {}
+          outgoing_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kService}),
+          optimization_(remote_.serverOptimizationContract()) {}
     ~Bridge() {
         *alive_ = false;
         stop();
@@ -55,6 +57,11 @@ class Bridge {
         if (!bytes) {
             throw std::runtime_error("Cannot encode service desktop command");
         }
+        if (message.has_desktop_video_capabilities()) {
+            optimization_.request(message.desktop_video_capabilities().desktop_optimization_contract());
+            incoming_.setOptimizationContract(optimization_.allowedContract());
+            outgoing_.setOptimizationContract(optimization_.allowedContract());
+        }
         co_await pipe_.send(std::move(*bytes));
     }
     asio::awaitable<wire::Envelope> receiveLocal() {
@@ -62,6 +69,9 @@ class Bridge {
         auto message = protocol::decodeMessage(bytes);
         if (!message || !incoming_.accept(*message)) {
             throw std::runtime_error("Invalid desktop process output");
+        }
+        if (message->has_video_config()) {
+            optimization_.configure(message->video_config());
         }
         co_return std::move(*message);
     }
@@ -73,6 +83,7 @@ class Bridge {
         start.mutable_desktop_start()->set_display_index(displayIndex);
         start.mutable_desktop_start()->set_write_control(writeControl);
         start.mutable_desktop_start()->set_desktop_input_contract(desktopInputContract);
+        start.mutable_desktop_start()->set_desktop_optimization_contract(remote_.serverOptimizationContract());
         wire::Envelope first;
         try {
             co_await sendLocal(std::move(start));
@@ -117,15 +128,15 @@ class Bridge {
                     std::uint32_t error = 1237; // ERROR_RETRY
                     if (now >= nextSecureAttention_) {
                         nextSecureAttention_ = now + std::chrono::seconds(2);
-                        error = co_await ruvia::asAwaitable(ruvia::runBlocking(systemPool_, loop_.handle(), [session = windowsSession_] {
-                            try {
-                                return DesktopIdentity(session).sendSecureAttention();
-                            } catch (const std::system_error& failure) {
-                                return static_cast<std::uint32_t>(failure.code().value());
-                            } catch (...) {
-                                return std::uint32_t{5}; // ERROR_ACCESS_DENIED
-                            }
-                        }));
+                        error = (co_await ruvia::as_awaitable(ruvia::run_blocking(systemPool_, loop_, [session = windowsSession_] {
+                                    try {
+                                        return DesktopIdentity(session).sendSecureAttention();
+                                    } catch (const std::system_error& failure) {
+                                        return static_cast<std::uint32_t>(failure.code().value());
+                                    } catch (...) {
+                                        return std::uint32_t{5}; // ERROR_ACCESS_DENIED
+                                    }
+                                }))).value();
                     }
                     wire::Envelope result;
                     result.mutable_desktop_secure_attention_result()->set_win32_error(error);
@@ -138,7 +149,7 @@ class Bridge {
                     co_return;
                 }
                 if (message.channel_id() == "video") {
-                    co_await remote_.sendVideo(std::move(message));
+                    co_await remote_.sendVideo(std::move(message), optimization_.activeContract());
                 } else {
                     co_await remote_.sendCursor(std::move(message));
                 }
@@ -152,15 +163,14 @@ class Bridge {
     asio::awaitable<void> download() {
         try {
             for (;;) {
-                auto message = co_await remote_.receiveInput();
-                const auto bytes = message.ByteSizeLong();
+                auto entry = co_await remote_.receiveInput();
                 try {
-                    co_await sendLocal(std::move(message));
+                    co_await sendLocal(std::move(entry.message));
                 } catch (...) {
-                    remote_.completeInput(bytes);
+                    remote_.completeInput(entry);
                     throw;
                 }
-                remote_.completeInput(bytes);
+                remote_.completeInput(entry);
             }
         } catch (...) {
             recordFailure("control_ipc_write");
@@ -184,21 +194,22 @@ class Bridge {
     }
     bool stopped_ = false, startupTimedOut_ = false, waitingForReady_ = true;
     std::optional<std::pair<wire::DesktopFault::Stage, wire::DesktopFault::Code>> failure_;
-    ruvia::EventLoop loop_;
+    ruvia::execution_handle loop_;
     std::uint32_t windowsSession_;
-    ruvia::BlockingPool& systemPool_;
+    ruvia::blocking_pool& systemPool_;
     std::chrono::steady_clock::time_point nextSecureAttention_{};
     DesktopWorkerChannel& remote_;
     NamedPipeTransport& pipe_;
     asio::steady_timer deadline_;
     std::string session_;
     protocol::DesktopPipeValidator incoming_, outgoing_;
+    DesktopOptimizationGate optimization_;
     std::uint64_t sequence_ = 0;
     std::optional<wire::Envelope> terminal_;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 } // namespace
-asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::EventLoop loop, ruvia::BlockingPool& systemPool, DesktopWorkerChannel& remote,
+asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::execution_handle loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote,
                                               NamedPipeTransport& pipe, std::string sessionId, std::uint32_t windowsSession,
                                               std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract) {
     Bridge bridge(std::move(loop), systemPool, remote, pipe, std::move(sessionId), windowsSession, writeControl);

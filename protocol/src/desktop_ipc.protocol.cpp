@@ -5,8 +5,12 @@
 namespace ultraterimal::protocol {
 DesktopPipeValidator::DesktopPipeValidator(DesktopPipeBinding binding)
     : binding_(std::move(binding)),
-      input_({binding_.sessionId, "input", wire::DESKTOP_INPUT, binding_.source == DesktopPipeSource::kService ? ChannelSource::kBrowser : ChannelSource::kAgent, binding_.writeControl}),
-      video_({binding_.sessionId, "video", wire::DESKTOP_VIDEO, ChannelSource::kAgent, binding_.writeControl}) {}
+      input_({binding_.sessionId, "input", wire::DESKTOP_INPUT, binding_.source == DesktopPipeSource::kService ? ChannelSource::kBrowser : ChannelSource::kAgent, binding_.writeControl, binding_.optimizationContract}),
+      video_({binding_.sessionId, "video", wire::DESKTOP_VIDEO, ChannelSource::kAgent, binding_.writeControl, binding_.optimizationContract}) {}
+void DesktopPipeValidator::setOptimizationContract(std::uint32_t contract) noexcept {
+    input_.setOptimizationContract(contract);
+    video_.setOptimizationContract(contract);
+}
 std::expected<void, DesktopMessageError> DesktopPipeValidator::accept(const wire::Envelope& message) {
     if (!validateMessage(message)) {
         return std::unexpected(DesktopMessageError::kMalformed);

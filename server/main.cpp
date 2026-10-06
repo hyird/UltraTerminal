@@ -5,8 +5,8 @@
 #include <memory>
 #include <string_view>
 
-#include <ruvia/web/App.h>
-#include <ruvia/web/Controller.h>
+#include <ruvia/web/application.h>
+#include <ruvia/web/controller.h>
 #include <spdlog/spdlog.h>
 
 #include "config/gateway.runtime.h"
@@ -52,29 +52,28 @@ int main(int argc, char** argv) {
         }
         const auto gateway = std::make_shared<GatewayRuntime>(config.database);
         const auto native = std::make_shared<NativeServer>(config);
+        const auto runtime = std::make_shared<ServerRuntime>(config);
         auto& app = ruvia::app();
         if (!config.webRoot.empty()) {
-            app.documentRoot({.root = config.webRoot, .staticOptions = {.cacheControl = "no-cache", .indexFile = "index.html", .fileTypes = {.kind = ruvia::StaticFileTypePolicy::Kind::kOnly, .extensions = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi", "gz"}}}, .precompressGzip = true});
+            app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind_type::only, .extensions_ = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi", "gz"}}}, .precompress_gzip_ = true});
         }
-        app.listen({.address = config.address, .http = config.port})
-            .server({.workerCount = 1, .processSignalHandlers = ruvia::ProcessSignalHandlerPolicy::kInstall, .idleTimeout = std::chrono::seconds(45), .requestHeaderTimeout = std::chrono::seconds(10), .requestBodyTimeout = std::chrono::seconds(10), .writeTimeout = std::chrono::seconds(10), .maxConnectionsPerWorker = 512, .maxBufferedBodyBytes = 65536, .maxWebSocketMessageBytes = ultraterimal::protocol::kMaximumMessageBytes})
-            .httpClient({.alias = "telegram", .config = {.host = "api.telegram.org", .connectionCount = 2, .maxBufferedRequests = 32, .requestTimeout = std::chrono::seconds(10), .maxResponseBytes = 65536}})
-            .blockingPool({.threadCount = 4, .queueCapacity = 64})
-            .rateLimit({.rule = {.maxRequests = 300, .window = std::chrono::minutes(1)}})
-            .useWorkerState<ServerRuntime>([config] { return ServerRuntime(config); })
-            .onError([](ruvia::Context& context, ruvia::HttpErrorInfo error) -> ruvia::Task<ruvia::HttpResponse> {
-                co_return context.error({.status = error.status(), .code = "request_failed", .message = "Request failed"});
+        // Shared business state is confined to this single I/O thread.
+        app.listen({.address_ = config.address, .http_ = config.port})
+            .server({.io_thread_count_ = 1, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install, .idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::seconds(10), .write_timeout_ = std::chrono::seconds(10), .max_connections_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
+            .http_client({.alias_ = "telegram", .config_ = {.host_ = "api.telegram.org", .connection_count_ = 2, .max_buffered_requests_ = 32, .request_timeout_ = std::chrono::seconds(10), .max_response_bytes_ = 65536}})
+            .blocking_pool({.thread_count_ = 4, .queue_capacity_ = 64})
+            .rate_limit({.rule_ = {.max_requests_ = 300, .window_ = std::chrono::minutes(1)}})
+            .use_service_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
+            .use_connection_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
+            .on_error([](ruvia::context& context, ruvia::http_error_info error) -> ruvia::task<ruvia::http_response> {
+                co_return context.error({.status_ = error.status(), .code_ = "request_failed", .message_ = "Request failed"});
             })
-            .onStart([gateway, native] {
+            .on_start([gateway, native] {
                 gateway->start();
-                const auto workers = ruvia::app().workers();
-                if (workers.size() != 1) {
-                    throw std::runtime_error("Native gateway requires one business Worker");
-                }
-                native->start(workers.front());
+                native->start(ruvia::app().service());
                 spdlog::info("Gateway listening with HTTP behind reverse proxy");
             })
-            .onStop([gateway, native] { native->stop(); gateway->stop(); })
+            .on_stop([gateway, native] { native->stop(); gateway->stop(); })
             .run();
         if (gateway->failed()) {
             throw std::runtime_error("Gateway database lease lost");

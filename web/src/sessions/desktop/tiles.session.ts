@@ -46,16 +46,71 @@ export function desktopCopies(
   return result;
 }
 
-// At most 128 decoded tiles (4 MiB). Owned by one desktop session and retired
-// on generation changes. A failed batch never publishes cache definitions.
+export function desktopTileAreas(
+  patches: Patch[],
+  canvasWidth: number,
+  canvasHeight: number,
+  refinement = false,
+) {
+  if (patches.length > 32 || (refinement && !patches.length))
+    throw new Error("Desktop patch count exceeded");
+  let bytes = 0,
+    pixels = 0;
+  // Check the entire byte/pixel budget before decoding any image.
+  const areas = patches.map((patch) => {
+    if (!patch.destination) throw new Error("Missing desktop patch area");
+    const x = natural(patch.destination.x ?? 0),
+      y = natural(patch.destination.y ?? 0),
+      width = natural(patch.destination.width, 1),
+      height = natural(patch.destination.height, 1),
+      slot = natural(patch.cacheSlot ?? 0),
+      png = patch.png ?? new Uint8Array();
+    if (
+      width > 128 ||
+      height > 64 ||
+      slot > 128 ||
+      x + width > canvasWidth ||
+      y + height > canvasHeight ||
+      (!png.length && !slot) ||
+      (refinement && (slot !== 0 || !png.length))
+    )
+      throw new Error("Invalid desktop tile geometry");
+    if (png.length) {
+      if (png.length < 33 || png.length > 65536)
+        throw new Error("Invalid desktop PNG size");
+      const header = new DataView(png.buffer, png.byteOffset, png.byteLength);
+      if (
+        header.getUint32(0) !== 0x89504e47 ||
+        header.getUint32(4) !== 0x0d0a1a0a ||
+        header.getUint32(8) !== 13 ||
+        header.getUint32(12) !== 0x49484452 ||
+        header.getUint32(16) !== width ||
+        header.getUint32(20) !== height
+      )
+        throw new Error("Invalid desktop PNG header");
+    }
+    bytes += png.length;
+    pixels += width * height;
+    return { x, y, width, height, slot, png };
+  });
+  if (bytes > 256 * 1024 || pixels > 256 * 1024)
+    throw new Error("Desktop tile budget exceeded");
+  return { areas, bytes };
+}
+
+// At most 128 decoded tiles (4 MiB). A failed or retired batch never publishes
+// cache definitions. Refinement uses no remote slots and checks retirement
+// before starting each native decode; in-flight native work is not cancelled.
 export class DesktopTiles {
   private slots = new Map<number, ImageBitmap>();
+  private epoch = 0;
   constructor(
     private decode: (png: Uint8Array) => Promise<ImageBitmap> = (png) =>
       createImageBitmap(new Blob([new Uint8Array(png)], { type: "image/png" })),
   ) {}
 
   clear(): void {
+    this.epoch++;
     for (const image of this.slots.values()) image.close();
     this.slots.clear();
   }
@@ -64,48 +119,17 @@ export class DesktopTiles {
     patches: Patch[],
     canvasWidth: number,
     canvasHeight: number,
+    refinement?: { isCurrent(): boolean },
   ): Promise<DesktopTileBatch> {
-    if (patches.length > 32) throw new Error("Desktop patch count exceeded");
-    let bytes = 0,
-      pixels = 0;
-    // Check the entire byte/pixel budget before decoding any image.
-    const areas = patches.map((patch) => {
-      if (!patch.destination) throw new Error("Missing desktop patch area");
-      const x = natural(patch.destination.x ?? 0),
-        y = natural(patch.destination.y ?? 0),
-        width = natural(patch.destination.width, 1),
-        height = natural(patch.destination.height, 1),
-        slot = natural(patch.cacheSlot ?? 0),
-        png = patch.png ?? new Uint8Array();
-      if (
-        width > 128 ||
-        height > 64 ||
-        slot > 128 ||
-        x + width > canvasWidth ||
-        y + height > canvasHeight ||
-        (!png.length && !slot)
-      )
-        throw new Error("Invalid desktop tile geometry");
-      if (png.length) {
-        if (png.length < 33 || png.length > 65536)
-          throw new Error("Invalid desktop PNG size");
-        const header = new DataView(png.buffer, png.byteOffset, png.byteLength);
-        if (
-          header.getUint32(0) !== 0x89504e47 ||
-          header.getUint32(4) !== 0x0d0a1a0a ||
-          header.getUint32(8) !== 13 ||
-          header.getUint32(12) !== 0x49484452 ||
-          header.getUint32(16) !== width ||
-          header.getUint32(20) !== height
-        )
-          throw new Error("Invalid desktop PNG header");
-      }
-      bytes += png.length;
-      pixels += width * height;
-      return { x, y, width, height, slot, png };
-    });
-    if (bytes > 256 * 1024 || pixels > 256 * 1024)
-      throw new Error("Desktop tile budget exceeded");
+    const { areas, bytes } = desktopTileAreas(
+      patches,
+      canvasWidth,
+      canvasHeight,
+      !!refinement,
+    );
+    const epoch = this.epoch;
+    const current = () =>
+      epoch === this.epoch && (!refinement || refinement.isCurrent());
     const definitions = new Map<number, ImageBitmap>();
     const owned = new Set<ImageBitmap>();
     const decoded = new Map<number, ImageBitmap>();
@@ -115,11 +139,15 @@ export class DesktopTiles {
       // Wait for every bounded worker before cleanup; late completions own images.
       const workers = await Promise.allSettled(
         Array.from({ length: Math.min(4, areas.length) }, async () => {
-          while (next < areas.length) {
+          while (next < areas.length && (!refinement || current())) {
             const index = next++;
             const area = areas[index];
             if (!area.png.length) continue;
             const image = await this.decode(area.png);
+            if (refinement && !current()) {
+              image.close();
+              continue;
+            }
             owned.add(image);
             decoded.set(index, image);
           }
@@ -127,6 +155,11 @@ export class DesktopTiles {
       );
       for (const worker of workers)
         if (worker.status === "rejected") throw worker.reason;
+      if (refinement && !current()) {
+        for (const image of owned) image.close();
+        owned.clear();
+        return { tiles: [], bytes, commit() {}, dispose() {} };
+      }
       for (const [index, area] of areas.entries()) {
         const image = area.png.length
           ? decoded.get(index)
@@ -149,7 +182,8 @@ export class DesktopTiles {
       tiles,
       bytes,
       commit: () => {
-        if (committed) throw new Error("Desktop tile batch committed twice");
+        if (committed || !current())
+          throw new Error("Desktop tile batch is retired or committed twice");
         for (const [slot, image] of definitions) {
           this.slots.get(slot)?.close();
           this.slots.set(slot, image);

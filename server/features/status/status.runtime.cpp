@@ -4,8 +4,8 @@
 #include <utility>
 
 namespace ultraterimal::server {
-StatusSubscription::StatusSubscription(ruvia::WorkerHandle worker, std::string user)
-    : userId(std::move(user)), queue_(ruvia::makeChannel<std::string>(std::move(worker), {.capacity = 64})) {}
+StatusSubscription::StatusSubscription(ruvia::execution_handle worker, std::string user)
+    : userId(std::move(user)), queue_(ruvia::make_channel<std::string>(std::move(worker), {.capacity_ = 64})) {}
 bool StatusSubscription::enqueue(std::string event) {
     if (closed_ || event.empty() || event.size() > 130) {
         return false;
@@ -24,12 +24,12 @@ bool StatusSubscription::enqueue(std::string event) {
     }
     return true;
 }
-ruvia::Task<std::optional<std::string>> StatusSubscription::receive(ruvia::StopToken stop) {
+ruvia::task<std::optional<std::string>> StatusSubscription::receive(ruvia::stop_token stop) {
     auto result = co_await queue_.second.receive(std::move(stop));
-    if (!result.hasValue() || closed_) {
+    if (!result.has_value() || closed_) {
         co_return std::nullopt;
     }
-    auto event = std::move(result).takeValue();
+    auto event = std::move(result).take_value();
     pending_.erase(event);
     co_return event;
 }
@@ -38,7 +38,7 @@ void StatusSubscription::close() {
     queue_.first.close();
     pending_.clear();
 }
-std::shared_ptr<StatusSubscription> StatusHub::subscribe(ruvia::WorkerHandle worker, const std::string& user) {
+std::shared_ptr<StatusSubscription> StatusHub::subscribe(ruvia::execution_handle worker, const std::string& user) {
     std::erase_if(subscribers_, [](const auto& weak) { const auto entry = weak.lock(); return !entry || entry->closed(); });
     if (subscribers_.size() >= 128 || std::count_if(subscribers_.begin(), subscribers_.end(), [&](const auto& weak) { const auto entry = weak.lock(); return entry && entry->userId == user; }) >= 4) {
         return {};

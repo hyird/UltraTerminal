@@ -57,9 +57,18 @@ class DesktopFrameFlow {
         return true;
     }
     void reset(std::uint64_t generation) {
+        if (generation != generation_) {
+            refinementPaused_ = false;
+            lastRefinementBatch_ = 0;
+        }
         generation_ = generation;
         pending_.clear();
         pendingBytes_ = 0;
+        // A decoder/lease can outlive the canvas generation. Preserve its
+        // tuple, spent tokens and written pressure until actual cleanup ACK.
+        if (refinement_) {
+            refinement_->retired = true;
+        }
         acknowledged_ = lastSent_ = 0;
         lastAcknowledgedAt_ = {};
         baseline_.reset();
@@ -112,11 +121,72 @@ class DesktopFrameFlow {
         return static_cast<std::size_t>(std::clamp<std::uint64_t>(bytes, 16384, 4 * 1024 * 1024));
     }
     bool canEncode(Clock::time_point now) const {
-        return !background_ && (pending_.empty() || (pending_.size() < frameWindow() && pendingBytes_ < byteWindow() && now - pending_.front().sent <= pathDelay() + std::chrono::milliseconds(150)));
+        return !background_ && (pending_.empty() || (pending_.size() < frameWindow() && pressureBytes(now) < byteWindow() && now - pending_.front().sent <= pathDelay() + std::chrono::milliseconds(150)));
     }
     std::size_t pendingBytes() const { return pendingBytes_; }
     std::size_t pendingFrames() const { return pending_.size(); }
+    // Refinement is not a dependent video frame. Its written bytes drain at
+    // estimated link throughput, NEVER by an ACK, retirement or timeout refund.
+    std::size_t pressureBytes(Clock::time_point now) const {
+        const auto drained = refinementUpdatedAt_ && now > *refinementUpdatedAt_
+                                 ? linkBytesPerSecond() * static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - *refinementUpdatedAt_).count()) / 1000000
+                                 : 0;
+        return pendingBytes_ + refinementPressureBytes_ - std::min<std::uint64_t>(drained, refinementPressureBytes_);
+    }
+    bool refinementOutstanding(Clock::time_point now) {
+        updateRefinement(now);
+        return refinement_.has_value();
+    }
+    bool refinementPaused(Clock::time_point now) {
+        updateRefinement(now);
+        return refinementPaused_;
+    }
+    bool refinementRetired(Clock::time_point now) {
+        updateRefinement(now);
+        return refinement_ && refinement_->retired;
+    }
+    // Optional work gets <=20% of the link, <=64 KiB, and only remaining
+    // pressure credit. Call BEFORE PNG work and again before committing a batch.
+    std::size_t refinementBudget(Clock::time_point now, std::chrono::microseconds allowedOccupancy = std::chrono::milliseconds(50)) {
+        updateRefinement(now);
+        if (background_ || !detailAllowed() || refinementPaused_ || refinement_ || allowedOccupancy <= std::chrono::microseconds::zero()) {
+            return 0;
+        }
+        const auto pressure = pressureBytes(now);
+        const auto remaining = byteWindow() - std::min(byteWindow(), pressure);
+        const auto occupancy = linkBytesPerSecond() * static_cast<std::uint64_t>(std::min(allowedOccupancy, std::chrono::microseconds(2000000)).count()) / 1000000;
+        return static_cast<std::size_t>(std::min({refinementTokens_, occupancy, static_cast<std::uint64_t>(remaining), std::uint64_t{65536}}));
+    }
+    bool sentRefinement(std::uint64_t generation, std::uint64_t frame, std::uint64_t batch, Clock::time_point now, std::size_t bytes, std::chrono::microseconds allowedOccupancy = std::chrono::milliseconds(50)) {
+        updateRefinement(now);
+        if (generation != generation_ || !frame || frame != lastSent_ || !batch || batch <= lastRefinementBatch_ || !bytes || bytes > refinementBudget(now, allowedOccupancy)) {
+            return false;
+        }
+        refinement_ = Refinement{generation, frame, batch, now};
+        lastRefinementBatch_ = batch;
+        refinementTokens_ -= bytes;
+        refinementPressureBytes_ += bytes;
+        return true;
+    }
+    // The caller validates APPLIED/SUPERSEDED; either is resource cleanup for
+    // the exact tuple, even across generations or after timeout. It cannot
+    // resume a timed-out generation or release a subsequently sent tuple.
+    bool acknowledgeRefinement(std::uint64_t generation, std::uint64_t frame, std::uint64_t batch, Clock::time_point now) {
+        updateRefinement(now);
+        if (!refinement_ || generation != refinement_->generation || frame != refinement_->frame || batch != refinement_->batch || now < refinement_->sent) {
+            return false;
+        }
+        refinement_.reset();
+        return true;
+    }
+    void retireRefinement(Clock::time_point now) {
+        updateRefinement(now);
+        if (refinement_) {
+            refinement_->retired = true;
+        } // Retirement cancels eligibility, NOT the unacknowledged lease.
+    }
     void sent(std::uint64_t generation, std::uint64_t frame, Clock::time_point now, std::size_t bytes) {
+        updateRefinement(now);
         if (generation != generation_) {
             if (!generation || generation < generation_) {
                 throw std::logic_error("Retired desktop generation sent");
@@ -125,6 +195,9 @@ class DesktopFrameFlow {
         }
         if (!frame || frame <= lastSent_ || pending_.size() >= kMaximumInFlightFrames || bytes > std::numeric_limits<std::size_t>::max() - pendingBytes_) {
             throw std::logic_error("Desktop frame exceeded receiver-credit safety bounds");
+        }
+        if (refinement_) {
+            refinement_->retired = true; // New pixels never release unacked credit.
         }
         pending_.push_back({frame, now, bytes});
         pendingBytes_ += bytes;
@@ -225,6 +298,36 @@ class DesktopFrameFlow {
     }
 
   private:
+    struct Refinement {
+        std::uint64_t generation, frame, batch;
+        Clock::time_point sent;
+        bool retired = false;
+    };
+    std::uint64_t linkBytesPerSecond() const {
+        return deliveryBytesPerSecond_ ? std::min<std::uint64_t>(deliveryBytesPerSecond_, rate_.bitrate / 8) : rate_.bitrate / 8;
+    }
+    void updateRefinement(Clock::time_point now) {
+        const auto capacity = std::min<std::uint64_t>(65536, linkBytesPerSecond() / 10);
+        if (!refinementUpdatedAt_) {
+            refinementTokens_ = capacity;
+            refinementUpdatedAt_ = now;
+        } else if (now > *refinementUpdatedAt_) {
+            const auto elapsed = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now - *refinementUpdatedAt_).count());
+            const auto drained = linkBytesPerSecond() * elapsed / 1000000;
+            refinementPressureBytes_ -= std::min<std::uint64_t>(drained, refinementPressureBytes_);
+            refinementTokens_ = std::min(capacity, refinementTokens_ + drained / 5);
+            refinementUpdatedAt_ = now;
+        }
+        if (refinement_ && now - refinement_->sent >= std::chrono::seconds(2)) {
+            refinement_->retired = true;
+            if (refinement_->generation == generation_) {
+                refinementPaused_ = true;
+            }
+            // Timeout is NOT evidence that the Browser freed its native decoder
+            // resource. Keep one unacked lease until cleanup ACK or owner death,
+            // including through further generation barriers. Video is independent.
+        }
+    }
     struct Pending {
         std::uint64_t frame;
         Clock::time_point sent;
@@ -273,6 +376,10 @@ class DesktopFrameFlow {
     std::uint64_t sceneBytes_ = 0;
     std::deque<Pending> pending_;
     std::size_t pendingBytes_ = 0;
+    std::optional<Refinement> refinement_;
+    bool refinementPaused_ = false;
+    std::uint64_t lastRefinementBatch_ = 0, refinementTokens_ = 0, refinementPressureBytes_ = 0;
+    std::optional<Clock::time_point> refinementUpdatedAt_;
     std::optional<std::chrono::microseconds> roundTrip_, baseline_;
     Clock::time_point roundTripExpiresAt_{}, baselineExpiresAt_{}, lastAcknowledgedAt_{}, adjustAt_{};
     std::optional<Clock::time_point> healthySince_;
