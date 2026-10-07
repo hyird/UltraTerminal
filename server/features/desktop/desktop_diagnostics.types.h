@@ -61,6 +61,7 @@ struct DesktopCadenceWindow {
     using Clock = std::chrono::steady_clock;
     std::optional<Clock::time_point> started, lastFrame;
     std::uint64_t received = 0, written = 0, displayed = 0, inputs = 0;
+    std::uint64_t keyFrames = 0, keyBytes = 0, videoBytes = 0, repeatedFrames = 0;
     std::uint64_t displayedGeneration = 0, displayedFrame = 0;
     DesktopDurationWindow<128> gaps, acquire, map, encode, dispatch, credit, writes, inputApply, loopLate;
     std::uint64_t appliedInputs = 0;
@@ -128,6 +129,7 @@ struct DesktopCadenceWindow {
     void clear(Clock::time_point now) {
         started = now;
         received = written = displayed = inputs = 0;
+        keyFrames = keyBytes = videoBytes = repeatedFrames = 0;
         appliedInputs = 0;
         gaps.clear();
         acquire.clear();

@@ -338,6 +338,10 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
             if (message.has_video_frame()) {
                 const auto& video = message.video_frame();
                 cadence_.frame(video.stage_timing(), admittedAt);
+                cadence_.keyFrames += video.key_frame();
+                cadence_.keyBytes += video.key_frame() ? video.data().size() : 0;
+                cadence_.videoBytes += video.data().size();
+                cadence_.repeatedFrames += video.repeated();
                 // v2 writes the final cumulative worker stages after dynamic
                 // detail preparation. A present encode stage (including zero)
                 // identifies that complete sample, unlike an absent/empty body.
@@ -492,13 +496,13 @@ void DesktopSession::logCadence(std::chrono::steady_clock::time_point now) {
     const auto gap = cadence_.gaps.summary(), acquire = cadence_.acquire.summary(), map = cadence_.map.summary(), encode = cadence_.encode.summary();
     const auto dispatch = cadence_.dispatch.summary(), credit = cadence_.credit.summary(), write = cadence_.writes.summary();
     const auto inputApply = cadence_.inputApply.summary(), loopLate = cadence_.loopLate.summary();
-    spdlog::info("desktop_fps_sample session_id={} generation={} window_ms={} received_fps_milli={} written_fps_milli={} displayed_fps_milli={} inputs={} target_fps={} target_bps={} background={} queue_depth={} gap_p99_us={} acquire_p99_us={} map_p99_us={} encode_p99_us={} dispatch_p99_us={} credit_p99_us={} ws_write_p99_us={} flow_present={} frame_window={} byte_window={} pending_frames={} pending_bytes={} pressure_bytes={} path_delay_us={} oldest_frame_age_us={} delivery_bps={} blocking_flags={} applied_inputs={} input_apply_max_us={} owner_loop_late_p99_us={} acquire_samples={} map_samples={} encode_samples={} flow_samples={} loop_late_samples={}",
+    spdlog::info("desktop_fps_sample session_id={} generation={} window_ms={} received_fps_milli={} written_fps_milli={} displayed_fps_milli={} inputs={} target_fps={} target_bps={} background={} queue_depth={} gap_p99_us={} acquire_p99_us={} map_p99_us={} encode_p99_us={} dispatch_p99_us={} credit_p99_us={} ws_write_p99_us={} flow_present={} frame_window={} byte_window={} pending_frames={} pending_bytes={} pressure_bytes={} path_delay_us={} oldest_frame_age_us={} delivery_bps={} blocking_flags={} applied_inputs={} input_apply_max_us={} owner_loop_late_p99_us={} acquire_samples={} map_samples={} encode_samples={} flow_samples={} loop_late_samples={} key_frames={} key_bytes={} video_bytes={} repeated_frames={}",
                  identity_.sessionId, diagnostics_.videoGeneration, std::chrono::duration_cast<std::chrono::milliseconds>(now - *cadence_.started).count(), cadence_.fpsMilli(cadence_.received, now), cadence_.fpsMilli(cadence_.written, now), cadence_.fpsMilli(cadence_.displayed, now), cadence_.inputs,
                  diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate, diagnostics_.latestBackground, diagnostics_.latestBrowserQueueDepth,
                  gap.p99Microseconds, acquire.p99Microseconds, map.p99Microseconds, encode.p99Microseconds, dispatch.p99Microseconds, credit.p99Microseconds, write.p99Microseconds,
                  cadence_.hasFlow, cadence_.hasFlow ? cadence_.flow.frame_window() : 0, cadence_.hasFlow ? cadence_.flow.byte_window() : 0, cadence_.hasFlow ? cadence_.flow.pending_frames() : 0, cadence_.hasFlow ? cadence_.flow.pending_bytes() : 0, cadence_.hasFlow ? cadence_.flow.pressure_bytes() : 0,
                  cadence_.hasFlow ? cadence_.flow.path_delay_microseconds() : 0, cadence_.hasFlow ? cadence_.flow.oldest_frame_age_microseconds() : 0, cadence_.hasFlow ? cadence_.flow.delivery_bytes_per_second() * 8ull : 0, cadence_.blockingFlags,
-                 cadence_.appliedInputs, inputApply.maximumMicroseconds, loopLate.p99Microseconds, acquire.samples, map.samples, encode.samples, dispatch.samples, loopLate.samples);
+                 cadence_.appliedInputs, inputApply.maximumMicroseconds, loopLate.p99Microseconds, acquire.samples, map.samples, encode.samples, dispatch.samples, loopLate.samples, cadence_.keyFrames, cadence_.keyBytes, cadence_.videoBytes, cadence_.repeatedFrames);
     cadence_.clear(now);
 }
 void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin) {
