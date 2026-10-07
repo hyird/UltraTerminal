@@ -1090,7 +1090,7 @@ asio::awaitable<void> v2(agent::DesktopVideoRuntime& video, bool expectActive) {
             require(admission.videoAlternative == admission.videoEncodeEstimate + std::chrono::microseconds(videoSend), "Static VIDEO alternative changed after admission");
             // Preserve >=2ms under stricter ENTER even ignoring VIDEO CPU.
             // Rate comes from this immutable admission, never the old frame or
-            // Flow's next adaptive rate after observeEncode/observeScene.
+            // Flow's next adaptive rate after observeFrame.
             const auto enterLimit = videoSend * 4 / 5;
             const auto predicted = admission.preparePrediction->count() + static_cast<std::int64_t>(send);
             if (predicted + 2000 > static_cast<std::int64_t>(enterLimit) || *admission.preparePrediction > admission.remainingAtAdmission ||

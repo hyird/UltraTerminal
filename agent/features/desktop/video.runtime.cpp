@@ -2014,8 +2014,9 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         if (result && (!result->frame.data().empty() || result->region)) {
             const auto bytes = result->region ? result->region->ByteSizeLong() : result->frame.ByteSizeLong();
-            self->flow.observeEncode(std::chrono::microseconds(result->region ? result->region->encode_microseconds() : result->frame.encode_microseconds()));
-            self->flow.observeScene(bytes, result->changedPixels, result->frame.key_frame());
+            const auto type = result->region ? DesktopFrameFlow::FrameType::kRegion : result->frame.key_frame() ? DesktopFrameFlow::FrameType::kKeyFrame
+                                                                                                                : DesktopFrameFlow::FrameType::kVideo;
+            self->flow.observeFrame(type, bytes, result->changedPixels, std::chrono::microseconds(result->region ? result->region->encode_microseconds() : result->frame.encode_microseconds()));
             self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), bytes);
             if (!result->frame.data().empty()) {
                 self->diagnostics.publishedVideoFrames = ++self->publishedVideoFrames;

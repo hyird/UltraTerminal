@@ -21,6 +21,9 @@ class DesktopFrameFlow {
     enum class Quality { kBalanced,
                          kSmooth,
                          kSharp };
+    enum class FrameType { kVideo,
+                           kKeyFrame,
+                           kRegion };
     struct Rate {
         std::uint32_t framesPerSecond = 60;
         std::uint32_t bitrate = 24000000;
@@ -41,7 +44,7 @@ class DesktopFrameFlow {
         width_ = width;
         height_ = height;
         scenePixels_.reset();
-        sceneBytes_ = 0;
+        regionBytes_ = 0;
         updateFrameRate();
         return true;
     }
@@ -77,7 +80,7 @@ class DesktopFrameFlow {
         receiverFrameRate_ = kMaximumFramesPerSecond;
         decodeMicroseconds_ = 0;
         scenePixels_.reset();
-        sceneBytes_ = 0;
+        regionBytes_ = 0;
         congestionSamples_ = 0;
         healthySince_.reset();
     }
@@ -92,19 +95,19 @@ class DesktopFrameFlow {
             roundTrip_ = std::min(*roundTrip_, elapsed);
         }
     }
-    void observeEncode(std::chrono::microseconds elapsed) {
+    void observeFrame(FrameType type, std::size_t bytes, std::uint64_t changedPixels, std::chrono::microseconds elapsed) {
+        if (type == FrameType::kKeyFrame) {
+            return; // Codec startup and refresh bursts do not describe steady frame cost.
+        }
         if (elapsed.count() > 0) {
             encodeMicroseconds_ = encodeMicroseconds_ ? (encodeMicroseconds_ * 7 + static_cast<std::uint64_t>(elapsed.count())) / 8 : static_cast<std::uint64_t>(elapsed.count());
-            updateFrameRate();
-        }
-    }
-    void observeScene(std::size_t bytes, std::uint64_t changedPixels, bool keyFrame) {
-        if (keyFrame) {
-            return; // Startup/refresh bursts do not describe steady frame cost.
         }
         const auto pixels = std::min(changedPixels, static_cast<std::uint64_t>(width_) * height_);
         scenePixels_ = scenePixels_ ? (*scenePixels_ * 3 + pixels) / 4 : pixels;
-        sceneBytes_ = sceneBytes_ ? (sceneBytes_ * 3 + bytes) / 4 : bytes;
+        // A rate-controlled codec redistributes its bitrate when cadence changes.
+        // Its current bytes/frame cannot predict bytes/frame at another cadence.
+        // Lossless regions have a fixed payload cost and still need that bound.
+        regionBytes_ = type == FrameType::kRegion ? (regionBytes_ ? (regionBytes_ * 3 + bytes) / 4 : bytes) : 0;
         // Capacity and codec/receiver pressure still bound this increase.
         updateFrameRate(true, 4);
     }
@@ -354,7 +357,7 @@ class DesktopFrameFlow {
         // bounded by capacity even below the per-frame clarity budget.
         const auto pixels = scenePixels_.value_or(static_cast<std::uint64_t>(width_) * height_);
         const auto clarityBits = std::max<std::uint64_t>(1024, 8000000ull * pixels / (1920ull * 1080 * 60));
-        const auto bitsPerFrame = std::max<std::uint64_t>(clarityBits, sceneBytes_ * 8 * 11 / 10);
+        const auto bitsPerFrame = std::max<std::uint64_t>(clarityBits, regionBytes_ * 8 * 11 / 10);
         auto fps = std::min<std::uint64_t>(receiverFrameRate_, rate_.bitrate / bitsPerFrame);
         if (encodeMicroseconds_) {
             fps = std::min<std::uint64_t>(fps, 800000ull / encodeMicroseconds_);
@@ -373,7 +376,7 @@ class DesktopFrameFlow {
     std::uint64_t generation_ = 0, acknowledged_ = 0, lastSent_ = 0;
     std::uint64_t deliveryBytesPerSecond_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
     std::optional<std::uint64_t> scenePixels_;
-    std::uint64_t sceneBytes_ = 0;
+    std::uint64_t regionBytes_ = 0;
     std::deque<Pending> pending_;
     std::size_t pendingBytes_ = 0;
     std::optional<Refinement> refinement_;

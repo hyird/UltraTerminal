@@ -9,6 +9,7 @@
 
 namespace {
 using ultraterimal::agent::DesktopFrameFlow;
+using FrameType = DesktopFrameFlow::FrameType;
 using namespace std::chrono_literals;
 void require(bool value, const char* reason) {
     if (!value) {
@@ -38,6 +39,7 @@ struct Link {
             if (now >= encodeAt && flow.canEncode(now)) {
                 const auto rate = flow.rate();
                 const auto bytes = std::max(100u, rate.bitrate / (8 * rate.framesPerSecond));
+                flow.observeFrame(FrameType::kVideo, bytes, 1920 * 1080, 5ms);
                 flow.sent(1, ++frame, now, bytes);
                 wireFree = std::max(wireFree, now) + std::chrono::microseconds(static_cast<std::uint64_t>(bytes) * 1000000 / bytesPerSecond);
                 acks.push_back({frame, wireFree + rtt + 1ms});
@@ -164,8 +166,17 @@ int main() {
         require(spent.acknowledgeRefinement(1, 1, 1, detailNow) && !spent.refinementOutstanding(detailNow) && !spent.refinementBudget(detailNow), "Cross-generation cleanup refunded spent tokens");
         require(spent.pressureBytes(detailNow) == 1000 + spentBudget, "Cross-generation cleanup refunded written refinement bytes");
         DesktopFrameFlow cpu;
-        cpu.observeEncode(40ms);
+        cpu.observeFrame(FrameType::kVideo, 1000, 1920 * 1080, 40ms);
         require(cpu.rate().framesPerSecond <= 20, "Encoding pressure did not reduce capture load");
+        DesktopFrameFlow motion;
+        motion.setQuality(DesktopFrameFlow::Quality::kSmooth);
+        motion.observeFrame(FrameType::kKeyFrame, 300000, 1920 * 1080, 350ms);
+        require(motion.rate().framesPerSecond == 60, "Codec startup reduced steady motion cadence");
+        for (unsigned sample = 0; sample < 24; ++sample) {
+            const auto rate = motion.rate();
+            motion.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond), 1920 * 1080, 12ms);
+        }
+        require(motion.rate().framesPerSecond == 60, "Rate-controlled motion reduced its own cadence on an uncongested path");
         DesktopFrameFlow decoder;
         decoder.observeRoundTrip(20ms, now);
         for (std::uint64_t id = 1; id <= 12; ++id) {
@@ -194,15 +205,15 @@ int main() {
         auto scene = narrow.flow;
         const auto narrowBitrate = scene.rate().bitrate;
         for (unsigned sample = 0; sample < 24; ++sample) {
-            scene.observeScene(100, 128 * 64, false);
+            scene.observeFrame(FrameType::kRegion, 100, 128 * 64, 5ms);
         }
         require(scene.rate().framesPerSecond > narrow.flow.rate().framesPerSecond && scene.rate().bitrate == narrowBitrate, "Cheap regional updates did not recover cadence within the same bandwidth");
         for (unsigned sample = 0; sample < 24; ++sample) {
-            scene.observeScene(100000, 1920 * 1080, false);
+            scene.observeFrame(FrameType::kRegion, 100000, 1920 * 1080, 5ms);
         }
-        require(scene.rate().framesPerSecond <= narrow.flow.rate().framesPerSecond, "Large encoded frames ignored the actual byte budget");
+        require(scene.rate().framesPerSecond <= narrow.flow.rate().framesPerSecond, "Large lossless regions ignored the actual byte budget");
         const auto sceneRate = scene.rate().framesPerSecond;
-        scene.observeScene(1, 1, true);
+        scene.observeFrame(FrameType::kKeyFrame, 1, 1, 350ms);
         require(scene.rate().framesPerSecond == sceneRate, "Keyframe distorted the steady scene estimate");
         const auto reduced = narrow.flow.rate();
         narrow.run(25s, 10000000, 40ms);
