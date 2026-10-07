@@ -64,7 +64,10 @@ std::uint64_t rgbHash(std::span<const std::uint8_t> pixels) {
     return hash;
 }
 std::atomic<unsigned> timerFault{0}, timerBegins{0}, timerEnds{0}, liveTimers{0};
-constexpr std::size_t kKnownVideoBytes = 48000, kTinyKnownVideoBytes = 12288;
+// At 24Mbps, 64KiB supplies >17ms of ENTER allowance. Keep the real 12ms
+// optional-work window plus PNG sending and a 2ms independent margin even
+// when a cold WIC observation consumes most of that window.
+constexpr std::size_t kKnownVideoBytes = 65536, kTinyKnownVideoBytes = 12288;
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
 // Known-cost mechanism cases prepare their real software surrogate with the
 // capture resources, on the same worker. The first VIDEO still encodes the

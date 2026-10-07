@@ -18,6 +18,7 @@
 #include <ruvia/core/blocking_pool.h>
 
 #include "damage.protocol.h"
+#include "frame_cadence.runtime.h"
 #include "frame_flow.runtime.h"
 #include "platform/windows/capture.transport.h"
 #include "platform/windows/cursor.transport.h"
@@ -1045,19 +1046,12 @@ struct VideoWorker {
             return false;
         }
     }
-    void scheduleFrame(VideoClock::time_point started, std::uint32_t fps) {
-        const auto period = std::chrono::microseconds(1000000 / fps);
-        if (continuousFrames && encodeAt != VideoClock::time_point{} && started >= encodeAt && started - encodeAt < period) {
-            encodeAt += period;
-        } else {
-            encodeAt = started + period;
-        }
-    }
     std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopFrameFlow::Rate rate,
                                            std::uint32_t flowWidth, std::uint32_t flowHeight,
                                            std::optional<std::pair<std::uint32_t, std::uint32_t>>& geometryChanged, bool allowEncode, bool allowRefinement, const wire::DesktopVideoCapabilities& capabilities,
                                            bool requestedV2, bool requestedContinuous, std::size_t detailBudget, std::size_t regionByteBudget, std::optional<std::pair<DesktopDetailBatchKey, DesktopDetailAck>> acknowledgement,
                                            std::uint64_t revision, DesktopStageDurations initialStages, std::optional<DesktopDetailBatchKey> rejectedPublication) try {
+        const auto cadenceStarted = VideoClock::now();
         ++jobId;
         if (!requestedV2 && timerResolution.status().requested) {
             suspend();
@@ -1148,7 +1142,7 @@ struct VideoWorker {
                 if (continuousFrames && retained && allowEncode) {
                     wait = std::min(wait, std::chrono::duration_cast<std::chrono::milliseconds>(std::max(encodeAt - now, VideoClock::duration::zero())));
                 }
-                pixels = capture->nextFrame(wait, retained ? &retained->bgra : nullptr, &timing, retained.has_value() && fullPixelsValid, readPixels, !encoder || gpu || codecChanged || requestedV2);
+                pixels = capture->nextFrame(wait, retained ? &retained->bgra : nullptr, &timing, retained.has_value() && fullPixelsValid, readPixels, !encoder || gpu || codecChanged);
             }
             diagnostics.lastJobConsumedReady = consumeReady;
             if (pixels) {
@@ -1513,7 +1507,7 @@ struct VideoWorker {
                     lastEncodedTicks = lastPresentTicks;
                     lastEncodedAt = VideoClock::now();
                     lastContentAt = lastEncodedAt;
-                    scheduleFrame(now, rate.framesPerSecond);
+                    encodeAt = nextDesktopFrameAt(encodeAt, cadenceStarted, rate.framesPerSecond, continuousFrames, false);
                     damage.commit();
                     coalescedCaptures = 0;
                     pendingCpuMap.reset();
@@ -1610,7 +1604,7 @@ struct VideoWorker {
                 lastEncodedTicks = lastPresentTicks;
                 lastEncodedAt = std::chrono::steady_clock::now();
                 lastContentAt = lastEncodedAt;
-                scheduleFrame(now, rate.framesPerSecond);
+                encodeAt = nextDesktopFrameAt(encodeAt, cadenceStarted, rate.framesPerSecond, continuousFrames, false);
                 damage.commit();
                 return update;
             }
@@ -1645,8 +1639,9 @@ struct VideoWorker {
         if ((!fullPixelsValid || (!optimizationV2 && capturedOnGpu)) && !encoder->gpu() && !materialize()) {
             return std::nullopt;
         }
-        // Schedule from the actual start; missed slots never cause bursts.
-        scheduleFrame(now, rate.framesPerSecond);
+        // Acquisition/readback belong to this frame's period. Starting the
+        // clock after a slow Map would add another idle wait to every frame.
+        encodeAt = nextDesktopFrameAt(encodeAt, cadenceStarted, rate.framesPerSecond, continuousFrames, refresh || configurationPending);
         bool repeated = continuousFrames && contentFrameId && !pixelsPending && !refresh && !configurationPending;
         const auto encodeStarted = std::chrono::steady_clock::now();
         if (diagnostics.lastReadback && diagnostics.lastReadback->retirementReason != DesktopVideoFallbackReason::kNone && diagnostics.lastReadback->videoFallbackReason == DesktopVideoFallbackReason::kNone) {

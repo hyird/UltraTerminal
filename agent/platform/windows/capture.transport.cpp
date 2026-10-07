@@ -679,7 +679,10 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     }
     frame.captureEpoch = state_->captureEpoch;
     frame.sourceSerial = state_->sourceSerial;
-    if ((!readPixels || retainTexture) && desktopUpdated) {
+    // A CPU encoder already owns the pixels after readback. Keep a GPU copy
+    // only when requested, deferred, or new geometry may select a GPU encoder.
+    const bool geometryChanged = description.Width != state_->lastPixelsWidth || description.Height != state_->lastPixelsHeight;
+    if ((!readPixels || retainTexture || geometryChanged) && desktopUpdated) {
         D3D11_TEXTURE2D_DESC previous{};
         if (state_->latest) {
             state_->latest->GetDesc(&previous);
