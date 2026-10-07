@@ -60,7 +60,10 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
     parameters.b_sliced_threads = 1;
     parameters.i_slice_count = static_cast<int>(threads);
     parameters.i_frame_reference = 1;
-    parameters.i_keyint_max = static_cast<int>(config.framesPerSecond * 5);
+    // Reliable ordered transport preserves references. Periodic IDRs can be
+    // much larger than the ACK byte window and interrupt an otherwise steady
+    // cadence; baseline changes and explicit recovery still force an IDR.
+    parameters.i_keyint_max = X264_KEYINT_MAX_INFINITE;
     parameters.i_scenecut_threshold = 0;
     parameters.i_bframe = 0;
     parameters.i_fps_num = config.framesPerSecond;

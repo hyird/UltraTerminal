@@ -122,12 +122,35 @@ void exerciseFrameBudget() {
     require(fastCapture * 5 < slowCapture * 4, "Capture FPS change did not adjust the per-frame rate budget");
     std::cout << "Frame budgets high=" << highRate << " low=" << lowRate << " slow=" << slowCapture << " fast=" << fastCapture << '\n';
 }
+void exerciseReliableCadence() {
+    SoftwareVideoEncoder encoder({320, 180, 8000000, 30});
+    Decoder decoder(320, 180);
+    std::vector<std::uint8_t> pixels(320 * 180 * 4, 255);
+    // More than two former five-second GOPs, including repeated and changed
+    // pictures. Reliable delivery retains every reference until recovery.
+    for (unsigned i = 0; i < 360; ++i) {
+        if (i % 30 == 0) {
+            std::fill(pixels.begin(), pixels.begin() + 320 * 4 * 30, i % 60 ? 32 : 240);
+        }
+        const auto frame = encoder.encode(pixels, 320 * 4, static_cast<std::uint64_t>(i) * 33333);
+        require(frame.has_value() && frame->keyFrame == (i == 0), "Reliable stream inserted an unsolicited periodic keyframe");
+        decoder.verify(*frame);
+    }
+    const auto refreshed = encoder.encode(pixels, 320 * 4, 360ull * 33333, true);
+    require(refreshed.has_value() && refreshed->keyFrame, "Explicit recovery did not produce an independent keyframe");
+    Decoder recovered(320, 180);
+    recovered.verify(*refreshed);
+    const auto following = encoder.encode(pixels, 320 * 4, 361ull * 33333);
+    require(following.has_value() && !following->keyFrame, "Recovery unnecessarily retained keyframe output");
+    recovered.verify(*following);
+}
 } // namespace
 int main() {
     try {
         exercise(8000000);
         exercise(18000003);
         exerciseFrameBudget();
+        exerciseReliableCadence();
         std::cout << "Adaptive non-round bitrate changes preserve a decodable stream\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
