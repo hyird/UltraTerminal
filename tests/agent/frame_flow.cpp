@@ -59,7 +59,21 @@ int main() {
         DesktopFrameFlow continuous;
         continuous.sent(1, 1, now, 1000, FrameType::kKeyFrame);
         require(continuous.acknowledge(1, 1, 350000, 0, now + 10ms), "Cold keyframe ACK failed");
-        require(continuous.rate().framesPerSecond == 60, "Cold decoder startup poisoned steady cadence");
+        require(continuous.rate().framesPerSecond == 30, "Cold decoder startup poisoned steady cadence");
+        DesktopFrameFlow idleCapacity;
+        idleCapacity.observeRoundTrip(80ms, now);
+        idleCapacity.sent(1, 1, now, 1000, FrameType::kKeyFrame);
+        idleCapacity.sent(1, 2, now + 33333us, 1000, FrameType::kRepeatedVideo);
+        idleCapacity.sent(1, 3, now + 66666us, 1000, FrameType::kRepeatedVideo);
+        require(idleCapacity.acknowledge(1, 1, 1000, 0, now + 80ms), "Idle capacity baseline ACK failed");
+        const auto capacityBeforeIdle = idleCapacity.byteWindow();
+        for (std::uint64_t frame = 2; frame <= 36; ++frame) {
+            idleCapacity.sent(1, frame + 2, now + 33333us * (frame + 1), 1000, FrameType::kRepeatedVideo);
+            require(idleCapacity.acknowledge(1, frame, 1000, 0, now + 33333us * (frame - 1) + 80ms), "Continuous idle ACK failed");
+        }
+        require(idleCapacity.byteWindow() == capacityBeforeIdle && idleCapacity.rate().framesPerSecond == 30, "Application-limited idle repeats collapsed credit before a window drag");
+        idleCapacity.sent(1, 39, now + 1300ms, 50000, FrameType::kVideo);
+        require(idleCapacity.canEncode(now + 1301ms), "Idle-to-drag transition was backpressured by idle throughput");
         require(continuous.sentRefinement(1, 1, 1, now + 10ms, 1000), "Continuous baseline refinement rejected");
         continuous.sent(1, 2, now + 20ms, 100, FrameType::kRepeatedVideo);
         require(continuous.acknowledge(1, 2, 1000, 0, now + 30ms), "Real repeated frame did not return credit");
@@ -69,7 +83,7 @@ int main() {
         require(continuous.sentRefinement(1, 1, 2, now + 100ms, 1000), "Refinement could not continue after duplicate delivery");
         continuous.sent(1, 3, now + 110ms, 1000, FrameType::kVideo);
         require(continuous.refinementRetired(now + 110ms), "Changed content did not retire old refinement");
-        require(flow.rate().framesPerSecond == 60, "Healthy desktop retained the old 30 FPS ceiling");
+        require(flow.rate().framesPerSecond == 30, "Healthy desktop exceeded the configured 30 FPS ceiling");
         flow.sent(1, 1, now, 4000000, FrameType::kVideo);
         require(!flow.canEncode(now + 1ms), "Oversized IDR did not exhaust byte credit");
         require(!flow.acknowledge(1, 2, 1000, 0, now + 20ms, false, 128), "Future ACK accepted");
@@ -184,12 +198,12 @@ int main() {
         DesktopFrameFlow motion;
         motion.setQuality(DesktopFrameFlow::Quality::kSmooth);
         motion.observeFrame(FrameType::kKeyFrame, 300000, 1920 * 1080, 350ms);
-        require(motion.rate().framesPerSecond == 60, "Codec startup reduced steady motion cadence");
+        require(motion.rate().framesPerSecond == 30, "Codec startup reduced steady motion cadence");
         for (unsigned sample = 0; sample < 24; ++sample) {
             const auto rate = motion.rate();
             motion.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond), 1920 * 1080, 12ms);
         }
-        require(motion.rate().framesPerSecond == 60, "Rate-controlled motion reduced its own cadence on an uncongested path");
+        require(motion.rate().framesPerSecond == 30, "Rate-controlled motion reduced its own cadence on an uncongested path");
         DesktopFrameFlow decoder;
         decoder.observeRoundTrip(20ms, now);
         for (std::uint64_t id = 1; id <= 12; ++id) {
@@ -204,13 +218,13 @@ int main() {
             idle.sent(1, id, now, 1000, FrameType::kVideo);
             require(idle.acknowledge(1, id, 1000, 0, now + 20ms), "Idle ACK rejected");
         }
-        require(idle.rate().framesPerSecond == 60 && idle.rate().bitrate == 24000000, "Static idle time was interpreted as narrow capacity");
+        require(idle.rate().framesPerSecond == 30 && idle.rate().bitrate == 24000000, "Static idle time was interpreted as narrow capacity");
         Link fast;
         fast.run(12s, 10000000, 20ms);
-        require(fast.frame > 600 && fast.flow.rate().framesPerSecond == 60, "Fast path cannot sustain above 30 FPS");
+        require(fast.frame > 330 && fast.frame <= 360 && fast.flow.rate().framesPerSecond == 30, "Fast path failed to sustain the 30 FPS ceiling");
         Link distant;
         distant.run(12s, 10000000, 600ms);
-        require(distant.frame > 500 && distant.flow.rate().framesPerSecond == 60, "Stable high RTT caused unnecessary rate reduction");
+        require(distant.frame > 300 && distant.frame <= 360 && distant.flow.rate().framesPerSecond == 30, "Stable high RTT caused unnecessary rate reduction");
         Link narrow;
         narrow.run(30s, 125000, 40ms);
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Narrow link failed to adapt both bitrate and capture cadence");
@@ -231,7 +245,7 @@ int main() {
         const auto reduced = narrow.flow.rate();
         narrow.run(25s, 10000000, 40ms);
         std::cout << "recovery_25s_bitrate=" << narrow.flow.rate().bitrate << " fps=" << narrow.flow.rate().framesPerSecond << '\n';
-        require(narrow.flow.rate().bitrate > reduced.bitrate * 8 && narrow.flow.rate().framesPerSecond >= 45, "Capacity recovery remained too slow");
+        require(narrow.flow.rate().bitrate > reduced.bitrate * 8 && narrow.flow.rate().framesPerSecond == 30, "Capacity recovery failed to restore the 30 FPS ceiling");
         narrow.run(30s, 125000, 40ms);
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Recovery ignored renewed congestion");
         DesktopFrameFlow stalled;

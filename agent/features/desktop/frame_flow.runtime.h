@@ -27,12 +27,12 @@ class DesktopFrameFlow {
                            kRepeatedVideo,
                            kRepeatedKeyFrame };
     struct Rate {
-        std::uint32_t framesPerSecond = 60;
+        std::uint32_t framesPerSecond = 30;
         std::uint32_t bitrate = 24000000;
         bool sharp = true;
     };
     static constexpr std::size_t kMaximumInFlightFrames = 128;
-    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
+    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 30;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
     Rate rate() const { return rate_; }
@@ -239,11 +239,16 @@ class DesktopFrameFlow {
             baseline_ = std::min(*baseline_, transit);
         }
         std::size_t delivered = 0;
+        bool applicationLimited = true;
         for (auto current = pending_.begin(); current != std::next(found); ++current) {
             delivered += current->bytes;
+            applicationLimited = applicationLimited && repeatedFrame(current->type);
         }
         const auto interval = std::chrono::duration_cast<std::chrono::microseconds>(now - lastAcknowledgedAt_);
-        if (lastAcknowledgedAt_ != Clock::time_point{} && found->sent <= lastAcknowledgedAt_ && interval >= std::chrono::milliseconds(5)) {
+        // Fresh repeated-picture ACKs return real credit, but their tiny payload
+        // measures offered load rather than capacity. Preserve the window for
+        // the first changed pictures; pressure detection still applies below.
+        if (!applicationLimited && lastAcknowledgedAt_ != Clock::time_point{} && found->sent <= lastAcknowledgedAt_ && interval >= std::chrono::milliseconds(5)) {
             const auto sample = std::min<std::uint64_t>(100000000, static_cast<std::uint64_t>(delivered) * 1000000 / static_cast<std::uint64_t>(interval.count()));
             deliveryBytesPerSecond_ = deliveryBytesPerSecond_ ? (deliveryBytesPerSecond_ * 3 + sample) / 4 : sample;
         }

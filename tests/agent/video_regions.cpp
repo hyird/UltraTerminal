@@ -477,7 +477,7 @@ struct DesktopCapture::State {
 DesktopCapture::DesktopCapture(std::uint32_t) : state_(std::make_unique<State>()) {
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
     if (fixture::knownTinyCodec || fixture::knownCheapStatic) {
-        fixture::preparedKnownCodec = std::make_unique<SoftwareVideoEncoder>(VideoEncoderConfig{1024, 512, 8000000, 60, false, {wire::AVC}});
+        fixture::preparedKnownCodec = std::make_unique<SoftwareVideoEncoder>(VideoEncoderConfig{1024, 512, 8000000, 30, false, {wire::AVC}});
     }
 #endif
 }
@@ -822,7 +822,7 @@ std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodeTexture(I
     const auto wallStarted = fixture::Clock::now();
     if (fixture::tinyCpuCost && !state_->knownTinyCodec) {
         // Keep the independent slow boundary real. Sleep(8) overshoot cannot
-        // establish a portable 60fps premise; it is not a hardware measurement.
+        // establish a portable 30fps premise; it is not a hardware measurement.
         Sleep(8);
     }
     const auto codecStarted = fixture::Clock::now();
@@ -1027,7 +1027,7 @@ asio::awaitable<void> v2(agent::DesktopVideoRuntime& video, bool expectActive) {
     }
     configured = std::move(gpuSource);
     require(fixture::knownCheapStatic && configured.frame.data().size() >= fixture::kKnownVideoBytes &&
-                configured.frame.target_frames_per_second() == 60 && configured.frame.target_bitrate() == 24000000,
+                configured.frame.target_frames_per_second() == 30 && configured.frame.target_bitrate() == 24000000,
             "Known-cheap static fixture lost its synthetic VIDEO/QoS premise");
     const auto initialCost = video.diagnostics().optional;
     require(initialCost.roiSource && !initialCost.cpuSource && initialCost.probe && initialCost.unknownPrediction,
@@ -1224,7 +1224,7 @@ asio::awaitable<void> v2(agent::DesktopVideoRuntime& video, bool expectActive) {
 asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
     fixture::tinyCpuCost = true;
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
-    // This case alone establishes a known-cost 60fps premise: real software
+    // This case alone establishes a known-cost 30fps premise: real software
     // AVC wall time (no Sleep(8)) and an explicit 12KiB serialized alternative.
     // WIC PNG and independent slow/failure boundaries remain real/unmodified.
     fixture::knownTinyCodec = true;
@@ -1240,7 +1240,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
     auto first = co_await baseline(video);
     std::cerr << "tiny first encoder_us=" << first.frame.encode_microseconds() << " fps=" << first.frame.target_frames_per_second() << '\n';
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
-    require(first.frame.encode_microseconds() <= 800000 / 60 && first.frame.data().size() >= fixture::kTinyKnownVideoBytes, "Known tiny codec did not establish real 60fps CPU/message premise");
+    require(first.frame.encode_microseconds() <= 800000 / 30 && first.frame.data().size() >= fixture::kTinyKnownVideoBytes, "Known tiny codec did not establish real 30fps CPU/message premise");
 #endif
     fixture::displayed(video, first, false);
     // Commit the real feedback revision, without refill/probe sleeps.
@@ -1248,7 +1248,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
     std::cerr << "tiny refresh encoder_us=" << first.frame.encode_microseconds() << " fps=" << first.frame.target_frames_per_second() << '\n';
     fixture::displayed(video, first, false);
     fixture::smallDamage = true;
-    // Wait for the existing controller to reach 60fps with normal tiny
+    // Wait for the existing controller to reach 30fps with normal tiny
     // traffic, not a synthetic rate override. The GPU-style codec boundary is
     // explicitly known-cost, not an MFT/hardware performance model. Each
     // source remains held until PRIMARY output (cursor-only is not applied).
@@ -1276,7 +1276,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
                 warmReferences += patch.png().empty();
             }
         }
-        ready = fps == 60 && bitrate == 8000000;
+        ready = fps == 30 && bitrate == 8000000;
         if (!ready) {
             ++fixture::version;
         }
@@ -1295,7 +1295,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         std::cerr << "tiny_codec_numeric call=" << sample.call << " sleepUs=" << sample.sleepUs << " codecUs=" << sample.codecUs << " wallUs=" << sample.wallUs
                   << " bytes=" << sample.bytes << " fps=" << sample.fps << " bitrate=" << sample.bitrate << " refresh=" << sample.refresh << '\n';
     }
-    require(ready, "Existing rate controller did not establish SMOOTH 8Mbps/60fps");
+    require(ready, "Existing rate controller did not establish SMOOTH 8Mbps/30fps");
     fixture::tinyFreshPalette = true; // Two new cheap WIC colors plus known reliable slots.
     unsigned regions = 0, definitions = 0, references = 0;
     std::vector<Clock::time_point> regionTimes;
@@ -1329,7 +1329,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
             }
             std::cerr << "tiny rate bitrate=" << update->region->target_bitrate() << " fps=" << update->region->target_frames_per_second() << '\n';
         }
-        require(update->region->target_bitrate() == 8000000 && update->region->target_frames_per_second() == 60, "Tiny fixture changed SMOOTH 8Mbps/60fps conditions");
+        require(update->region->target_bitrate() == 8000000 && update->region->target_frames_per_second() == 30, "Tiny fixture changed SMOOTH 8Mbps/30fps conditions");
         require(update->region->ByteSizeLong() + 512 <= 8333, "Tiny region exceeded its independent byte budget");
         require(update->region->patches_size() == 1, "Tiny CPU update did not remain one patch");
         const auto& patch = update->region->patches(0);
@@ -1369,7 +1369,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
 }
 #ifdef ULTRATERIMAL_PNG_COST_FIXTURE
 asio::awaitable<void> costFailure(agent::DesktopVideoRuntime& video, unsigned mode) {
-    co_await tinyKnownCost(video); // Real cheap WIC/cache history, 8Mbps/60fps established.
+    co_await tinyKnownCost(video); // Real cheap WIC/cache history, 8Mbps/30fps established.
     const auto before = video.diagnostics();
     const auto calls = fixture::pngCalls.load();
     fixture::costTwoTiles = true;
@@ -2613,8 +2613,8 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
         fixture::displayed(video, primary, true);
         primary = co_await baseline(video, true); // Already accepted SHARP; the toggle must not change quality.
         fixture::displayed(video, primary, true);
-        require(primary.frame.target_frames_per_second() == 60 && primary.frame.target_bitrate() == 24000000 && primary.frame.data().size() >= fixture::kTinyKnownVideoBytes,
-                "Final auxiliary fixture changed the 12kiB/24Mbps/60 actual VIDEO premise");
+        require(primary.frame.target_frames_per_second() == 30 && primary.frame.target_bitrate() == 24000000 && primary.frame.data().size() >= fixture::kTinyKnownVideoBytes,
+                "Final auxiliary fixture changed the 12kiB/24Mbps/30 actual VIDEO premise");
         ++fixture::version; // Genuine equal-RGB GPU snapshot, no full-CPU bypass.
         auto nextBatch = [&]() -> asio::awaitable<agent::DesktopVideoUpdate> {
             const auto until = Clock::now() + std::chrono::seconds(5);
@@ -2664,7 +2664,7 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
                         gate->prepared.refinementTiles == before.refinementTiles + gate->patches && gate->patches && gate->pngBytes && gate->association &&
                         gate->association->batch.generation == acceptedGeneration && gate->association->batch.frame == acceptedFrame &&
                         gate->association->admission.composedBase == acceptedFrame && gate->association->admission.sourceSerial == fixture::version &&
-                        gate->association->admission.framesPerSecond == 60 && gate->association->admission.bitrate == 24000000,
+                        gate->association->admission.framesPerSecond == 30 && gate->association->admission.bitrate == 24000000,
                     "Final PNG gate did not separate worker-prepared product from owner publication");
             require(gate->prepared.videoEncodeCalls == before.videoEncodeCalls && fixture::baselineCopies == copies && fixture::baselineClears == clears,
                     "Preparing auxiliary PNG modified accepted PRIMARY/source baseline");
