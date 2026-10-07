@@ -1833,6 +1833,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     std::optional<std::pair<DesktopDetailBatchKey, DesktopDetailAck>> refinementAcknowledgement;
     std::optional<DesktopDetailBatchKey> rejectedPublication;
     std::optional<VideoClock::time_point> creditClosedAt;
+    std::uint32_t lastCreditWaitMicroseconds = 0, lastBlockingFlags = 0;
     bool stopped = false, pending = false;
     bool reset = false;
     bool baselineRequired = true;
@@ -1956,6 +1957,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             self->pace.expiresAt(self->nextFrameAt);
         }
         const auto pacingStarted = VideoClock::now();
+        const auto plannedWake = !self->flow.background() && self->nextFrameAt != VideoClock::time_point{} ? std::optional(self->nextFrameAt) : std::nullopt;
         std::error_code error;
         co_await self->pace.asyncWait(asio::redirect_error(asio::use_awaitable, error));
         if (self->stopped || self->flow.background()) {
@@ -1984,18 +1986,26 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         if (!allowEncode && !self->creditClosedAt) {
             self->creditClosedAt = now;
         }
+        if (!allowEncode) {
+            self->lastBlockingFlags |= self->flow.snapshot(now).blockingFlags;
+        }
         if (allowEncode && self->creditClosedAt) {
             initialStages.pacingCreditWait = DesktopStageDurations::microseconds(*self->creditClosedAt, now);
+            self->lastCreditWaitMicroseconds = *initialStages.pacingCreditWait;
             self->creditClosedAt.reset();
         }
         const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
         auto operation = ruvia::run_blocking(self->pool, self->loop, [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, allowRefinement, capabilities = self->capabilities, requestedV2, requestedContinuous, detailBudget, regionByteBudget, acknowledgement = std::exchange(self->refinementAcknowledgement, std::nullopt), revision, initialStages, queuedAt, rejectedPublication = std::exchange(self->rejectedPublication, std::nullopt)]() mutable {
-            initialStages.workerQueue = DesktopStageDurations::microseconds(queuedAt, VideoClock::now());
+            const auto computeStarted = VideoClock::now();
+            initialStages.workerQueue = DesktopStageDurations::microseconds(queuedAt, computeStarted);
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
             auto update = owned->next(display, refresh, reset, rate, flowWidth, flowHeight, geometryChanged, allowEncode, allowRefinement, capabilities,
                                       requestedV2, requestedContinuous, detailBudget, regionByteBudget, acknowledgement, revision, initialStages, rejectedPublication);
             const auto now = std::chrono::steady_clock::now();
+            if (update) {
+                update->workerDispatchMicroseconds = DesktopStageDurations::microseconds(computeStarted, now);
+            }
             // Cursor metadata remains responsive without repeatedly mapping
             // pixels during a closed receiver window. ACKs wake this wait.
             auto wakeAt = owned->readback ? now + std::chrono::milliseconds(1) : allowEncode && owned->encodeAt > now ? std::min(owned->encodeAt, now + std::chrono::milliseconds(owned->optimizationV2 ? 1 : 33))
@@ -2068,6 +2078,22 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             self->optimizationActive = activeV2;
         }
         if (result && (!result->frame.data().empty() || result->region)) {
+            const auto snapshot = self->flow.snapshot(VideoClock::now());
+            auto* sample = &result->flowSample.emplace();
+            sample->set_frame_window(snapshot.frameWindow);
+            sample->set_byte_window(snapshot.byteWindow);
+            sample->set_pending_frames(snapshot.pendingFrames);
+            sample->set_pending_bytes(snapshot.pendingBytes);
+            sample->set_pressure_bytes(snapshot.pressureBytes);
+            sample->set_path_delay_microseconds(snapshot.pathDelayMicroseconds);
+            sample->set_oldest_frame_age_microseconds(snapshot.oldestFrameAgeMicroseconds);
+            sample->set_delivery_bytes_per_second(snapshot.deliveryBytesPerSecond);
+            sample->set_worker_dispatch_microseconds(result->workerDispatchMicroseconds);
+            sample->set_credit_wait_microseconds(std::exchange(self->lastCreditWaitMicroseconds, 0));
+            sample->set_blocking_flags(snapshot.blockingFlags | std::exchange(self->lastBlockingFlags, 0));
+            if (plannedWake && error != asio::error::operation_aborted) {
+                sample->set_owner_loop_late_microseconds(DesktopStageDurations::microseconds(*plannedWake, now));
+            }
             const auto bytes = result->region ? result->region->ByteSizeLong() : result->frame.ByteSizeLong();
             const auto type = result->region              ? DesktopFrameFlow::FrameType::kRegion
                               : result->frame.repeated()  ? (result->frame.key_frame() ? DesktopFrameFlow::FrameType::kRepeatedKeyFrame : DesktopFrameFlow::FrameType::kRepeatedVideo)

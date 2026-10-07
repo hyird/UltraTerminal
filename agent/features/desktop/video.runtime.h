@@ -216,6 +216,7 @@ struct DesktopVideoDiagnostics {
     std::optional<DesktopReadbackDiagnostic> lastReadback;
 };
 struct DesktopVideoUpdate {
+    std::optional<wire::DesktopFlowSample> flowSample; // Input-channel diagnostics.
     std::optional<wire::VideoConfig> configuration;
     std::optional<wire::CursorUpdate> cursor;
     std::optional<wire::VideoRefinement> refinement;
@@ -231,6 +232,7 @@ struct DesktopVideoUpdate {
     std::uint64_t changedPixels = 0;
     // Local-only QPC tick of the most recent pixel snapshot (not serialized).
     std::uint64_t sourcePresentTicks = 0;
+    std::uint32_t workerDispatchMicroseconds = 0;
     std::int32_t desktopLeft = 0, desktopTop = 0;
 };
 // One owner on the desktop process event loop. Capture and encoding run on a

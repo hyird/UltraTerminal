@@ -133,6 +133,31 @@ int main() {
     try {
         pipeline();
         stagePresence();
+        {
+            using namespace std::chrono_literals;
+            ultraterimal::server::DesktopCadenceWindow cadence;
+            const auto now = std::chrono::steady_clock::time_point(1s);
+            ultraterimal::wire::DesktopStageTiming stages;
+            stages.set_gpu_sync_wait_microseconds(34000);
+            cadence.frame(stages, now);
+            cadence.frame(stages, now + 50ms);
+            ultraterimal::wire::DesktopFlowSample flow;
+            flow.set_input_events(7);
+            flow.set_input_apply_max_microseconds(12000);
+            flow.set_blocking_flags(4);
+            flow.set_credit_wait_microseconds(200000);
+            require(cadence.observeFlow(flow, 1, 1));
+            require(!cadence.observeFlow(flow, 1, 1));
+            require(cadence.appliedInputs == 7 && cadence.credit.summary().samples == 1 && cadence.blockingFlags == 4);
+            require(!cadence.due(now + 999ms) && cadence.due(now + 1s));
+            require(cadence.fpsMilli(cadence.received, now + 1s) == 2000 && cadence.gaps.summary().maximumMicroseconds == 50000);
+            require(cadence.map.summary().samples == 2 && cadence.inputApply.summary().maximumMicroseconds == 12000 && cadence.loopLate.summary().samples == 0);
+            cadence.clear(now + 1s);
+            require(!cadence.hasFlow && cadence.received == 0 && cadence.blockingFlags == 0 && cadence.appliedInputs == 0);
+            require(!cadence.observeFlow(flow, 1, 1));
+            flow.set_owner_loop_late_microseconds(0);
+            require(cadence.observeFlow(flow, 1, 2) && cadence.loopLate.summary().samples == 1);
+        }
         ultraterimal::server::DesktopEncodingWindow window;
         require(window.summary().samples == 0);
         window.observe(0);

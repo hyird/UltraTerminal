@@ -31,6 +31,13 @@ bool rectangle(const wire::Rectangle& r) {
     return dimensions(r.width(), r.height()) && r.x() <= 16384 - r.width() && r.y() <= 16384 - r.height();
 }
 constexpr std::uint32_t kMaximumDurationMicroseconds = 60000000;
+bool flowSample(const wire::DesktopFlowSample& sample) {
+    return sample.frame_window() >= 1 && sample.frame_window() <= 128 && sample.byte_window() >= 16384 && sample.byte_window() <= 4 * 1024 * 1024 &&
+           sample.pending_frames() <= 128 && sample.pending_bytes() <= 64 * 1024 * 1024 && sample.pressure_bytes() <= 64 * 1024 * 1024 &&
+           sample.path_delay_microseconds() >= 1000 && sample.path_delay_microseconds() <= 2000000 && sample.oldest_frame_age_microseconds() <= 60000000 &&
+           sample.delivery_bytes_per_second() <= 100000000 && sample.worker_dispatch_microseconds() <= 60000000 && sample.credit_wait_microseconds() <= 60000000 && sample.blocking_flags() <= 15 &&
+           sample.input_apply_max_microseconds() <= 60000000 && sample.input_events() <= 1000000 && sample.owner_loop_late_microseconds() <= 60000000;
+}
 bool stageTiming(const wire::DesktopStageTiming& timing) {
     return timing.worker_queue_microseconds() <= kMaximumDurationMicroseconds &&
            timing.acquire_wait_microseconds() <= kMaximumDurationMicroseconds &&
@@ -396,6 +403,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         for (const auto& sample : report.samples()) {
             if (!sample.generation() || !sample.frame_id() ||
                 (sample.source() != wire::DesktopPipelineSample::DESKTOP_WORKER && sample.source() != wire::DesktopPipelineSample::AGENT_RELAY) ||
+                (sample.has_flow_sample() && (sample.source() != wire::DesktopPipelineSample::DESKTOP_WORKER || sample.batch_id() || !flowSample(sample.flow_sample()))) ||
                 sample.ipc_write_microseconds() > kMaximumDurationMicroseconds || sample.send_queue_wait_microseconds() > kMaximumDurationMicroseconds ||
                 sample.native_write_microseconds() > kMaximumDurationMicroseconds) {
                 return invalid();

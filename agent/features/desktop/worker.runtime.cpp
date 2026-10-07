@@ -62,7 +62,7 @@ class DesktopWorker {
             input_.reset();
         }
     }
-    asio::awaitable<void> send(wire::Envelope message) {
+    asio::awaitable<void> send(wire::Envelope message, std::optional<wire::DesktopFlowSample> flow = std::nullopt) {
         if (sequence_ == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Desktop IPC sequence exhausted");
         }
@@ -84,6 +84,9 @@ class DesktopWorker {
             throw std::runtime_error("Cannot encode desktop IPC message");
         }
         auto sample = pipelineEnabled_ ? DesktopPipelineBuffer::sample(message, wire::DesktopPipelineSample::DESKTOP_WORKER) : std::nullopt;
+        if (sample && flow && !sample->batch_id()) {
+            *sample->mutable_flow_sample() = std::move(*flow);
+        }
         const auto started = DesktopPipelineBuffer::Clock::now();
         co_await pipe_.send(std::move(*bytes));
         if (sample) {
@@ -202,7 +205,14 @@ class DesktopWorker {
                     co_await send(std::move(cursor));
                 }
                 const bool noVideoFrame = update->frame.data().empty();
-                co_await writeDesktopPixels(*update, [this](wire::Envelope message) { return send(std::move(message)); });
+                if (update->flowSample) {
+                    update->flowSample->set_input_apply_max_microseconds(std::exchange(inputApplyMaximum_, 0));
+                    update->flowSample->set_input_events(std::exchange(appliedInputs_, 0));
+                }
+                co_await writeDesktopPixels(*update, [this, flow = std::move(update->flowSample)](wire::Envelope message) mutable {
+                    auto sample = message.has_video_frame() || message.has_desktop_region_update() ? std::exchange(flow, std::nullopt) : std::nullopt;
+                    return send(std::move(message), std::move(sample));
+                });
                 if (noVideoFrame) {
                     refresh_ = refresh_ || refresh;
                 }
@@ -290,7 +300,10 @@ class DesktopWorker {
                         continue;
                     }
                     stage = "input_apply";
+                    const auto inputStarted = DesktopPipelineBuffer::Clock::now();
                     input_->apply(message->input_event());
+                    inputApplyMaximum_ = std::max(inputApplyMaximum_, DesktopPipelineBuffer::duration(DesktopPipelineBuffer::Clock::now() - inputStarted));
+                    appliedInputs_ = std::min(1000000u, appliedInputs_ + 1);
                     if (input_->needsRebind() && !rebindRequested_) {
                         rebindRequested_ = true;
                         video_.invalidate();
@@ -409,6 +422,7 @@ class DesktopWorker {
     DesktopOptimizationGate optimization_;
     const bool serverContinuousFrames_;
     bool pipelineEnabled_ = false;
+    std::uint32_t inputApplyMaximum_ = 0, appliedInputs_ = 0;
     DesktopPipelineBuffer pipeline_;
     bool rebindRequested_ = false;
     std::optional<wire::DesktopResize> resize_;

@@ -215,6 +215,13 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
         // Keys become observable ONLY after a matching v2 config and frame;
         // capability-missing/high-version frames never match buffered samples.
         diagnostics_.pipeline.report(message.desktop_pipeline_report());
+        for (const auto& sample : message.desktop_pipeline_report().samples()) {
+            if (sample.has_flow_sample() && sample.source() == wire::DesktopPipelineSample::DESKTOP_WORKER && !sample.batch_id() &&
+                sample.generation() == diagnostics_.videoGeneration && diagnostics_.pipeline.known({sample.generation(), sample.frame_id(), 0})) {
+                cadence_.observeFlow(sample.flow_sample(), sample.generation(), sample.frame_id());
+            }
+        }
+        logCadence(std::chrono::steady_clock::now());
         co_return true; // Never enters the browser queue or creates more diagnostics.
     }
     if (outstandingRefinement_ && std::chrono::steady_clock::now() - outstandingRefinement_->sent >= std::chrono::seconds(2)) {
@@ -279,6 +286,7 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
     auto delivery = std::unique_ptr<DesktopDelivery>(new DesktopDelivery());
     delivery->bytes_ = std::move(*bytes);
     delivery->browserVideo_ = slot == 3;
+    delivery->primaryVideo_ = message.has_video_frame() || message.has_desktop_region_update() || message.has_full_frame() || message.has_diff_batch();
     delivery->local_ = local_;
     delivery->global_ = global_;
     local_->used += delivery->bytes_.size();
@@ -299,6 +307,7 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
             diagnostics_.videoFrames += message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_desktop_region_update();
             diagnostics_.inputEvents += message.has_input_event();
             if (message.has_video_config()) {
+                cadence_ = {};
                 diagnostics_.videoGeneration = message.generation();
                 diagnostics_.latestVideoFrame = 0;
                 diagnostics_.renderReportedAt = {};
@@ -327,6 +336,8 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
                 }
             }
             if (message.has_video_frame()) {
+                const auto& video = message.video_frame();
+                cadence_.frame(video.stage_timing(), admittedAt);
                 // v2 writes the final cumulative worker stages after dynamic
                 // detail preparation. A present encode stage (including zero)
                 // identifies that complete sample, unlike an absent/empty body.
@@ -348,6 +359,8 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
                 }
             }
             if (message.has_desktop_region_update()) {
+                const auto& update = message.desktop_region_update();
+                cadence_.frame(update.stage_timing(), admittedAt);
                 if (optimizationActive_ && message.desktop_region_update().has_stage_timing()) {
                     diagnostics_.pipeline.observe(message.desktop_region_update().stage_timing());
                 }
@@ -370,6 +383,9 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
                 diagnostics_.maximumBrowserQueueDepth = std::max(diagnostics_.maximumBrowserQueueDepth, feedback.queue_depth());
                 diagnostics_.latestBrowserQueueDepth = feedback.queue_depth();
                 diagnostics_.latestBackground = feedback.background();
+                if (feedback.displayed_generation() == diagnostics_.videoGeneration && feedback.displayed_frame() <= diagnostics_.latestVideoFrame) {
+                    cadence_.feedback(feedback);
+                }
                 if (feedback.background()) {
                     diagnostics_.renderReportedAt = {};
                     diagnostics_.visibleFrames.clear();
@@ -392,6 +408,8 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
                     diagnostics_.tileCacheHits += patch.cache_slot() && patch.png().empty();
                 }
             }
+            cadence_.inputs += message.has_input_event();
+            logCadence(admittedAt);
             co_return true;
         }
         if (sent.status() != ruvia::channel_send_status::full) {
@@ -461,6 +479,27 @@ void DesktopSession::writeCompleted(const DesktopDelivery& delivery, std::chrono
     };
     diagnostics_.pipeline.observe(DesktopStage::kServerVideoQueueWait, micros(delivery.received_ - delivery.enqueued_));
     diagnostics_.pipeline.observe(DesktopStage::kServerVideoWsWrite, micros(elapsed));
+    if (delivery.primaryVideo_) {
+        cadence_.begin(std::chrono::steady_clock::now());
+        ++cadence_.written;
+        cadence_.writes.observePresent(micros(elapsed));
+    }
+}
+void DesktopSession::logCadence(std::chrono::steady_clock::time_point now) {
+    if (!cadence_.due(now)) {
+        return;
+    }
+    const auto gap = cadence_.gaps.summary(), acquire = cadence_.acquire.summary(), map = cadence_.map.summary(), encode = cadence_.encode.summary();
+    const auto dispatch = cadence_.dispatch.summary(), credit = cadence_.credit.summary(), write = cadence_.writes.summary();
+    const auto inputApply = cadence_.inputApply.summary(), loopLate = cadence_.loopLate.summary();
+    spdlog::info("desktop_fps_sample session_id={} generation={} window_ms={} received_fps_milli={} written_fps_milli={} displayed_fps_milli={} inputs={} target_fps={} target_bps={} background={} queue_depth={} gap_p99_us={} acquire_p99_us={} map_p99_us={} encode_p99_us={} dispatch_p99_us={} credit_p99_us={} ws_write_p99_us={} flow_present={} frame_window={} byte_window={} pending_frames={} pending_bytes={} pressure_bytes={} path_delay_us={} oldest_frame_age_us={} delivery_bps={} blocking_flags={} applied_inputs={} input_apply_max_us={} owner_loop_late_p99_us={} acquire_samples={} map_samples={} encode_samples={} flow_samples={} loop_late_samples={}",
+                 identity_.sessionId, diagnostics_.videoGeneration, std::chrono::duration_cast<std::chrono::milliseconds>(now - *cadence_.started).count(), cadence_.fpsMilli(cadence_.received, now), cadence_.fpsMilli(cadence_.written, now), cadence_.fpsMilli(cadence_.displayed, now), cadence_.inputs,
+                 diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate, diagnostics_.latestBackground, diagnostics_.latestBrowserQueueDepth,
+                 gap.p99Microseconds, acquire.p99Microseconds, map.p99Microseconds, encode.p99Microseconds, dispatch.p99Microseconds, credit.p99Microseconds, write.p99Microseconds,
+                 cadence_.hasFlow, cadence_.hasFlow ? cadence_.flow.frame_window() : 0, cadence_.hasFlow ? cadence_.flow.byte_window() : 0, cadence_.hasFlow ? cadence_.flow.pending_frames() : 0, cadence_.hasFlow ? cadence_.flow.pending_bytes() : 0, cadence_.hasFlow ? cadence_.flow.pressure_bytes() : 0,
+                 cadence_.hasFlow ? cadence_.flow.path_delay_microseconds() : 0, cadence_.hasFlow ? cadence_.flow.oldest_frame_age_microseconds() : 0, cadence_.hasFlow ? cadence_.flow.delivery_bytes_per_second() * 8ull : 0, cadence_.blockingFlags,
+                 cadence_.appliedInputs, inputApply.maximumMicroseconds, loopLate.p99Microseconds, acquire.samples, map.samples, encode.samples, dispatch.samples, loopLate.samples);
+    cadence_.clear(now);
 }
 void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin) {
     if (closed_) {

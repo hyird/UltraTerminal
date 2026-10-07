@@ -195,6 +195,22 @@ message VideoFrame {
   // Requires continuous_frames at the VideoConfig generation barrier.
   bool repeated = 10;
 }
+message DesktopFlowSample {
+  uint32 frame_window = 1;
+  uint32 byte_window = 2;
+  uint32 pending_frames = 3;
+  uint32 pending_bytes = 4;
+  uint32 pressure_bytes = 5;
+  uint32 path_delay_microseconds = 6;
+  uint32 oldest_frame_age_microseconds = 7;
+  uint32 delivery_bytes_per_second = 8; // Zero means no capacity sample.
+  uint32 worker_dispatch_microseconds = 9; // Whole completed compute job.
+  uint32 credit_wait_microseconds = 10; // Credit-only wait, excludes pacing.
+  uint32 blocking_flags = 11; // Background=1, frame window=2, bytes=4, age=8.
+  uint32 input_apply_max_microseconds = 12;
+  uint32 input_events = 13;
+  optional uint32 owner_loop_late_microseconds = 14;
+}
 // Local durations only, each <= 60000000 us. Presence distinguishes unexecuted
 // stages from measured zero. Stages may overlap: never sum as total latency.
 message DesktopStageTiming {
@@ -295,6 +311,7 @@ message DesktopPipelineSample {
   optional uint32 ipc_write_microseconds = 5;
   optional uint32 send_queue_wait_microseconds = 6;
   optional uint32 native_write_microseconds = 7;
+  DesktopFlowSample flow_sample = 8; // Worker primary frames only, batch_id=0.
 }
 message DesktopPipelineReport {
   repeated DesktopPipelineSample samples = 1; // At most 32, best effort.

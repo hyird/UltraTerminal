@@ -67,6 +67,7 @@ class DesktopDelivery {
     std::shared_ptr<DesktopBudget> local_;
     std::shared_ptr<DesktopBudget> global_;
     bool browserVideo_ = false;
+    bool primaryVideo_ = false;
     std::chrono::steady_clock::time_point enqueued_{}, received_{};
 };
 class DesktopEndpoint {
@@ -107,6 +108,7 @@ class DesktopSession {
   private:
     ruvia::task<bool> forwardOwned(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop);
     void logDiagnostics(std::string_view event) const;
+    void logCadence(std::chrono::steady_clock::time_point now);
     void optimizationBarrier(const wire::Envelope& message);
     void completeRefinement();
     enum class RefinementAckResult { kForward,
@@ -139,6 +141,7 @@ class DesktopSession {
     DesktopCloseReason closeReason_ = DesktopCloseReason::kServerStopped;
     DesktopCloseOrigin closeOrigin_ = DesktopCloseOrigin::kServer;
     DesktopDiagnostics diagnostics_;
+    DesktopCadenceWindow cadence_;
     std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
 };
 } // namespace ultraterimal::server

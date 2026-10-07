@@ -132,6 +132,19 @@ class DesktopFrameFlow {
     }
     std::size_t pendingBytes() const { return pendingBytes_; }
     std::size_t pendingFrames() const { return pending_.size(); }
+    struct Snapshot {
+        std::uint32_t frameWindow, byteWindow, pendingFrames, pendingBytes, pressureBytes, pathDelayMicroseconds, oldestFrameAgeMicroseconds, deliveryBytesPerSecond, blockingFlags;
+    };
+    Snapshot snapshot(Clock::time_point now) const {
+        const auto age = pending_.empty() ? Clock::duration::zero() : std::max(now - pending_.front().sent, Clock::duration::zero());
+        const auto bytes = pressureBytes(now);
+        const auto flags = (background_ ? 1u : 0u) | (!pending_.empty() && pending_.size() >= frameWindow() ? 2u : 0u) |
+                           (!pending_.empty() && bytes >= byteWindow() ? 4u : 0u) | (!pending_.empty() && age > pathDelay() + std::chrono::milliseconds(150) ? 8u : 0u);
+        return {static_cast<std::uint32_t>(frameWindow()), static_cast<std::uint32_t>(byteWindow()), static_cast<std::uint32_t>(pending_.size()),
+                static_cast<std::uint32_t>(pendingBytes_), static_cast<std::uint32_t>(bytes), static_cast<std::uint32_t>(pathDelay().count()),
+                static_cast<std::uint32_t>(std::min<std::int64_t>(60000000, std::chrono::duration_cast<std::chrono::microseconds>(age).count())),
+                static_cast<std::uint32_t>(deliveryBytesPerSecond_), flags};
+    }
     // Refinement is not a dependent video frame. Its written bytes drain at
     // estimated link throughput, NEVER by an ACK, retirement or timeout refund.
     std::size_t pressureBytes(Clock::time_point now) const {

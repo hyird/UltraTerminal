@@ -86,6 +86,9 @@ int main() {
         require(flow.rate().framesPerSecond == 30, "Healthy desktop exceeded the configured 30 FPS ceiling");
         flow.sent(1, 1, now, 4000000, FrameType::kVideo);
         require(!flow.canEncode(now + 1ms), "Oversized IDR did not exhaust byte credit");
+        const auto blocked = flow.snapshot(now + 1ms);
+        require(blocked.pendingFrames == 1 && blocked.pendingBytes == 4000000 && blocked.pressureBytes == 4000000 && (blocked.blockingFlags & 4) && blocked.oldestFrameAgeMicroseconds == 1000,
+                "Flow sampling lost the byte-credit stall and oldest frame age");
         require(!flow.acknowledge(1, 2, 1000, 0, now + 20ms, false, 128), "Future ACK accepted");
         require(!flow.acknowledge(2, 1, 1000, 0, now + 20ms, false, 128), "Wrong-generation ACK accepted");
         require(!flow.acknowledge(1, 1, 1000, 0, now + 20ms, false, 129), "Invalid receiver capacity accepted");

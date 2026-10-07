@@ -57,6 +57,91 @@ class DesktopDurationWindow {
     std::size_t next_ = 0;
 };
 using DesktopEncodingWindow = DesktopDurationWindow<1024>;
+struct DesktopCadenceWindow {
+    using Clock = std::chrono::steady_clock;
+    std::optional<Clock::time_point> started, lastFrame;
+    std::uint64_t received = 0, written = 0, displayed = 0, inputs = 0;
+    std::uint64_t displayedGeneration = 0, displayedFrame = 0;
+    DesktopDurationWindow<128> gaps, acquire, map, encode, dispatch, credit, writes, inputApply, loopLate;
+    std::uint64_t appliedInputs = 0;
+    wire::DesktopFlowSample flow;
+    bool hasFlow = false;
+    std::uint32_t blockingFlags = 0;
+    std::uint64_t flowGeneration = 0, flowFrame = 0;
+    void begin(Clock::time_point now) {
+        if (!started) {
+            started = now;
+        }
+    }
+    void frame(const wire::DesktopStageTiming& stages, Clock::time_point now) {
+        begin(now);
+        ++received;
+        if (lastFrame && now >= *lastFrame) {
+            gaps.observePresent(static_cast<std::uint32_t>(std::min<std::int64_t>(60000000, std::chrono::duration_cast<std::chrono::microseconds>(now - *lastFrame).count())));
+        }
+        lastFrame = now;
+        if (stages.has_acquire_wait_microseconds()) {
+            acquire.observePresent(stages.acquire_wait_microseconds());
+        }
+        if (stages.has_gpu_sync_wait_microseconds()) {
+            map.observePresent(stages.gpu_sync_wait_microseconds());
+        }
+        if (stages.has_video_encode_microseconds()) {
+            encode.observePresent(stages.video_encode_microseconds());
+        }
+    }
+    bool observeFlow(const wire::DesktopFlowSample& sample, std::uint64_t generation, std::uint64_t frame) {
+        if (!generation || !frame || generation < flowGeneration || (generation == flowGeneration && frame <= flowFrame)) {
+            return false;
+        }
+        flowGeneration = generation;
+        flowFrame = frame;
+        flow = sample;
+        hasFlow = true;
+        blockingFlags |= sample.blocking_flags();
+        dispatch.observePresent(sample.worker_dispatch_microseconds());
+        credit.observePresent(sample.credit_wait_microseconds());
+        appliedInputs += sample.input_events();
+        if (sample.input_events()) {
+            inputApply.observePresent(sample.input_apply_max_microseconds());
+        }
+        if (sample.has_owner_loop_late_microseconds()) {
+            loopLate.observePresent(sample.owner_loop_late_microseconds());
+        }
+        return true;
+    }
+    void feedback(const wire::QualityFeedback& feedback) {
+        if (feedback.displayed_generation() != displayedGeneration) {
+            displayedGeneration = feedback.displayed_generation();
+            displayedFrame = 0;
+        }
+        if (feedback.displayed_frame() > displayedFrame) {
+            displayed += feedback.displayed_frame() - displayedFrame;
+            displayedFrame = feedback.displayed_frame();
+        }
+    }
+    bool due(Clock::time_point now) const { return started && now - *started >= std::chrono::seconds(1); }
+    std::uint64_t fpsMilli(std::uint64_t frames, Clock::time_point now) const {
+        const auto elapsed = started ? std::chrono::duration_cast<std::chrono::microseconds>(now - *started).count() : 0;
+        return elapsed > 0 ? frames * 1000000000ull / static_cast<std::uint64_t>(elapsed) : 0;
+    }
+    void clear(Clock::time_point now) {
+        started = now;
+        received = written = displayed = inputs = 0;
+        appliedInputs = 0;
+        gaps.clear();
+        acquire.clear();
+        map.clear();
+        encode.clear();
+        dispatch.clear();
+        credit.clear();
+        writes.clear();
+        hasFlow = false;
+        blockingFlags = 0;
+        inputApply.clear();
+        loopLate.clear();
+    }
+};
 // These one-second browser reports contain overlapping windows of at most
 // 120 rAF intervals. The latest and worst snapshots are meaningful; summing
 // long-gap counts across reports would count the same interval repeatedly.
