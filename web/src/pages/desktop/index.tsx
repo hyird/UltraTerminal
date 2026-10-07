@@ -100,7 +100,7 @@ function DesktopPanel({
   const [preferences, setPreferences] = useState(() =>
     loadDesktopPreferences(userId, entry.device.id),
   );
-  const { scale, quality } = preferences;
+  const { scale } = preferences;
   const initialPreferences = useRef(preferences);
   const resolutionRestored = useRef(false);
   function updatePreferences(change: Partial<DesktopPreferences>) {
@@ -219,7 +219,6 @@ function DesktopPanel({
         setSample,
       );
       session.current.setScaleMode(initialPreferences.current.scale);
-      session.current.setQuality(initialPreferences.current.quality);
     } catch (error) {
       setStatus(failureText(error));
       setEnded(true);
@@ -294,26 +293,6 @@ function DesktopPanel({
           items={[
             { id: "fit", label: "适应窗口" },
             { id: "native", label: "原始大小" },
-          ]}
-        />
-        <Choice
-          compact
-          label="画质偏好"
-          value={quality}
-          onChange={(value) => {
-            const mode =
-              value === "smooth"
-                ? "smooth"
-                : value === "sharp"
-                  ? "sharp"
-                  : "auto";
-            updatePreferences({ quality: mode });
-            session.current?.setQuality(mode);
-          }}
-          items={[
-            { id: "auto", label: "自动画质" },
-            { id: "smooth", label: "流畅" },
-            { id: "sharp", label: "清晰" },
           ]}
         />
         {entry.ticket.writeControl && (

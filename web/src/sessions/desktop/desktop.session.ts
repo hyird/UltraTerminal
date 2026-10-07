@@ -1,6 +1,5 @@
 import { ultraterimal } from "../../generated/session";
 import type { DesktopTicket, DesktopPerformance } from "./desktop.types";
-import { DesktopQualityPolicy, type DesktopQuality } from "./quality.session";
 import {
   DesktopVisibleFrameGaps,
   visibleFrameTiming,
@@ -101,7 +100,6 @@ export class DesktopSession {
   private lastProbeNonce = 0;
   private lastAcceptedResponseNonce = 0;
   private resizeDeadline: ReturnType<typeof setTimeout> | undefined;
-  private quality = new DesktopQualityPolicy();
   private startedAt = performance.now();
   private firstFrameMilliseconds: number | null = null;
   private displayedCount = 0;
@@ -349,11 +347,6 @@ export class DesktopSession {
           : "",
     );
   }
-  setQuality(mode: DesktopQuality): void {
-    if (this.stopped) return;
-    this.quality.setMode(mode);
-    this.reportDisplay();
-  }
   resize(width: number, height: number): void {
     const channel = this.channels.find(
       (entry) => entry.purpose === 2 && entry.ready,
@@ -428,12 +421,9 @@ export class DesktopSession {
           ...(this.optimizationV2 && this.browserTiming
             ? { browserTiming: this.browserTiming }
             : {}),
-          preference:
-            this.quality.preference === "sharp"
-              ? wire.QualityFeedback.Preference.SHARP
-              : this.quality.preference === "smooth"
-                ? wire.QualityFeedback.Preference.SMOOTH
-                : wire.QualityFeedback.Preference.BALANCED,
+          // Keep the sharp target under pressure; queue/timing feedback still
+          // lets the Agent adapt frame admission without lowering quality.
+          preference: wire.QualityFeedback.Preference.SHARP,
         },
       });
   }
@@ -1209,9 +1199,6 @@ export class DesktopSession {
       if (timing) this.reportDisplay(timing);
       this.renderReportAt = now;
     }
-    const previousQuality = this.quality.preference;
-    this.quality.sample(frames, decodeMilliseconds ?? 0, this.pending.size);
-    if (previousQuality !== this.quality.preference) this.reportDisplay();
     this.bitrate((bytes * 8000) / elapsed);
     this.performanceSample({
       // Only count decoded images observed in a visible rAF, not every
@@ -1231,7 +1218,6 @@ export class DesktopSession {
       width: this.canvas.width,
       height: this.canvas.height,
       codec: this.codec,
-      quality: this.quality.preference,
     });
     this.displayedCount = this.presentedCount = this.decodeTotal = 0;
     this.bitrateSince = now;

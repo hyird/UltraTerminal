@@ -74,7 +74,7 @@ constexpr std::size_t kKnownVideoBytes = 65536, kTinyKnownVideoBytes = 12288;
 // actual source as a key frame; codec construction is not a GPU timing model.
 thread_local std::unique_ptr<ultraterimal::agent::SoftwareVideoEncoder> preparedKnownCodec;
 #endif
-static_assert(kTinyKnownVideoBytes * 8 * 60 * 11 / 10 < 8000000);
+static_assert(kTinyKnownVideoBytes * 8 * 30 * 11 / 10 < 24000000);
 struct TinyCodecSample {
     std::uint64_t call = 0, sleepUs = 0, codecUs = 0, wallUs = 0, bytes = 0;
     std::uint32_t fps = 0, bitrate = 0;
@@ -267,7 +267,6 @@ void displayed(ultraterimal::agent::DesktopVideoRuntime& video, const ultraterim
     ultraterimal::wire::QualityFeedback feedback;
     feedback.set_displayed_generation(update.generation);
     feedback.set_displayed_frame(update.frameId);
-    feedback.set_preference(tinyCpuCost ? ultraterimal::wire::QualityFeedback::SMOOTH : ultraterimal::wire::QualityFeedback::SHARP);
     feedback.set_decode_microseconds(1000);
     feedback.set_video_refinement(refinement);
     video.feedback(feedback);
@@ -480,7 +479,7 @@ struct DesktopCapture::State {
 DesktopCapture::DesktopCapture(std::uint32_t) : state_(std::make_unique<State>()) {
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
     if (fixture::knownTinyCodec || fixture::knownCheapStatic) {
-        fixture::preparedKnownCodec = std::make_unique<SoftwareVideoEncoder>(VideoEncoderConfig{1024, 512, 8000000, 30, false, {wire::AVC}});
+        fixture::preparedKnownCodec = std::make_unique<SoftwareVideoEncoder>(VideoEncoderConfig{1024, 512, 24000000, 30, false, {wire::AVC}});
     }
 #endif
 }
@@ -1246,7 +1245,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
     require(first.frame.encode_microseconds() <= 800000 / 30 && first.frame.data().size() >= fixture::kTinyKnownVideoBytes, "Known tiny codec did not establish real 30fps CPU/message premise");
 #endif
     fixture::displayed(video, first, false);
-    // Commit the real feedback revision, without refill/probe sleeps.
+    // Explicit refresh, without a legacy quality switch or refill/probe sleeps.
     first = co_await baseline(video, true);
     std::cerr << "tiny refresh encoder_us=" << first.frame.encode_microseconds() << " fps=" << first.frame.target_frames_per_second() << '\n';
     fixture::displayed(video, first, false);
@@ -1279,13 +1278,13 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
                 warmReferences += patch.png().empty();
             }
         }
-        ready = fps == 30 && bitrate == 8000000;
+        ready = fps == 30 && bitrate == 24000000;
         if (!ready) {
             ++fixture::version;
         }
     }
     const auto warmAfter = video.diagnostics().optional;
-    std::cerr << "tiny_warm_numeric feedbackPreference=" << wire::QualityFeedback::SMOOTH << " actualFps=" << actualFps << " actualBitrate=" << actualBitrate
+    std::cerr << "tiny_warm_numeric fixedQuality=sharp actualFps=" << actualFps << " actualBitrate=" << actualBitrate
               << " videos=" << warmVideos << " regions=" << warmRegions << " definitions=" << warmDefinitions << " references=" << warmReferences
               << " normal=" << warmAfter.normal - warmBefore.normal << " probe=" << warmAfter.probe - warmBefore.probe
               << " fitDenied=" << warmAfter.fitDenied - warmBefore.fitDenied << " advantageDenied=" << warmAfter.advantageDenied - warmBefore.advantageDenied
@@ -1298,7 +1297,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         std::cerr << "tiny_codec_numeric call=" << sample.call << " sleepUs=" << sample.sleepUs << " codecUs=" << sample.codecUs << " wallUs=" << sample.wallUs
                   << " bytes=" << sample.bytes << " fps=" << sample.fps << " bitrate=" << sample.bitrate << " refresh=" << sample.refresh << '\n';
     }
-    require(ready, "Existing rate controller did not establish SMOOTH 8Mbps/30fps");
+    require(ready, "Existing rate controller did not establish fixed sharp 24Mbps/30fps");
     fixture::tinyFreshPalette = true; // Two new cheap WIC colors plus known reliable slots.
     unsigned regions = 0, definitions = 0, references = 0;
     std::vector<Clock::time_point> regionTimes;
@@ -1326,13 +1325,13 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         if (!update->region) {
             continue;
         }
-        if (update->region->target_bitrate() != 8000000 || update->region->target_frames_per_second() != 60) {
+        if (update->region->target_bitrate() != 24000000 || update->region->target_frames_per_second() != 30) {
             if (const auto snapshot = video.diagnostics().lastAdmission) {
                 admissionNumeric(*snapshot);
             }
             std::cerr << "tiny rate bitrate=" << update->region->target_bitrate() << " fps=" << update->region->target_frames_per_second() << '\n';
         }
-        require(update->region->target_bitrate() == 8000000 && update->region->target_frames_per_second() == 30, "Tiny fixture changed SMOOTH 8Mbps/30fps conditions");
+        require(update->region->target_bitrate() == 24000000 && update->region->target_frames_per_second() == 30, "Tiny fixture changed fixed sharp 24Mbps/30fps conditions");
         require(update->region->ByteSizeLong() + 512 <= 8333, "Tiny region exceeded its independent byte budget");
         require(update->region->patches_size() == 1, "Tiny CPU update did not remain one patch");
         const auto& patch = update->region->patches(0);
@@ -1366,7 +1365,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
     require(after.cpuSource > before.cpuSource && after.materializeXorCursor == before.materializeXorCursor, "Known CPU source was replaced by a cursor readback");
 #endif
-    std::cout << "tiny SMOOTH8M/60: regions=" << regions << " normal=" << normal << " definitions=" << definitions << " references=" << references
+    std::cout << "tiny fixedSharp24M/30: regions=" << regions << " normal=" << normal << " definitions=" << definitions << " references=" << references
               << " span_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(regionTimes.back() - regionTimes.front()).count()
               << " predicted_message_bytes=" << *after.predictedMessageBytes << " actual_png_bytes=" << after.actualPngBytes - before.actualPngBytes << '\n';
 }
@@ -1485,8 +1484,8 @@ asio::awaitable<void> readbackOrdering(agent::DesktopVideoRuntime& video, unsign
     video.capabilities(caps);
     auto first = co_await baseline(video);
     fixture::displayed(video, first, true);
-    // Commit the real SHARP/feedback revision barrier before testing optional
-    // work; its required keyframe must not be mistaken for a readback fallback.
+    // Commit refinement opt-in, then explicitly refresh before optional work;
+    // this keyframe must not be mistaken for a readback fallback.
     first = co_await baseline(video, true);
     fixture::displayed(video, first, true);
     {
@@ -2539,12 +2538,15 @@ void auxiliaryRevisionCase(unsigned reason) {
             co_await control.async_wait(asio::use_awaitable);
         }
         require(fixture::privateVideoGate.entered, "No owned Ready auxiliary for revision rejection");
-        if (reason == 1) {
-            caps.set_region_updates(false);
+        if (reason == 1 || reason == 2) {
+            if (reason == 1) {
+                caps.set_region_updates(false);
+            } else {
+                caps.set_tile_cache(false);
+            }
             video.capabilities(caps);
         } else {
-            feedback.set_video_refinement(reason != 0);
-            feedback.set_preference(reason == 2 ? wire::QualityFeedback::SMOOTH : wire::QualityFeedback::SHARP);
+            feedback.set_video_refinement(false);
             video.feedback(feedback);
         }
         fixture::privateVideoGate.open();
@@ -2558,7 +2560,7 @@ void auxiliaryRevisionCase(unsigned reason) {
         }
         fixture::privateAuxGate = false;
         const auto rejected = video.diagnostics();
-        require(fixture::baselineCopies == copies && fixture::baselineClears == clears && rejected.videoEncodeCalls == before.videoEncodeCalls && rejected.rejectedPrivateVideoFrames == before.rejectedPrivateVideoFrames && rejected.ownerRevision == before.ownerRevision + 1, "Auxiliary-only private rejection cleared accepted PRIMARY source baseline or changed quality implicitly");
+        require(fixture::baselineCopies == copies && fixture::baselineClears == clears && rejected.videoEncodeCalls == before.videoEncodeCalls && rejected.rejectedPrivateVideoFrames == before.rejectedPrivateVideoFrames && rejected.ownerRevision == before.ownerRevision + 1, "Auxiliary-only private rejection cleared accepted PRIMARY source baseline");
         if (reason == 0) {
             control.expires_after(std::chrono::milliseconds(1100));
             co_await control.async_wait(asio::use_awaitable);
@@ -2571,7 +2573,7 @@ void auxiliaryRevisionCase(unsigned reason) {
             require(video.diagnostics().comparison.unchanged == rejected.comparison.unchanged + 1 && fixture::baselineCopies == copies && fixture::baselineClears == clears && video.diagnostics().comparison.lastBaselineFrame == primary.frameId, "Aux-only revision did not preserve the actual accepted sourceBaseline/frame key");
         } else {
             auto refreshed = co_await baseline(video);
-            require(!refreshed.frame.data().empty() && refreshed.frame.key_frame() && refreshed.frameId == primary.frameId + 1 && fixture::baselineCopies == copies + 1, "Permission/quality reset negative control failed to require a genuine new PRIMARY baseline");
+            require(!refreshed.frame.data().empty() && refreshed.frame.key_frame() && refreshed.frameId == primary.frameId + 1 && fixture::baselineCopies == copies + 1, "Permission reset negative control failed to require a genuine new PRIMARY baseline");
         }
         video.stop();
         co_await video.next();
@@ -2586,7 +2588,7 @@ void auxiliaryRevisionCase(unsigned reason) {
         readbackDiagnostic(video.diagnostics());
         std::rethrow_exception(failure);
     }
-    std::cout << "Runtime auxiliary rejection reason=" << reason << " accepted sourceBaseline/exact old-tuple cleanup/permission-quality negative controls passed (private product=owned ROI, not published PNG batch)\n";
+    std::cout << "Runtime auxiliary rejection reason=" << reason << " accepted sourceBaseline/exact old-tuple cleanup/permission negative controls passed (private product=owned ROI, not published PNG batch)\n";
 }
 #if defined(ULTRATERIMAL_DESKTOP_JOB_RETURN_FIXTURE)
 void finalAuxiliaryOwnerCase(unsigned reason) {
@@ -2614,7 +2616,7 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
         video.capabilities(caps);
         auto primary = co_await baseline(video);
         fixture::displayed(video, primary, true);
-        primary = co_await baseline(video, true); // Already accepted SHARP; the toggle must not change quality.
+        primary = co_await baseline(video, true); // Explicit refresh under the fixed sharp policy.
         fixture::displayed(video, primary, true);
         require(primary.frame.target_frames_per_second() == 30 && primary.frame.target_bitrate() == 24000000 && primary.frame.data().size() >= fixture::kTinyKnownVideoBytes,
                 "Final auxiliary fixture changed the 12kiB/24Mbps/30 actual VIDEO premise");
@@ -2677,12 +2679,12 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
             } else if (reason == 2) {
                 caps.set_region_updates(false); // Permission negative control requires later PRIMARY refresh.
                 video.capabilities(caps);
-            } else if (reason == 3) {
-                feedback.set_preference(wire::QualityFeedback::SMOOTH); // Quality negative control.
-                video.feedback(feedback);
+            } else if (reason >= 3) {
+                feedback.set_preference(reason == 3 ? wire::QualityFeedback::SMOOTH : wire::QualityFeedback::BALANCED);
+                video.feedback(feedback); // Legacy preferences must not invalidate a genuine prepared PNG.
             }
             const auto controlled = video.diagnostics();
-            const bool controlPreservedOwnerState = controlled.ownerRevision == before.ownerRevision + (reason ? 1u : 0u) &&
+            const bool controlPreservedOwnerState = controlled.ownerRevision == before.ownerRevision + (reason == 1 || reason == 2 ? 1u : 0u) &&
                                                     controlled.publishedVideoFrames == before.publishedVideoFrames &&
                                                     controlled.latestPublishedRefinement == before.latestPublishedRefinement && fixture::baselineCopies == copies &&
                                                     fixture::baselineClears == clears;
@@ -2714,10 +2716,10 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
                     after.videoEncodeCalls == before.videoEncodeCalls && after.publishedVideoFrames == before.publishedVideoFrames &&
                     after.rejectedPrivateVideoFrames == before.rejectedPrivateVideoFrames && fixture::baselineCopies == copies && fixture::baselineClears == clears && fixture::fullReads == 0,
                 "Final auxiliary completion lost prepared count or reset/encoded accepted PRIMARY");
-        if (!reason) {
+        if (reason == 0 || reason >= 3) {
             require(completed && completed->refinement && completed->refinementAdmission == gate->association && after.latestPublishedRefinement == gate->association &&
                         after.rejectedPrivateJobs == before.rejectedPrivateJobs && after.ownerRevision == before.ownerRevision,
-                    "No-toggle final PNG positive control was not genuinely published");
+                    "No-toggle/legacy-preference final PNG positive control was not genuinely published");
             fixture::verifyPixels(*completed->refinement, fixture::version);
             fixture::displayed(video, *completed, true);
             video.refinementAck(fixture::ack(*completed));
@@ -2726,7 +2728,7 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
                         after.ownerRevision == before.ownerRevision + 1 && gate->association != after.latestPublishedRefinement,
                     "Revision-rejected final PNG batch was published or incorrectly uncounted");
         }
-        if (reason <= 1) {
+        if (reason != 2) {
             asio::steady_timer ticket(io);
             ticket.expires_after(std::chrono::milliseconds(1100));
             co_await ticket.async_wait(asio::use_awaitable);
@@ -2744,12 +2746,13 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
             const auto proof = video.diagnostics();
             require(proof.comparison.unchanged == after.comparison.unchanged + 1 && proof.comparison.lastBaselineFrame == primary.frameId &&
                         proof.lastReadback && proof.lastReadback->comparisonBaseline && proof.lastReadback->comparisonBaseline->composedBase == primary.frameId &&
+                        proof.lastReadback->admission.bitrate == 24000000 && proof.lastReadback->admission.framesPerSecond == 30 &&
                         fixture::baselineCopies == copies && fixture::baselineClears == clears && proof.videoEncodeCalls == before.videoEncodeCalls,
-                    "Final PNG boundary did not preserve accepted source-key baseline for subsequent genuine proof");
+                    "Final PNG boundary downgraded the fixed sharp rate or lost the accepted source-key baseline for subsequent genuine proof");
         } else {
             auto refreshed = co_await baseline(video);
             require(refreshed.frame.key_frame() && refreshed.generation == primary.generation && refreshed.frameId == primary.frameId + 1 && fixture::baselineCopies == copies + 1,
-                    "Permission/quality negative control failed to require real PRIMARY refresh");
+                    "Permission negative control failed to require real PRIMARY refresh");
             fixture::displayed(video, refreshed, true);
         }
         require(oldAssociation == *oldBatch.refinementAdmission, "Final PNG control overwrote held genuine old lease association");
@@ -3110,7 +3113,7 @@ int main(int argc, char** argv) {
     try {
         // Dedicated executable only, never a substitute for the full suite.
         require(argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--aux-owner-only"), "Job-return runner only owns the final auxiliary group");
-        for (unsigned reason = 0; reason < 4; ++reason) {
+        for (unsigned reason = 0; reason < 5; ++reason) {
             finalAuxiliaryOwnerCase(reason);
         }
         require(fixture::liveTimers == 0 && fixture::timerBegins == fixture::timerEnds, "Final auxiliary suite leaked Runtime timer references");

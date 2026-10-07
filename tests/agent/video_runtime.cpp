@@ -183,33 +183,21 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     require(bool(validator.accept(message)), "Runtime refresh violates channel protocol");
     decode(*refreshed, refreshed->configuration.value_or(configuration));
 
-    wire::QualityFeedback quality;
-    quality.set_displayed_generation(refreshed->generation);
-    quality.set_displayed_frame(refreshed->frameId);
-    quality.set_preference(wire::QualityFeedback::BALANCED);
-    video.feedback(quality);
-    const auto sharper = co_await video.next();
-    require(sharper && sharper->frame.key_frame() &&
-                (sharper->configuration ? sharper->generation == refreshed->generation + 1 && sharper->frameId == 1 : sharper->generation == refreshed->generation && sharper->frameId == refreshed->frameId + 1),
-            "Quality change did not refresh or explicitly rebuild the static desktop codec baseline");
-    if (sharper->configuration) {
-        message.set_sequence(message.sequence() + 1);
-        message.set_generation(sharper->generation);
-        message.clear_frame_id();
-        *message.mutable_video_config() = *sharper->configuration;
-        require(bool(validator.accept(message)), "Quality change configuration violates channel protocol");
+    wire::QualityFeedback feedbackPreference;
+    feedbackPreference.set_displayed_generation(refreshed->generation);
+    feedbackPreference.set_displayed_frame(refreshed->frameId);
+    const auto revision = video.diagnostics().ownerRevision;
+    for (const auto preference : {wire::QualityFeedback::BALANCED, wire::QualityFeedback::SMOOTH}) {
+        feedbackPreference.set_preference(preference);
+        video.feedback(feedbackPreference);
+        require(video.diagnostics().ownerRevision == revision, "Legacy preference invalidated the fixed sharp baseline");
     }
-    message.set_sequence(message.sequence() + 1);
-    message.set_frame_id(sharper->frameId);
-    *message.mutable_video_frame() = sharper->frame;
-    require(bool(validator.accept(message)), "Quality change frame violates channel protocol");
-    decode(*sharper, sharper->configuration.value_or(refreshed->configuration.value_or(configuration)));
 
     std::optional<agent::DesktopVideoUpdate> rebuilt;
-    auto previousTimestamp = sharper->frame.timestamp_microseconds();
+    auto previousTimestamp = refreshed->frame.timestamp_microseconds();
     // Exercise repeated real DXGI/codec teardown rather than only one reset.
     // Each new baseline must work with a fresh independent decoder.
-    for (std::uint64_t generation = sharper->generation + 1; generation <= sharper->generation + 12; ++generation) {
+    for (std::uint64_t generation = refreshed->generation + 1; generation <= refreshed->generation + 12; ++generation) {
         video.invalidate();
         rebuilt.reset();
         const auto recoveryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

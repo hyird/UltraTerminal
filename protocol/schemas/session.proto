@@ -271,7 +271,9 @@ message QualityFeedback {
   uint32 queue_depth = 3;
   bool background = 4;
   uint64 displayed_generation = 5;
-  // Optional preference; zero preserves the current policy for older clients.
+  // Legacy preference, retained on wire for mixed-version peers. Agent 1.0.36+
+  // ignores it and fixes the original sharp policy; older Agents still honor it.
+  // Remove only after those peers/rollback versions retire; reserve tag and name.
   Preference preference = 6;
   // Maximum received, not-yet-displayed video frames the client can accept.
   // Zero/omitted means the legacy limit of 16; valid explicit values are 1..128.

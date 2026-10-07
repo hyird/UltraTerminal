@@ -1,8 +1,5 @@
-import type { DesktopQuality } from "../../sessions/desktop/quality.session";
-
 export interface DesktopPreferences {
   scale: "fit" | "native";
-  quality: DesktopQuality;
   resolution: { width: number; height: number } | null;
 }
 
@@ -16,7 +13,6 @@ export function loadDesktopPreferences(
 ): DesktopPreferences {
   const defaults: DesktopPreferences = {
     scale: "fit",
-    quality: "auto",
     resolution: null,
   };
   try {
@@ -25,11 +21,6 @@ export function loadDesktopPreferences(
     );
     if (!value || typeof value !== "object") return defaults;
     if ("scale" in value && value.scale === "native") defaults.scale = "native";
-    if (
-      "quality" in value &&
-      (value.quality === "smooth" || value.quality === "sharp")
-    )
-      defaults.quality = value.quality;
     if (
       "resolution" in value &&
       value.resolution &&
@@ -64,7 +55,10 @@ export function saveDesktopPreferences(
   value: DesktopPreferences,
 ): void {
   try {
-    localStorage.setItem(storageKey(userId, deviceId), JSON.stringify(value));
+    localStorage.setItem(
+      storageKey(userId, deviceId),
+      JSON.stringify({ scale: value.scale, resolution: value.resolution }),
+    );
   } catch {
     // Keep the current session usable when browser storage is unavailable.
   }

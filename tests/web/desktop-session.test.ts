@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ultraterimal } from "../../web/src/generated/session";
 import { DesktopSession } from "../../web/src/sessions/desktop/desktop.session";
+import type { DesktopPerformance } from "../../web/src/sessions/desktop/desktop.types";
 
 const wire = ultraterimal.wire;
 async function until(predicate: () => boolean): Promise<void> {
@@ -22,7 +23,9 @@ function png() {
     view.setUint32(offset, value);
   return bytes;
 }
-function harness(fastBaselineTimeout = false) {
+function harness(
+  options: { fastBaselineTimeout?: boolean; manualPerformance?: boolean } = {},
+) {
   const globals = new Map<string, PropertyDescriptor | undefined>();
   const replace = (name: string, value: unknown) => {
     globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -130,11 +133,21 @@ function harness(fastBaselineTimeout = false) {
       if (name === "visibilitychange") visibilityChanged = listener;
     },
   };
-  if (fastBaselineTimeout) {
+  let clock = 0;
+  const publications: (() => void)[] = [];
+  if (options.manualPerformance) replace("performance", { now: () => clock });
+  if (options.fastBaselineTimeout || options.manualPerformance) {
     const nativeTimeout = globalThis.setTimeout;
-    replace("setTimeout", (callback: () => void, delay?: number) =>
-      nativeTimeout(callback, delay === 5000 ? 1 : delay),
-    );
+    replace("setTimeout", (callback: () => void, delay?: number) => {
+      if (options.manualPerformance && delay === 1000) {
+        publications.push(callback);
+        return 0;
+      }
+      return nativeTimeout(
+        callback,
+        options.fastBaselineTimeout && delay === 5000 ? 1 : delay,
+      );
+    });
   }
   let pngActive = 0,
     pngStarted = 0,
@@ -180,6 +193,8 @@ function harness(fastBaselineTimeout = false) {
     };
   });
   const endings: boolean[] = [];
+  const samples: DesktopPerformance[] = [];
+  const bitrates: number[] = [];
   const session = new DesktopSession(
     {
       id: "session",
@@ -193,6 +208,9 @@ function harness(fastBaselineTimeout = false) {
     overlay as unknown as HTMLCanvasElement,
     () => {},
     (_hadFrame, retryable) => endings.push(retryable),
+    () => {},
+    (bitrate) => bitrates.push(bitrate),
+    (sample) => samples.push(sample),
   );
   const control = sockets[0],
     video = sockets[1];
@@ -297,6 +315,16 @@ function harness(fastBaselineTimeout = false) {
     draws,
     decoders,
     endings,
+    samples,
+    bitrates,
+    advanceClock(milliseconds: number) {
+      clock += milliseconds;
+    },
+    publishPerformance() {
+      const publish = publications.shift();
+      if (!publish) throw new Error("No pending performance publication");
+      publish();
+    },
     documentMock,
     hideDocument() {
       documentMock.hidden = true;
@@ -629,7 +657,7 @@ test("DesktopSession dynamic refinement retires in hidden document or hidden vie
 });
 
 test("DesktopSession optional baseline timeout only supersedes refinement, even before normal video ACK", async () => {
-  const h = harness(true);
+  const h = harness({ fastBaselineTimeout: true });
   try {
     await h.activate();
     h.frame(2, 2);
@@ -796,6 +824,62 @@ async function fillDecodeSlots(h: ReturnType<typeof harness>) {
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(decoder.chunks).toHaveLength(5);
 }
+
+test("DesktopSession always sends SHARP while sustained decode pressure preserves bounded admission and timing", async () => {
+  const h = harness({ manualPerformance: true });
+  try {
+    await h.activate();
+    const firstFeedback = h.control.sent.find((m) => m.qualityFeedback);
+    expect(firstFeedback?.qualityFeedback?.preference).toBe(
+      wire.QualityFeedback.Preference.SHARP,
+    );
+    await fillDecodeSlots(h);
+    for (let cycle = 0; cycle < 4; cycle++) {
+      h.advanceClock(200);
+      h.decoders[1].output(cycle + 1);
+      await until(() => h.decoders[1].chunks.length === cycle + 6);
+      h.frame(2, cycle + 7);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // A fifth pending image waits for a slot; it is not dropped or decoded.
+      expect(h.decoders[1].chunks).toHaveLength(cycle + 6);
+      h.advanceClock(1000);
+      h.publishPerformance();
+      const sample = h.samples.at(-1);
+      expect(sample?.pendingFrames).toBe(4);
+      expect(sample?.receivedQueueBytes).toBeGreaterThan(0);
+      expect(sample?.decodeMilliseconds).toBeGreaterThan(50);
+      expect(h.bitrates.at(-1)).toBeGreaterThan(0);
+    }
+    h.session.setVisible(false);
+    expect(
+      h.control.sent.filter((m) => m.qualityFeedback).at(-1)?.qualityFeedback
+        ?.background,
+    ).toBe(true);
+    h.session.setVisible(true);
+    h.config(3);
+    await until(() => h.decoders.length === 3);
+    h.frame(3, 1);
+    await until(() => h.decoders[2].chunks.length === 1);
+    h.decoders[2].output();
+    const feedback = h.control.sent
+      .filter((m) => m.qualityFeedback)
+      .map((m) => m.qualityFeedback);
+    expect(feedback.length).toBeGreaterThan(4);
+    expect(
+      feedback.every(
+        (m) => m?.preference === wire.QualityFeedback.Preference.SHARP,
+      ),
+    ).toBe(true);
+    expect(feedback.some((m) => (m?.queueDepth ?? 0) >= 4)).toBe(true);
+    expect(feedback.some((m) => (m?.decodeMicroseconds ?? 0) > 50000)).toBe(
+      true,
+    );
+    expect(feedback.at(-1)?.displayedGeneration.toString()).toBe("3");
+    expect(h.endings).toEqual([]);
+  } finally {
+    await h.dispose();
+  }
+});
 
 function refinementAcks(h: ReturnType<typeof harness>) {
   return h.control.sent.filter((message) => message.desktopRefinementAck);

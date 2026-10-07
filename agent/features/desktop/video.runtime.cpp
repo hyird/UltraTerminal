@@ -1616,7 +1616,7 @@ struct VideoWorker {
             clearComparisonBaseline();
             // V2 restores static detail through lossless PNG. Its live video
             // must obey VBV instead of a sharp quantizer floor during motion.
-            encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, rate.sharp && !requestedV2, codecs}, capture->device());
+            encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, !requestedV2, codecs}, capture->device());
             requestedCodecs = std::move(codecs);
             optimizationV2 = requestedV2;
             continuousFrames = requestedContinuous;
@@ -1637,7 +1637,7 @@ struct VideoWorker {
             tiles.clear();
         }
         encoder->setRate(rate.framesPerSecond, rate.bitrate);
-        encoder->setDetail(rate.sharp && !optimizationV2);
+        encoder->setDetail(!optimizationV2);
         if ((!fullPixelsValid || (!optimizationV2 && capturedOnGpu)) && !encoder->gpu() && !materialize()) {
             return std::nullopt;
         }
@@ -1834,7 +1834,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     bool stopped = false, pending = false;
     bool reset = false;
     bool baselineRequired = true;
-    bool qualityRefresh = false;
+    bool baselineRefresh = false;
     bool refinementEnabled = false;
     wire::DesktopVideoCapabilities capabilities;
     DesktopFrameFlow flow;
@@ -1967,12 +1967,12 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         const auto now = std::chrono::steady_clock::now();
         const bool allowEncode = self->reset || self->baselineRequired || self->flow.canEncode(now);
-        const bool qualityRefresh = std::exchange(self->qualityRefresh, false);
-        refresh = refresh || qualityRefresh;
+        const bool baselineRefresh = std::exchange(self->baselineRefresh, false);
+        refresh = refresh || baselineRefresh;
         const auto [flowWidth, flowHeight] = self->flow.geometry();
         const bool requestedV2 = self->requestsOptimization();
         const bool requestedContinuous = self->requestsContinuousFrames();
-        const bool allowRefinement = self->refinementEnabled && self->flow.detailAllowed() && (requestedV2 || !self->flow.pendingFrames());
+        const bool allowRefinement = self->refinementEnabled && (requestedV2 || !self->flow.pendingFrames());
         const auto detailBudget = allowRefinement && requestedV2 ? self->flow.refinementBudget(now, std::chrono::milliseconds(50)) : 0;
         const auto remaining = self->flow.byteWindow() - std::min(self->flow.byteWindow(), self->flow.pressureBytes(now));
         const auto rate = self->flow.rate();
@@ -2033,8 +2033,8 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             co_await awaitTimerRelease(self);
             co_return std::nullopt; // Even a foreground transition during release cannot publish this rejected job.
         }
-        if (qualityRefresh && (!result || result->frame.data().empty())) {
-            self->qualityRefresh = true;
+        if (baselineRefresh && (!result || result->frame.data().empty())) {
+            self->baselineRefresh = true;
         }
         self->nextFrameAt = retryAt; // Only capture recovery inserts a retry delay.
         if (self->worker->requestedRevision.load() != revision) {
@@ -2196,7 +2196,7 @@ void DesktopVideoRuntime::setOptimizationContract(std::uint32_t contract) {
         return;
     }
     state_->pendingOptimizationContract = permission;
-    state_->qualityRefresh = true;
+    state_->baselineRefresh = true;
     state_->baselineRequired = true;
     ++state_->worker->requestedRevision;
     state_->flow.retireRefinement(VideoClock::now());
@@ -2216,7 +2216,7 @@ void DesktopVideoRuntime::capabilities(const wire::DesktopVideoCapabilities& cap
     const bool gateChanged = (state_->capabilities.desktop_optimization_contract() == 2) != (capabilities.desktop_optimization_contract() == 2) && state_->serverOptimizationContract == 2;
     const bool regionPermissionChanged = state_->capabilities.region_updates() != capabilities.region_updates() || state_->capabilities.tile_cache() != capabilities.tile_cache() || state_->capabilities.continuous_frames() != capabilities.continuous_frames();
     if (gateChanged || regionPermissionChanged || signature(state_->capabilities) != signature(capabilities)) {
-        state_->qualityRefresh = true;
+        state_->baselineRefresh = true;
         state_->baselineRequired = true;
         ++state_->worker->requestedRevision;
         state_->flow.retireRefinement(VideoClock::now());
@@ -2252,7 +2252,7 @@ void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
         return;
     }
     if (wasBackground && !state_->flow.background()) {
-        state_->qualityRefresh = true;
+        state_->baselineRefresh = true;
         state_->pace.cancel();
     }
     const bool detailChanged = state_->refinementEnabled != feedback.video_refinement();
@@ -2270,24 +2270,7 @@ void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
     if (!hadCredit && state_->flow.canEncode(std::chrono::steady_clock::now())) {
         state_->pace.cancel();
     }
-    using Quality = DesktopFrameFlow::Quality;
-    const bool wasQualityRefresh = state_->qualityRefresh;
-    switch (feedback.preference()) {
-    case wire::QualityFeedback::BALANCED:
-        state_->qualityRefresh |= state_->flow.setQuality(Quality::kBalanced);
-        break;
-    case wire::QualityFeedback::SMOOTH:
-        state_->qualityRefresh |= state_->flow.setQuality(Quality::kSmooth);
-        break;
-    case wire::QualityFeedback::SHARP:
-        state_->qualityRefresh |= state_->flow.setQuality(Quality::kSharp);
-        break;
-    default:
-        break;
-    }
-    if (!wasQualityRefresh && state_->qualityRefresh) {
-        ++state_->worker->requestedRevision;
-        state_->flow.retireRefinement(VideoClock::now());
-    }
+    // Agent 1.0.36 ignores the legacy wire preference: the original sharp
+    // policy is fixed. ACK, receiver pressure and refinement opt-in still apply.
 }
 } // namespace ultraterimal::agent

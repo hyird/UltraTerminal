@@ -8,7 +8,6 @@ export interface DesktopPerformance {
   width: number;
   height: number;
   codec: string;
-  quality: "balanced" | "smooth" | "sharp";
 }
 
 export interface DesktopGrant {

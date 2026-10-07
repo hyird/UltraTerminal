@@ -391,7 +391,7 @@ void writeDiagnosticEvidence(std::ostream& out, const StageSamples& stages) {
     }
     out << "}}";
 }
-asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, std::chrono::seconds duration, bool sharp, bool regions, bool optimization, unsigned& regionFrames, std::vector<Clock::time_point>& received, std::vector<double>& sourceAges, std::vector<std::uint64_t>& presentTicks, std::vector<std::uint64_t>& encodeStartedUs, std::int64_t qpcFrequency, unsigned& sourceWidth, unsigned& sourceHeight, unsigned& lastTargetRate,
+asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, std::chrono::seconds duration, bool regions, bool optimization, unsigned& regionFrames, std::vector<Clock::time_point>& received, std::vector<double>& sourceAges, std::vector<std::uint64_t>& presentTicks, std::vector<std::uint64_t>& encodeStartedUs, std::int64_t qpcFrequency, unsigned& sourceWidth, unsigned& sourceHeight, unsigned& lastTargetRate,
                               unsigned& hardwareFrames, unsigned& gpuFrames, std::uint64_t& totalEncodeMicroseconds, std::uint64_t& totalEncodedBytes, unsigned& calls, unsigned& noUpdate, unsigned& cursorOnly,
                               ultraterimal::agent::DesktopVideoDiagnostics& captured, StageSamples& stages, const cadence::PaintCallbackCounter& paintCounter) {
     using namespace ultraterimal;
@@ -408,7 +408,6 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
     sourceWidth = first->configuration->width();
     sourceHeight = first->configuration->height();
     wire::QualityFeedback feedback;
-    feedback.set_preference(sharp ? wire::QualityFeedback::SHARP : wire::QualityFeedback::SMOOTH);
     feedback.set_video_refinement(optimization);
     feedback.set_displayed_generation(first->generation);
     feedback.set_displayed_frame(first->frameId);
@@ -564,7 +563,6 @@ int main(int argc, char** argv) {
         unsigned paintHz = 40;
         int paintSize = 64;
         auto duration = 10s;
-        bool sharp = false;
         bool scrolling = false;
         bool motion = false;
         bool regions = false, optimization = false, detail = false, stationary = false, fullDesktop = false, isolatedDesktop = false, continuous = false;
@@ -583,8 +581,6 @@ int main(int argc, char** argv) {
                 paintSize = 512;
             } else if (option == "--paint-size=960") {
                 paintSize = 960;
-            } else if (option == "--quality=sharp") {
-                sharp = true;
             } else if (option == "--scroll") {
                 scrolling = true;
             } else if (option == "--motion") {
@@ -605,7 +601,7 @@ int main(int argc, char** argv) {
             } else if (option == "--regions") {
                 regions = true;
             } else {
-                throw std::invalid_argument("Usage: agent-video-cadence-benchmark [--paint-hz=30|40|60] [--paint-size=512|960] [--seconds=60] [--quality=sharp] [--scroll|--motion|--detail] [--static --detail [--full-desktop]] [--isolated-desktop] [--regions] [--optimization=v2]");
+                throw std::invalid_argument("Usage: agent-video-cadence-benchmark [--paint-hz=30|40|60] [--paint-size=512|960] [--seconds=60] [--scroll|--motion|--detail] [--static --detail [--full-desktop]] [--isolated-desktop] [--regions] [--optimization=v2]");
             }
         }
         if (static_cast<unsigned>(scrolling) + static_cast<unsigned>(motion) + static_cast<unsigned>(detail) > 1) {
@@ -695,7 +691,7 @@ int main(int argc, char** argv) {
         StageSamples stages;
         stages.continuous = continuous;
         std::exception_ptr failure;
-        asio::co_spawn(attachment.executor(), measure(video, duration, sharp, regions, optimization, regionFrames, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured, stages, paintCounter), [&](std::exception_ptr error) {
+        asio::co_spawn(attachment.executor(), measure(video, duration, regions, optimization, regionFrames, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured, stages, paintCounter), [&](std::exception_ptr error) {
             failure = error;
             video.stop();
             attachment.request_stop();
@@ -770,8 +766,7 @@ int main(int argc, char** argv) {
             std::cout << ",\"" << name << "\":";
             cadence::integer(std::cout, value);
         };
-        std::cout << std::setprecision(17) << "{\"workload\":\"real_dxgi_paint_to_video_runtime\",\"ack_model\":\"local_immediate_software_ack\",\"continuous_frames\":" << continuous << ",\"repeated_frames\":" << stages.repeatedFrames << ",\"optimization_contract\":" << (optimization ? 2 : 0) << ",\"paint_hz\":" << paintHz << ",\"quality\":\"" << (sharp ? "sharp" : "smooth")
-                  << "\",\"surface_action\":\"" << action << "\",\"paint_size\":" << paintSize << ",\"source_width\":" << sourceWidth << ",\"source_height\":" << sourceHeight
+        std::cout << std::setprecision(17) << "{\"workload\":\"real_dxgi_paint_to_video_runtime\",\"ack_model\":\"local_immediate_software_ack\",\"continuous_frames\":" << continuous << ",\"repeated_frames\":" << stages.repeatedFrames << ",\"optimization_contract\":" << (optimization ? 2 : 0) << ",\"paint_hz\":" << paintHz << ",\"quality\":\"sharp\",\"surface_action\":\"" << action << "\",\"paint_size\":" << paintSize << ",\"source_width\":" << sourceWidth << ",\"source_height\":" << sourceHeight
                   << ",\"isolated_desktop\":" << (isolatedDesktop ? "true" : "false") << ",\"duration_seconds\":" << duration.count() << ",\"paint_calls\":" << paints
                   << ",\"target_fps\":" << targetRate << ",\"encoded_frames\":" << stages.videoUpdates;
         emit("measured_seconds", elapsed);

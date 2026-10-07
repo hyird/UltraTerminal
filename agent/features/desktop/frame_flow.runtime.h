@@ -13,14 +13,11 @@
 
 namespace ultraterimal::agent {
 // Owner-loop receiver credit. Encoded dependent frames are never discarded.
-// Frame ACKs release credit; RTT probes and sustained ACK delivery estimate
-// path capacity. Static-desktop idle time is excluded from delivery samples.
+// Frame ACKs release credit; RTT probes and byte-saturated ACK delivery estimate
+// path capacity. Unsaturated offered load is not a capacity ceiling.
 class DesktopFrameFlow {
   public:
     using Clock = std::chrono::steady_clock;
-    enum class Quality { kBalanced,
-                         kSmooth,
-                         kSharp };
     enum class FrameType { kVideo,
                            kKeyFrame,
                            kRegion,
@@ -28,16 +25,15 @@ class DesktopFrameFlow {
                            kRepeatedKeyFrame };
     struct Rate {
         std::uint32_t framesPerSecond = 30;
-        std::uint32_t bitrate = 24000000;
-        bool sharp = true;
+        std::uint32_t bitrate = kTargetVideoBitrate;
     };
     static constexpr std::size_t kMaximumInFlightFrames = 128;
     static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 30;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
+    static constexpr std::uint32_t kTargetVideoBitrate = 24000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
     Rate rate() const { return rate_; }
     bool background() const { return background_; }
-    bool detailAllowed() const { return quality_ != Quality::kSmooth; }
     std::pair<std::uint32_t, std::uint32_t> geometry() const { return {width_, height_}; }
     bool setGeometry(std::uint32_t width, std::uint32_t height) {
         if (width < 16 || height < 16 || width > 4096 || height > 4096 || (width & 1) || (height & 1) || static_cast<std::uint64_t>(width) * height > 4096ull * 2160) {
@@ -46,18 +42,9 @@ class DesktopFrameFlow {
         width_ = width;
         height_ = height;
         scenePixels_.reset();
-        regionBytes_ = 0;
-        updateFrameRate();
-        return true;
-    }
-    bool setQuality(Quality quality) {
-        if (quality == quality_) {
-            return false;
-        }
-        quality_ = quality;
-        rate_.sharp = quality == Quality::kSharp;
-        // A preference change must not erase an observed narrow-path limit.
-        rate_.bitrate = std::min(rate_.bitrate, preferredBitrate());
+        regionBytes_ = videoFrameBytes_ = videoPacingBytes_ = 0;
+        videoPacingActive_ = false;
+        videoBudgetFrames_ = 0;
         updateFrameRate();
         return true;
     }
@@ -79,7 +66,9 @@ class DesktopFrameFlow {
         lastAcknowledgedAt_ = {};
         baseline_.reset();
         deliveryBytesPerSecond_ = 0;
-        videoFrameBytes_ = 0;
+        videoFrameBytes_ = videoPacingBytes_ = 0;
+        videoPacingActive_ = false;
+        videoBudgetFrames_ = 0;
         clientFrameLimit_ = kLegacyMaximumInFlightFrames;
         receiverFrameRate_ = kMaximumFramesPerSecond;
         decodeMicroseconds_ = 0;
@@ -101,6 +90,7 @@ class DesktopFrameFlow {
     }
     void observeFrame(FrameType type, std::size_t bytes, std::uint64_t changedPixels, std::chrono::microseconds elapsed) {
         if (keyFrame(type)) {
+            videoBudgetFrames_ = 0;
             return; // Codec startup and refresh bursts do not describe steady frame cost.
         }
         if (elapsed.count() > 0) {
@@ -109,9 +99,46 @@ class DesktopFrameFlow {
         const auto pixels = std::min(changedPixels, static_cast<std::uint64_t>(width_) * height_);
         scenePixels_ = repeatedFrame(type) ? 0 : scenePixels_ ? (*scenePixels_ * 3 + pixels) / 4
                                                               : pixels;
-        // A rate-controlled codec redistributes its bitrate when cadence changes.
-        // Its current bytes/frame cannot predict bytes/frame at another cadence.
-        // Lossless regions have a fixed payload cost and still need that bound.
+        // Ordinary changed pictures size the existing two-picture credit cushion,
+        // even when sharp's quality floor exceeds VBV. Keyframes, repeats and
+        // static snapshots must not inflate or dilute this steady-frame estimate.
+        videoPacingActive_ = type == FrameType::kVideo && pixels != 0;
+        if (videoPacingActive_) {
+            const auto sample = std::min<std::uint64_t>(bytes, 4 * 1024 * 1024);
+            videoFrameBytes_ = videoFrameBytes_ ? (videoFrameBytes_ * 7 + sample) / 8 : sample;
+            const auto nominalBytes = static_cast<std::uint64_t>(rate_.bitrate) / (8 * rate_.framesPerSecond);
+            // The observed wire picture includes metadata and modest VBV variation.
+            // This tolerance validates a cost probe; it never enlarges credit.
+            const auto budgetTolerance = std::max<std::uint64_t>(512, nominalBytes / 20);
+            // Only an observed overrun learns a video payload floor. Normal VBV
+            // pictures redistribute bytes as FPS changes; treating every picture
+            // as fixed cost would recursively throttle an otherwise healthy codec.
+            // A VBV picture at a throttled cadence can look as expensive as the
+            // old burst. Four budget-compliant changed pictures permit a bounded
+            // +1 FPS revalidation, not an unconditional floor reset. If the next
+            // picture exceeds that new budget, immediately restore its real cost.
+            if (sample > nominalBytes * 2 || (videoPacingBytes_ && sample * 4 >= videoPacingBytes_ * 3)) {
+                if (sample > nominalBytes + budgetTolerance) {
+                    videoPacingBytes_ = sample;
+                    videoBudgetFrames_ = 0;
+                } else {
+                    videoPacingBytes_ = std::min(nominalBytes, (videoPacingBytes_ * 7 + sample) / 8);
+                    videoBudgetFrames_ = std::min(kVideoCostProbeFrames, videoBudgetFrames_ + 1);
+                    const auto nextFps = rate_.framesPerSecond + 1;
+                    if (videoBudgetFrames_ == kVideoCostProbeFrames && !background_ && !congestionSamples_ && nextFps <= receiverFrameRate_ &&
+                        (!encodeMicroseconds_ || nextFps <= 800000ull / encodeMicroseconds_) &&
+                        (decodeMicroseconds_ <= 25000 || nextFps <= 800000ull / decodeMicroseconds_)) {
+                        videoPacingBytes_ = std::min(videoPacingBytes_, static_cast<std::uint64_t>(rate_.bitrate) / (8 * nextFps));
+                        videoBudgetFrames_ = 0;
+                    }
+                }
+            } else {
+                videoPacingBytes_ = 0;
+                videoBudgetFrames_ = 0;
+            }
+        } else {
+            videoBudgetFrames_ = 0;
+        }
         regionBytes_ = type == FrameType::kRegion ? (regionBytes_ ? (regionBytes_ * 3 + bytes) / 4 : bytes) : 0;
         // Capacity and codec/receiver pressure still bound this increase.
         updateFrameRate(true, 4);
@@ -173,7 +200,7 @@ class DesktopFrameFlow {
     // pressure credit. Call BEFORE PNG work and again before committing a batch.
     std::size_t refinementBudget(Clock::time_point now, std::chrono::microseconds allowedOccupancy = std::chrono::milliseconds(50)) {
         updateRefinement(now);
-        if (background_ || !detailAllowed() || refinementPaused_ || refinement_ || allowedOccupancy <= std::chrono::microseconds::zero()) {
+        if (background_ || refinementPaused_ || refinement_ || allowedOccupancy <= std::chrono::microseconds::zero()) {
             return 0;
         }
         const auto pressure = pressureBytes(now);
@@ -231,11 +258,6 @@ class DesktopFrameFlow {
         }
         pending_.push_back({frame, now, bytes, type});
         pendingBytes_ += bytes;
-        const auto normalFrameLimit = static_cast<std::uint64_t>(rate_.bitrate) / (8 * rate_.framesPerSecond) * 2;
-        if (type == FrameType::kVideo && bytes <= normalFrameLimit) {
-            const auto sample = std::min<std::uint64_t>(bytes, 4 * 1024 * 1024);
-            videoFrameBytes_ = videoFrameBytes_ ? (videoFrameBytes_ * 7 + sample) / 8 : sample;
-        }
         lastSent_ = frame;
     }
     bool acknowledge(std::uint64_t generation, std::uint64_t frame, std::uint32_t decodeMicroseconds,
@@ -261,18 +283,33 @@ class DesktopFrameFlow {
             baseline_ = std::min(*baseline_, transit);
         }
         std::size_t delivered = 0;
-        bool applicationLimited = true;
+        bool ordinaryDelivery = true;
         for (auto current = pending_.begin(); current != std::next(found); ++current) {
             delivered += current->bytes;
-            applicationLimited = applicationLimited && repeatedFrame(current->type);
+            ordinaryDelivery = ordinaryDelivery && !keyFrame(current->type) && !repeatedFrame(current->type);
         }
+        std::uint64_t ordinaryFlightBytes = 0;
+        for (const auto& pending : pending_) {
+            if (!keyFrame(pending.type) && !repeatedFrame(pending.type)) {
+                ordinaryFlightBytes += pending.bytes;
+            }
+        }
+        // RTT overlap alone is not bandwidth saturation: a stream of 1KB cache
+        // regions can have several outstanding ACKs on a completely idle link.
+        const auto pathBytes = std::max<std::uint64_t>(16384, static_cast<std::uint64_t>(rate_.bitrate) * pathDelay().count() / 8000000);
+        const bool byteSaturated = ordinaryFlightBytes >= pathBytes;
         const auto interval = std::chrono::duration_cast<std::chrono::microseconds>(now - lastAcknowledgedAt_);
-        // Fresh repeated-picture ACKs return real credit, but their tiny payload
-        // measures offered load rather than capacity. Preserve the window for
-        // the first changed pictures; pressure detection still applies below.
-        if (!applicationLimited && lastAcknowledgedAt_ != Clock::time_point{} && found->sent <= lastAcknowledgedAt_ && interval >= std::chrono::milliseconds(5)) {
+        const bool capacitySample = ordinaryDelivery && !background_ && !background && decodeMicroseconds <= 25000 && queueDepth <= 2 &&
+                                    lastAcknowledgedAt_ != Clock::time_point{} && found->sent <= lastAcknowledgedAt_ && interval >= std::chrono::milliseconds(5);
+        if (capacitySample) {
             const auto sample = std::min<std::uint64_t>(100000000, static_cast<std::uint64_t>(delivered) * 1000000 / static_cast<std::uint64_t>(interval.count()));
-            deliveryBytesPerSecond_ = deliveryBytesPerSecond_ ? (deliveryBytesPerSecond_ * 3 + sample) / 4 : sample;
+            if (sample > deliveryBytesPerSecond_ && (byteSaturated || deliveryBytesPerSecond_)) {
+                // Achieved delivery is a lower bound: let it promptly replace a
+                // stale narrow-path estimate when actual capacity recovers.
+                deliveryBytesPerSecond_ = sample;
+            } else if (byteSaturated) {
+                deliveryBytesPerSecond_ = (deliveryBytesPerSecond_ * 3 + sample) / 4;
+            }
         }
         pendingBytes_ -= delivered;
         pending_.erase(pending_.begin(), std::next(found));
@@ -290,6 +327,7 @@ class DesktopFrameFlow {
         const bool congested = networkPressure || decoderPressure;
         congestionSamples_ = congested ? std::min(3u, congestionSamples_ + 1) : 0;
         if (congested) {
+            videoBudgetFrames_ = 0;
             healthySince_.reset();
         } else if (!healthySince_) {
             healthySince_ = now;
@@ -307,10 +345,10 @@ class DesktopFrameFlow {
             restoredAt_.reset();
             if (networkPressure) {
                 auto target = static_cast<std::uint64_t>(rate_.bitrate) * 4 / 5;
-                if (deliveryBytesPerSecond_) {
+                if (capacitySample && byteSaturated && deliveryBytesPerSecond_) {
                     target = std::min(target, deliveryBytesPerSecond_ * 8 * 9 / 10);
                 }
-                rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, preferredBitrate()));
+                rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, kTargetVideoBitrate));
             }
             if (decoderPressure) {
                 receiverFrameRate_ = std::max(kMinimumFramesPerSecond, rate_.framesPerSecond * 4 / 5);
@@ -322,7 +360,7 @@ class DesktopFrameFlow {
             if (recoveryRate_ && now >= recoveryExpiresAt_) {
                 recoveryRate_.reset();
             }
-            const auto bitrateLimit = recoveryRate_ ? std::min(preferredBitrate(), recoveryRate_->bitrate) : preferredBitrate();
+            const auto bitrateLimit = recoveryRate_ ? std::min(kTargetVideoBitrate, recoveryRate_->bitrate) : kTargetVideoBitrate;
             const bool restoring = recoveryRate_ && now >= restoreBlockedUntil_;
             const auto step = restoring ? std::max(4u, rate_.framesPerSecond / 4) : 2u;
             rate_.bitrate = std::min(bitrateLimit, rate_.bitrate + std::max(64000u, rate_.bitrate / (restoring ? 4 : 20)));
@@ -341,6 +379,7 @@ class DesktopFrameFlow {
     }
 
   private:
+    static constexpr std::uint32_t kVideoCostProbeFrames = 4;
     static bool keyFrame(FrameType type) { return type == FrameType::kKeyFrame || type == FrameType::kRepeatedKeyFrame; }
     static bool repeatedFrame(FrameType type) { return type == FrameType::kRepeatedVideo || type == FrameType::kRepeatedKeyFrame; }
     struct Refinement {
@@ -382,13 +421,10 @@ class DesktopFrameFlow {
     std::chrono::microseconds pathDelay() const {
         return std::clamp(roundTrip_.value_or(baseline_.value_or(std::chrono::microseconds(100000))), std::chrono::microseconds(1000), std::chrono::microseconds(2000000));
     }
-    std::uint32_t preferredBitrate() const {
-        return quality_ == Quality::kSharp ? 24000000u : quality_ == Quality::kSmooth ? 8000000u
-                                                                                      : 16000000u;
-    }
     void setReceiver(bool background, std::uint32_t capacity) {
         clientFrameLimit_ = capacity ? capacity : kLegacyMaximumInFlightFrames;
         if (background != background_) {
+            videoBudgetFrames_ = 0;
             congestionSamples_ = 0;
             healthySince_.reset();
             lastAcknowledgedAt_ = {};
@@ -400,7 +436,7 @@ class DesktopFrameFlow {
         // bounded by capacity even below the per-frame clarity budget.
         const auto pixels = scenePixels_.value_or(static_cast<std::uint64_t>(width_) * height_);
         const auto clarityBits = std::max<std::uint64_t>(1024, 8000000ull * pixels / (1920ull * 1080 * 60));
-        const auto bitsPerFrame = std::max<std::uint64_t>(clarityBits, regionBytes_ * 8 * 11 / 10);
+        const auto bitsPerFrame = std::max({clarityBits, regionBytes_ * 8 * 11 / 10, videoPacingActive_ ? videoPacingBytes_ * 8 : std::uint64_t{0}});
         auto fps = std::min<std::uint64_t>(receiverFrameRate_, rate_.bitrate / bitsPerFrame);
         if (encodeMicroseconds_) {
             fps = std::min<std::uint64_t>(fps, 800000ull / encodeMicroseconds_);
@@ -413,14 +449,15 @@ class DesktopFrameFlow {
                                                                                   : rate_.framesPerSecond;
     }
     Rate rate_;
-    Quality quality_ = Quality::kSharp;
     std::uint32_t width_ = 1920, height_ = 1080, clientFrameLimit_ = kLegacyMaximumInFlightFrames;
     std::uint32_t receiverFrameRate_ = kMaximumFramesPerSecond;
     std::uint64_t generation_ = 0, acknowledged_ = 0, lastSent_ = 0;
     std::uint64_t lastContentFrame_ = 0;
     std::uint64_t deliveryBytesPerSecond_ = 0, videoFrameBytes_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
     std::optional<std::uint64_t> scenePixels_;
-    std::uint64_t regionBytes_ = 0;
+    std::uint64_t regionBytes_ = 0, videoPacingBytes_ = 0;
+    bool videoPacingActive_ = false;
+    std::uint32_t videoBudgetFrames_ = 0;
     std::deque<Pending> pending_;
     std::size_t pendingBytes_ = 0;
     std::optional<Refinement> refinement_;
