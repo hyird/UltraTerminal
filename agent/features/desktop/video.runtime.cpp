@@ -89,9 +89,10 @@ struct VideoWorker {
     std::unique_ptr<VideoEncoder> encoder;
     std::optional<CapturedFrame> retained;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
-    std::uint64_t generation = 0, frameId = 0, lastPresentTicks = 0;
+    std::uint64_t generation = 0, contentFrameId = 0, deliveryFrameId = 0, lastPresentTicks = 0;
     std::uint64_t lastEncodedTicks = 0, refinedFrame = 0;
     std::chrono::steady_clock::time_point lastEncodedAt{};
+    std::chrono::steady_clock::time_point lastContentAt{};
     std::chrono::steady_clock::time_point previousPixelCaptureAt{};
     std::uint32_t width = 0, height = 0;
     std::uint64_t configuredCaptureEpoch = 0;
@@ -116,7 +117,7 @@ struct VideoWorker {
     // The owner loop only touches this atomic cancellation serial, never DXGI,
     // encoders, planner or pixel/cache state. WIC is checked between tiles.
     std::atomic<std::uint64_t> requestedRevision{0};
-    bool optimizationV2 = false, fullPixelsValid = false, staticCruise = false;
+    bool optimizationV2 = false, continuousFrames = false, fullPixelsValid = false, staticCruise = false;
     std::uint64_t retirementSerial = 0;
     std::uint32_t coalescedCaptures = 0;
     DesktopRefinementPlan refinementPlan;
@@ -186,7 +187,7 @@ struct VideoWorker {
             point.sourceSerial = retained->sourceSerial;
         }
         point.generation = generation;
-        point.composedBase = frameId;
+        point.composedBase = contentFrameId;
         point.at = at - epoch;
         const auto deadline = trace->purpose <= 1 ? trace->admission.decisionDeadline.value_or(trace->admission.deadline) : trace->admission.deadline;
         point.atOrAfterDeadline = point.at >= deadline;
@@ -235,7 +236,7 @@ struct VideoWorker {
         const auto started = VideoClock::now();
         std::optional<DesktopTextureBaselineResult> result;
         try {
-            auto queued = capture->rememberTextureBaseline(retained->readbackTag(generation, frameId));
+            auto queued = capture->rememberTextureBaseline(retained->readbackTag(generation, contentFrameId));
             if (queued) {
                 result = *queued;
             }
@@ -248,7 +249,7 @@ struct VideoWorker {
         diagnostics.comparison.baselineCpuMicroseconds += elapsed;
         diagnostics.comparison.baselineGpuBytes += result ? result->copiedBytes : 0;
         if (result && result->status == DesktopTextureBaselineStatus::kQueued) {
-            comparisonBaseline = retained->readbackTag(generation, frameId);
+            comparisonBaseline = retained->readbackTag(generation, contentFrameId);
             ++diagnostics.comparison.baselineCommits;
         } else {
             ++diagnostics.comparison.baselineFailures;
@@ -353,7 +354,7 @@ struct VideoWorker {
         const auto sharedProbeBefore = optionalProbe.last;
         const bool admitted = cost.admit(admittedAt, alternative, send, preparationPrefix);
         const auto window = std::clamp(allowance, std::chrono::microseconds::zero(), std::chrono::microseconds(60000000));
-        const auto tag = retained->readbackTag(generation, frameId);
+        const auto tag = retained->readbackTag(generation, contentFrameId);
         const DesktopAdmissionSnapshot snapshot{
             .id = ++admissionId,
             .jobId = jobId,
@@ -506,7 +507,7 @@ struct VideoWorker {
             return;
         }
         readbackChecked = true;
-        const auto expected = readback ? readback->tag : retained->readbackTag(generation, frameId);
+        const auto expected = readback ? readback->tag : retained->readbackTag(generation, contentFrameId);
         const auto started = VideoClock::now();
         const auto traceId = readback ? readback->admission.id : physicalTraceId;
         traceReadback(traceId, DesktopReadbackCheckpointKind::kCheckStart, started);
@@ -590,7 +591,7 @@ struct VideoWorker {
         for (const auto& area : areas) {
             regions.push_back({area.x, area.y, area.width, area.height});
         }
-        const auto tag = retained->readbackTag(generation, frameId);
+        const auto tag = retained->readbackTag(generation, contentFrameId);
         auto& minimum = purposeMinimum(purpose);
         diagnostics.lastReadback.emplace();
         auto& trace = *diagnostics.lastReadback;
@@ -798,7 +799,7 @@ struct VideoWorker {
         coalescedCaptures = 0;
         pendingCpuMap.reset();
         pendingCpuCopy.reset();
-        refinementPlan.resumeCanvas(generation, frameId, width, height);
+        refinementPlan.resumeCanvas(generation, contentFrameId, width, height);
     }
     std::optional<wire::DesktopRegionUpdate> prepareRegion(DesktopFrameFlow::Rate rate, std::size_t byteBudget, std::uint64_t revision,
                                                            const DesktopReadbackResult* packed, bool& unchanged) {
@@ -959,6 +960,7 @@ struct VideoWorker {
         lastPresentTicks = 0;
         lastEncodedTicks = refinedFrame = 0;
         lastEncodedAt = {};
+        lastContentAt = {};
         previousPixelCaptureAt = {};
         damage.reset(0, 0);
         damageWidth = damageHeight = 0;
@@ -1043,10 +1045,18 @@ struct VideoWorker {
             return false;
         }
     }
+    void scheduleFrame(VideoClock::time_point started, std::uint32_t fps) {
+        const auto period = std::chrono::microseconds(1000000 / fps);
+        if (continuousFrames && encodeAt != VideoClock::time_point{} && started >= encodeAt && started - encodeAt < period) {
+            encodeAt += period;
+        } else {
+            encodeAt = started + period;
+        }
+    }
     std::optional<DesktopVideoUpdate> next(std::uint32_t display, bool refresh, bool reset, DesktopFrameFlow::Rate rate,
                                            std::uint32_t flowWidth, std::uint32_t flowHeight,
                                            std::optional<std::pair<std::uint32_t, std::uint32_t>>& geometryChanged, bool allowEncode, bool allowRefinement, const wire::DesktopVideoCapabilities& capabilities,
-                                           bool requestedV2, std::size_t detailBudget, std::size_t regionByteBudget, std::optional<std::pair<DesktopDetailBatchKey, DesktopDetailAck>> acknowledgement,
+                                           bool requestedV2, bool requestedContinuous, std::size_t detailBudget, std::size_t regionByteBudget, std::optional<std::pair<DesktopDetailBatchKey, DesktopDetailAck>> acknowledgement,
                                            std::uint64_t revision, DesktopStageDurations initialStages, std::optional<DesktopDetailBatchKey> rejectedPublication) try {
         ++jobId;
         if (!requestedV2 && timerResolution.status().requested) {
@@ -1088,7 +1098,7 @@ struct VideoWorker {
             }
         }
         const bool codecChanged = codecs != requestedCodecs;
-        const bool contractChanged = requestedV2 != optimizationV2;
+        const bool contractChanged = requestedV2 != optimizationV2 || requestedContinuous != continuousFrames;
         refresh = refresh || codecChanged || contractChanged;
         if (refresh) {
             retireWork();
@@ -1103,7 +1113,7 @@ struct VideoWorker {
             }
             // DXGI wakes as soon as a desktop or cursor update is available.
             // The bounded wait also lets cancellation and rate changes take effect.
-            if (readback && (readback->tag != retained->readbackTag(generation, frameId) || !current(readback->revision))) {
+            if (readback && (readback->tag != retained->readbackTag(generation, contentFrameId) || !current(readback->revision))) {
                 retireReadback(DesktopVideoFallbackReason::kIdentityOrRevisionMismatch);
             }
             if (readback && primaryReadback(readback->purpose)) {
@@ -1134,7 +1144,11 @@ struct VideoWorker {
                 traceReadback(readback ? readback->admission.id : physicalTraceId, consumeReady ? DesktopReadbackCheckpointKind::kConsumeReady : DesktopReadbackCheckpointKind::kBeforeAcquire, now);
             }
             if (!consumeReady) {
-                pixels = capture->nextFrame(std::chrono::milliseconds(readyToEncode || !allowEncode || readback ? 0 : 16), retained ? &retained->bgra : nullptr, &timing, retained.has_value() && fullPixelsValid, readPixels, !encoder || gpu || codecChanged || requestedV2);
+                auto wait = std::chrono::milliseconds(readyToEncode || !allowEncode || readback ? 0 : 16);
+                if (continuousFrames && retained && allowEncode) {
+                    wait = std::min(wait, std::chrono::duration_cast<std::chrono::milliseconds>(std::max(encodeAt - now, VideoClock::duration::zero())));
+                }
+                pixels = capture->nextFrame(wait, retained ? &retained->bgra : nullptr, &timing, retained.has_value() && fullPixelsValid, readPixels, !encoder || gpu || codecChanged || requestedV2);
             }
             diagnostics.lastJobConsumedReady = consumeReady;
             if (pixels) {
@@ -1175,9 +1189,10 @@ struct VideoWorker {
             }
             return std::nullopt;
         }
-        const auto idle = std::chrono::steady_clock::now() - lastEncodedAt >= std::chrono::milliseconds(180);
-        const bool detailDue = allowRefinement && frameId && idle && (optimizationV2 ? detailBudget > 512 && (!refinementPlan.complete() || (readback && readback->purpose == ReadbackPurpose::kStatic)) : refinedFrame != frameId);
-        if (!pixels && ((!refresh && !pixelsPending && !detailDue) || !retained)) {
+        const bool repeatDue = continuousFrames && allowEncode && retained && VideoClock::now() >= encodeAt;
+        const auto idle = std::chrono::steady_clock::now() - lastContentAt >= std::chrono::milliseconds(180);
+        const bool detailDue = allowRefinement && contentFrameId && idle && (optimizationV2 ? detailBudget > 512 && (!refinementPlan.complete() || (readback && readback->purpose == ReadbackPurpose::kStatic)) : refinedFrame != contentFrameId);
+        if (!pixels && ((!refresh && !pixelsPending && !detailDue && !repeatDue) || !retained)) {
             return std::nullopt;
         }
         if (pixels) {
@@ -1229,7 +1244,7 @@ struct VideoWorker {
             addDuration(stages.prepareCpu, pendingCpuCopy);
             cpuMeasuredThisRound = true;
         }
-        if (readback && (readback->tag != source.readbackTag(generation, frameId) || !current(readback->revision))) {
+        if (readback && (readback->tag != source.readbackTag(generation, contentFrameId) || !current(readback->revision))) {
             retireReadback(DesktopVideoFallbackReason::kIdentityOrRevisionMismatch);
         }
         const bool cursorNeedsSource = !fullPixelsValid && DesktopCursor::requiresBackground(source);
@@ -1277,17 +1292,18 @@ struct VideoWorker {
         stages.sourceAge = sourceAge(lastPresentTicks);
         stages.coalescedCaptures = coalescedCaptures;
         if (!optimizationV2 && detailDue && !pixelsPending && !refresh && !configurationPending) {
-            refinedFrame = frameId;
+            refinedFrame = contentFrameId;
             auto detail = refineVideoDetails(source.bgra, source.width, source.height, &tiles, capabilities.tile_cache());
             if (detail.patches_size()) {
                 update.generation = generation;
-                update.frameId = frameId;
+                update.frameId = contentFrameId;
+                update.refinementFrameId = contentFrameId;
                 update.refinement = std::move(detail);
                 return update;
             }
         }
         std::vector<DesktopDetailTile> dynamicAreas;
-        if (optimizationV2 && encoder && !configurationPending && !refresh && frameId && allowEncode) {
+        if (optimizationV2 && encoder && !configurationPending && !refresh && contentFrameId && allowEncode) {
             const auto overlap = std::chrono::duration_cast<std::chrono::microseconds>(std::max(encodeAt, now) - now);
             if (detailDue && !pixelsPending && current(revision)) {
                 if (!staticCruise) {
@@ -1327,9 +1343,12 @@ struct VideoWorker {
                 }
                 if (update.refinement) {
                     update.generation = generation;
-                    update.frameId = frameId;
-                    update.baseFrameId = frameId;
-                    return update;
+                    update.frameId = contentFrameId;
+                    update.baseFrameId = contentFrameId;
+                    update.refinementFrameId = contentFrameId;
+                    if (!repeatDue) {
+                        return update;
+                    }
                 }
             }
             // A known CPU source may only begin/anchor/claim credit when the
@@ -1337,7 +1356,7 @@ struct VideoWorker {
             // True ROI still submits early for its original copy overlap/D.
             if (pixelsPending && current(revision) && detail::regionPreparationReady(fullPixelsValid, readbackReady, now, encodeAt)) {
                 if (!readback && !readbackChecked && !comparisonCost.admitted() && capabilities.region_updates() && comparisonBaseline && encoder->gpu()) {
-                    const auto tag = source.readbackTag(generation, frameId);
+                    const auto tag = source.readbackTag(generation, contentFrameId);
                     auto baselineContext = *comparisonBaseline;
                     baselineContext.sourceSerial = tag.sourceSerial;
                     const auto candidates = damage.detailCandidates(); // COMPLETE dirty + moveDest union, never truncated.
@@ -1396,7 +1415,7 @@ struct VideoWorker {
         }
         if (readback && primaryReadback(readback->purpose) && !readback->ready &&
             timerResolution.status().active && requestedV2 && capabilities.region_updates() && allowEncode && !refresh && !configurationPending &&
-            current(readback->revision) && readback->tag == source.readbackTag(generation, frameId) &&
+            current(readback->revision) && readback->tag == source.readbackTag(generation, contentFrameId) &&
             regionDecision.pending(VideoClock::now()) && readbackCost().within(VideoClock::now())) {
             // Policy B: E is only the earliest VIDEO start. A valid Pending
             // REGION may use the remainder of its original anchored D, with
@@ -1413,24 +1432,26 @@ struct VideoWorker {
                     ++diagnostics.comparison.unchanged;
                     readback.reset();
                     consumeUnchanged();
-                    // Comparison stages belong to this decision only, not the next VIDEO.
-                    return update.cursor ? std::optional{std::move(update)} : std::nullopt;
+                    if (!continuousFrames) {
+                        // No primary output in the legacy change-driven path.
+                        return update.cursor ? std::optional{std::move(update)} : std::nullopt;
+                    }
                 }
             }
         }
-        if (encoder && !configurationPending && ((!pixelsPending && !refresh) || (!allowEncode && !sourceChanged && !contractChanged) || (!readbackReady && !sourceChanged && !contractChanged) || (!refresh && now < encodeAt))) {
+        if (encoder && !configurationPending && ((!pixelsPending && !refresh && !repeatDue) || (!allowEncode && !sourceChanged && !contractChanged) || (!readbackReady && !sourceChanged && !contractChanged) || (!refresh && now < encodeAt))) {
             if (!allowEncode) {
                 ++diagnostics.backpressuredCalls;
             }
             if (!refresh && pixelsPending && now < encodeAt) {
                 ++diagnostics.pendingBeforeDeadlineCalls;
             }
-            if (update.cursor) {
+            if (update.cursor || update.refinement) {
                 return update;
             }
             return std::nullopt;
         }
-        if (optimizationV2 && encoder && !configurationPending && !refresh && frameId && capabilities.region_updates() && damage.regionCandidate()) {
+        if (optimizationV2 && encoder && !configurationPending && !refresh && contentFrameId && capabilities.region_updates() && damage.regionCandidate()) {
             const bool compared = readback && readback->purpose == ReadbackPurpose::kComparison && readback->ready && readback->proofApplied;
             if (compared) {
                 const auto preparationStarted = VideoClock::now();
@@ -1463,22 +1484,25 @@ struct VideoWorker {
                 readback.reset();
                 if (unchanged) {
                     consumeUnchanged();
-                    return update.cursor ? std::optional{std::move(update)} : std::nullopt;
+                    if (!continuousFrames) {
+                        return update.cursor ? std::optional{std::move(update)} : std::nullopt;
+                    }
                 }
                 if (region) {
-                    if (frameId == std::numeric_limits<std::uint64_t>::max()) {
+                    if (deliveryFrameId == std::numeric_limits<std::uint64_t>::max()) {
                         throw std::overflow_error("Desktop frame sequence exhausted");
                     }
                     if (!rememberPixels()) {
                         return std::nullopt;
                     }
                     update.generation = generation;
-                    update.baseFrameId = frameId;
-                    update.frameId = ++frameId;
+                    update.baseFrameId = deliveryFrameId;
+                    update.frameId = ++deliveryFrameId;
+                    contentFrameId = deliveryFrameId;
                     commitComparisonBaseline();
                     region->set_encode_microseconds(static_cast<std::uint32_t>(std::clamp<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(VideoClock::now() - now).count() + earlyOptionalCompute.count(), 1, 60000000)));
                     writeStages(*region->mutable_stage_timing(), stages);
-                    update.regionAdmission = DesktopPrimaryAdmission{regionAdmission, generation, frameId, update.baseFrameId, jobId};
+                    update.regionAdmission = DesktopPrimaryAdmission{regionAdmission, generation, contentFrameId, update.baseFrameId, jobId};
                     update.changedPixels = 0;
                     for (const auto& patch : region->patches()) {
                         update.changedPixels += static_cast<std::uint64_t>(patch.destination().width()) * patch.destination().height();
@@ -1488,12 +1512,13 @@ struct VideoWorker {
                     pixelsPending = false;
                     lastEncodedTicks = lastPresentTicks;
                     lastEncodedAt = VideoClock::now();
-                    encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
+                    lastContentAt = lastEncodedAt;
+                    scheduleFrame(now, rate.framesPerSecond);
                     damage.commit();
                     coalescedCaptures = 0;
                     pendingCpuMap.reset();
                     pendingCpuCopy.reset();
-                    refinementPlan.begin(generation, frameId, width, height, VideoClock::now());
+                    refinementPlan.begin(generation, contentFrameId, width, height, VideoClock::now());
                     return update;
                 }
             } else if (readback && primaryReadback(readback->purpose)) {
@@ -1511,7 +1536,7 @@ struct VideoWorker {
         if (readback && readback->purpose == ReadbackPurpose::kComparison) {
             retireReadback(DesktopVideoFallbackReason::kPrepareRejected); // Partial/late/no eligible PNG always VIDEO, never a false skip.
         }
-        if (!optimizationV2 && encoder && !configurationPending && !refresh && frameId && capabilities.region_updates() &&
+        if (!optimizationV2 && encoder && !configurationPending && !refresh && contentFrameId && capabilities.region_updates() &&
             (damage.regionCandidate() || now >= compareAt)) {
             const auto previousPixels = damage.changedPixels();
             if (!comparePixels()) {
@@ -1530,7 +1555,7 @@ struct VideoWorker {
             }
         }
         update.changedPixels = damage.changedPixels();
-        if (!optimizationV2 && encoder && !configurationPending && !refresh && frameId && capabilities.region_updates() && damage.regionCandidate()) {
+        if (!optimizationV2 && encoder && !configurationPending && !refresh && contentFrameId && capabilities.region_updates() && damage.regionCandidate()) {
             ++diagnostics.regionCandidates;
             regionBudget.begin(std::chrono::steady_clock::now(), rate.framesPerSecond);
             const auto patches = damage.patches();
@@ -1562,7 +1587,7 @@ struct VideoWorker {
                 ++diagnostics.regionTimeBudgetFailures;
             }
             if (fits) {
-                if (frameId == std::numeric_limits<std::uint64_t>::max()) {
+                if (deliveryFrameId == std::numeric_limits<std::uint64_t>::max()) {
                     throw std::overflow_error("Desktop frame sequence exhausted");
                 }
                 if (!rememberPixels()) {
@@ -1573,8 +1598,9 @@ struct VideoWorker {
                 region.set_target_frames_per_second(rate.framesPerSecond);
                 region.set_target_bitrate(rate.bitrate);
                 update.generation = generation;
-                update.baseFrameId = frameId;
-                update.frameId = ++frameId;
+                update.baseFrameId = deliveryFrameId;
+                update.frameId = ++deliveryFrameId;
+                contentFrameId = deliveryFrameId;
                 update.changedPixels = 0;
                 for (const auto& patch : region.patches()) {
                     update.changedPixels += static_cast<std::uint64_t>(patch.destination().width()) * patch.destination().height();
@@ -1583,7 +1609,8 @@ struct VideoWorker {
                 pixelsPending = false;
                 lastEncodedTicks = lastPresentTicks;
                 lastEncodedAt = std::chrono::steady_clock::now();
-                encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
+                lastContentAt = lastEncodedAt;
+                scheduleFrame(now, rate.framesPerSecond);
                 damage.commit();
                 return update;
             }
@@ -1596,6 +1623,7 @@ struct VideoWorker {
             encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, rate.sharp, codecs}, capture->device());
             requestedCodecs = std::move(codecs);
             optimizationV2 = requestedV2;
+            continuousFrames = requestedContinuous;
             retireWork();
             width = source.width;
             height = source.height;
@@ -1606,7 +1634,8 @@ struct VideoWorker {
                 throw std::overflow_error("Desktop generation exhausted");
             }
             ++generation;
-            frameId = 0;
+            contentFrameId = 0;
+            deliveryFrameId = 0;
             refinedFrame = 0;
             configurationPending = true;
             tiles.clear();
@@ -1617,7 +1646,8 @@ struct VideoWorker {
             return std::nullopt;
         }
         // Schedule from the actual start; missed slots never cause bursts.
-        encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
+        scheduleFrame(now, rate.framesPerSecond);
+        bool repeated = continuousFrames && contentFrameId && !pixelsPending && !refresh && !configurationPending;
         const auto encodeStarted = std::chrono::steady_clock::now();
         if (diagnostics.lastReadback && diagnostics.lastReadback->retirementReason != DesktopVideoFallbackReason::kNone && diagnostics.lastReadback->videoFallbackReason == DesktopVideoFallbackReason::kNone) {
             auto& trace = *diagnostics.lastReadback;
@@ -1650,13 +1680,16 @@ struct VideoWorker {
         // Include rejected region work and GPU comparison in encoder pressure.
         auto encodeMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - now).count() + (optimizationV2 ? earlyOptionalCompute.count() : 0);
         if (!encoded) {
-            retireWork();
             if (encoded.error() == VideoEncodeError::kFrameSkipped) {
-                if (update.cursor) {
+                if (!repeated) {
+                    retireWork();
+                }
+                if (update.cursor || update.refinement) {
                     return update;
                 }
                 return std::nullopt;
             }
+            retireWork();
             throw DesktopFailure(wire::DesktopFault::ENCODE_FAILED, "Desktop video encoding failed");
         }
         if ((refresh || configurationPending) && !encoded->keyFrame) {
@@ -1668,7 +1701,12 @@ struct VideoWorker {
                 throw std::runtime_error("Cannot rebuild desktop encoder baseline");
             }
             ++generation;
-            frameId = 0;
+            contentFrameId = 0;
+            deliveryFrameId = 0;
+            repeated = false;
+            update.refinement.reset();
+            update.refinementAdmission.reset();
+            update.refinementFrameId = 0;
             refinedFrame = 0;
             configurationPending = true;
             retireWork();
@@ -1680,7 +1718,7 @@ struct VideoWorker {
         // while the source texture and composed base still match the submit.
         if (readback && readback->purpose == ReadbackPurpose::kDynamic) {
             const auto completionStarted = VideoClock::now();
-            if (readback->tag == source.readbackTag(generation, frameId) && current(readback->revision) && detailCost.within(VideoClock::now())) {
+            if (readback->tag == source.readbackTag(generation, contentFrameId) && current(readback->revision) && detailCost.within(VideoClock::now())) {
                 checkReadback();
             }
             if (readback && !readback->ready) {
@@ -1688,23 +1726,29 @@ struct VideoWorker {
             }
             encodeMicroseconds += std::chrono::duration_cast<std::chrono::microseconds>(VideoClock::now() - completionStarted).count();
         }
-        if (frameId == std::numeric_limits<std::uint64_t>::max()) {
+        if (deliveryFrameId == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Desktop frame sequence exhausted");
         }
-        if (!rememberPixels()) {
+        if (!repeated && !rememberPixels()) {
             return std::nullopt;
         }
         update.generation = generation;
         pixelsPending = false;
-        update.frameId = ++frameId;
-        commitComparisonBaseline();
+        const auto previousContentFrame = contentFrameId;
+        update.frameId = ++deliveryFrameId;
+        update.baseFrameId = repeated ? contentFrameId : 0;
+        if (!repeated) {
+            contentFrameId = deliveryFrameId;
+            lastContentAt = VideoClock::now();
+            commitComparisonBaseline();
+        }
         lastEncodedTicks = lastPresentTicks;
         lastEncodedAt = std::chrono::steady_clock::now();
-        if (optimizationV2) {
+        if (optimizationV2 && !repeated) {
             const auto detailStarted = VideoClock::now();
-            refinementPlan.begin(generation, frameId, width, height, VideoClock::now());
+            refinementPlan.begin(generation, contentFrameId, width, height, VideoClock::now());
             if (readback && readback->purpose == ReadbackPurpose::kDynamic && readback->ready) {
-                if (readback->tag == source.readbackTag(generation, frameId - 1) && current(readback->revision)) {
+                if (readback->tag == source.readbackTag(generation, previousContentFrame) && current(readback->revision)) {
                     takeReadbackStages();
                     dynamicAreas = readback->areas;
                 } else {
@@ -1714,6 +1758,7 @@ struct VideoWorker {
             if (!dynamicAreas.empty() && detailCost.admitted() && allowRefinement && current(revision) && refinementPlan.reserveTiles(dynamicAreas)) {
                 const auto budget = std::min(detailBudget, refinementTokens.available(VideoClock::now(), detailBudget));
                 update.refinement = prepareDetail(dynamicAreas, readback && readback->ready ? &*readback->ready : nullptr, rate, budget, revision, wire::DYNAMIC_DETAIL, readback && readback->ready ? readback->admission : detailAdmission, update.refinementAdmission);
+                update.refinementFrameId = contentFrameId;
                 readback.reset();
             } else if (readback) {
                 retireReadback();
@@ -1734,6 +1779,7 @@ struct VideoWorker {
             update.configuration->set_codec(encoded->codec);
             update.configuration->set_desktop_optimization(true);
             update.configuration->set_desktop_optimization_contract(2); // Support, not activation without both gates.
+            update.configuration->set_continuous_frames(continuousFrames);
             update.configuration->set_width(width);
             update.configuration->set_height(height);
             for (const auto& mode : capture->displayModes()) {
@@ -1745,6 +1791,7 @@ struct VideoWorker {
         }
         update.frame.set_data(encoded->annexB.data(), encoded->annexB.size());
         update.frame.set_key_frame(encoded->keyFrame);
+        update.frame.set_repeated(repeated);
         update.frame.set_timestamp_microseconds(encoded->timestampMicroseconds);
         encodeMicroseconds = std::chrono::duration_cast<std::chrono::microseconds>(VideoClock::now() - now).count() + (optimizationV2 ? earlyOptionalCompute.count() : 0);
         update.frame.set_encode_microseconds(static_cast<std::uint32_t>(std::clamp<std::int64_t>(encodeMicroseconds, 1, std::numeric_limits<std::uint32_t>::max())));
@@ -1779,6 +1826,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     std::chrono::steady_clock::time_point nextFrameAt{};
     std::uint32_t display;
     const std::uint32_t serverOptimizationContract;
+    const bool serverContinuousFrames;
     std::uint32_t pendingOptimizationContract;
     bool optimizationActive = false;
     std::uint64_t retirementSerial = 0;
@@ -1822,7 +1870,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         diagnostics.rejectedPrivateJobs = rejectedPrivateJobs;
         diagnostics.rejectedPrivateVideoFrames = rejectedPrivateVideoFrames;
     }
-    State(ruvia::execution_handle owner, std::uint32_t index, std::uint32_t serverContract) : loop(std::move(owner)), pace(loop.executor()), releaseWait(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), pendingOptimizationContract(serverOptimizationContract) {
+    State(ruvia::execution_handle owner, std::uint32_t index, std::uint32_t serverContract, bool continuous) : loop(std::move(owner)), pace(loop.executor()), releaseWait(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
         if (display >= 64) {
             throw std::invalid_argument("Desktop display index exceeds limit");
         }
@@ -1883,6 +1931,9 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     bool requestsOptimization() const {
         return serverOptimizationContract == 2 && pendingOptimizationContract == 2 && capabilities.desktop_optimization_contract() == 2;
     }
+    bool requestsContinuousFrames() const {
+        return serverContinuousFrames && requestsOptimization() && capabilities.continuous_frames();
+    }
     static asio::awaitable<std::optional<DesktopVideoUpdate>> nextOwned(std::shared_ptr<State> self, bool refresh) {
         if (self->pending) {
             throw std::logic_error("Concurrent desktop video reads are not allowed");
@@ -1921,6 +1972,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         refresh = refresh || qualityRefresh;
         const auto [flowWidth, flowHeight] = self->flow.geometry();
         const bool requestedV2 = self->requestsOptimization();
+        const bool requestedContinuous = self->requestsContinuousFrames();
         const bool allowRefinement = self->refinementEnabled && self->flow.detailAllowed() && (requestedV2 || !self->flow.pendingFrames());
         const auto detailBudget = allowRefinement && requestedV2 ? self->flow.refinementBudget(now, std::chrono::milliseconds(50)) : 0;
         const auto remaining = self->flow.byteWindow() - std::min(self->flow.byteWindow(), self->flow.pressureBytes(now));
@@ -1938,16 +1990,19 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
-        auto operation = ruvia::run_blocking(self->pool, self->loop, [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, allowRefinement, capabilities = self->capabilities, requestedV2, detailBudget, regionByteBudget, acknowledgement = std::exchange(self->refinementAcknowledgement, std::nullopt), revision, initialStages, queuedAt, rejectedPublication = std::exchange(self->rejectedPublication, std::nullopt)]() mutable {
+        auto operation = ruvia::run_blocking(self->pool, self->loop, [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, allowRefinement, capabilities = self->capabilities, requestedV2, requestedContinuous, detailBudget, regionByteBudget, acknowledgement = std::exchange(self->refinementAcknowledgement, std::nullopt), revision, initialStages, queuedAt, rejectedPublication = std::exchange(self->rejectedPublication, std::nullopt)]() mutable {
             initialStages.workerQueue = DesktopStageDurations::microseconds(queuedAt, VideoClock::now());
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
             auto update = owned->next(display, refresh, reset, rate, flowWidth, flowHeight, geometryChanged, allowEncode, allowRefinement, capabilities,
-                                      requestedV2, detailBudget, regionByteBudget, acknowledgement, revision, initialStages, rejectedPublication);
+                                      requestedV2, requestedContinuous, detailBudget, regionByteBudget, acknowledgement, revision, initialStages, rejectedPublication);
             const auto now = std::chrono::steady_clock::now();
             // Cursor metadata remains responsive without repeatedly mapping
             // pixels during a closed receiver window. ACKs wake this wait.
             auto wakeAt = owned->readback ? now + std::chrono::milliseconds(1) : allowEncode && owned->encodeAt > now ? std::min(owned->encodeAt, now + std::chrono::milliseconds(owned->optimizationV2 ? 1 : 33))
                                                                                                                       : now + std::chrono::milliseconds(allowEncode ? 1 : 33);
+            if (owned->continuousFrames && !owned->pixelsPending && !owned->readback && allowEncode && owned->encodeAt > now) {
+                wakeAt = owned->encodeAt;
+            }
             if (owned->readback && VideoWorker::primaryReadback(owned->readback->purpose) && owned->regionDecision.deadline()) {
                 wakeAt = std::min(wakeAt, *owned->regionDecision.deadline());
             }
@@ -1984,7 +2039,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             } else {
                 // Rejected auxiliary output cannot roll back the already accepted primary.
                 if (result && result->refinement && result->refinement->batch_id()) {
-                    self->rejectedPublication = DesktopDetailBatchKey{result->generation, result->frameId, result->refinement->batch_id()};
+                    self->rejectedPublication = DesktopDetailBatchKey{result->generation, result->refinementFrameId, result->refinement->batch_id()};
                 }
                 self->rejectPrivate(result, privateRejected);
                 co_return std::nullopt;
@@ -2014,10 +2069,12 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         if (result && (!result->frame.data().empty() || result->region)) {
             const auto bytes = result->region ? result->region->ByteSizeLong() : result->frame.ByteSizeLong();
-            const auto type = result->region ? DesktopFrameFlow::FrameType::kRegion : result->frame.key_frame() ? DesktopFrameFlow::FrameType::kKeyFrame
-                                                                                                                : DesktopFrameFlow::FrameType::kVideo;
+            const auto type = result->region              ? DesktopFrameFlow::FrameType::kRegion
+                              : result->frame.repeated()  ? (result->frame.key_frame() ? DesktopFrameFlow::FrameType::kRepeatedKeyFrame : DesktopFrameFlow::FrameType::kRepeatedVideo)
+                              : result->frame.key_frame() ? DesktopFrameFlow::FrameType::kKeyFrame
+                                                          : DesktopFrameFlow::FrameType::kVideo;
             self->flow.observeFrame(type, bytes, result->changedPixels, std::chrono::microseconds(result->region ? result->region->encode_microseconds() : result->frame.encode_microseconds()));
-            self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), bytes);
+            self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), bytes, type);
             if (!result->frame.data().empty()) {
                 self->diagnostics.publishedVideoFrames = ++self->publishedVideoFrames;
             } else {
@@ -2026,7 +2083,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             }
         }
         if (result && result->refinement && result->refinement->batch_id()) {
-            const DesktopDetailBatchKey key{result->generation, result->frameId, result->refinement->batch_id()};
+            const DesktopDetailBatchKey key{result->generation, result->refinementFrameId, result->refinement->batch_id()};
             // Owner-loop Flow is the authoritative single-unacked credit owner.
             // The planner may have retired its old computation, not this lease.
             if (!self->optimizationActive || !self->refinementEnabled || self->worker->requestedRevision.load() != revision ||
@@ -2080,7 +2137,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         co_return applied;
     }
 };
-DesktopVideoRuntime::DesktopVideoRuntime(ruvia::execution_handle loop, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract) : state_(std::make_shared<State>(std::move(loop), displayIndex, serverOptimizationContract)) {}
+DesktopVideoRuntime::DesktopVideoRuntime(ruvia::execution_handle loop, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract, bool serverContinuousFrames) : state_(std::make_shared<State>(std::move(loop), displayIndex, serverOptimizationContract, serverContinuousFrames)) {}
 DesktopVideoRuntime::~DesktopVideoRuntime() { stop(); }
 asio::awaitable<std::optional<DesktopVideoUpdate>> DesktopVideoRuntime::next(bool refresh) { return State::nextOwned(state_, refresh); }
 asio::awaitable<bool> DesktopVideoRuntime::resize(std::uint32_t width, std::uint32_t height) { return State::resizeOwned(state_, width, height); }
@@ -2134,7 +2191,7 @@ void DesktopVideoRuntime::capabilities(const wire::DesktopVideoCapabilities& cap
         return mask;
     };
     const bool gateChanged = (state_->capabilities.desktop_optimization_contract() == 2) != (capabilities.desktop_optimization_contract() == 2) && state_->serverOptimizationContract == 2;
-    const bool regionPermissionChanged = state_->capabilities.region_updates() != capabilities.region_updates() || state_->capabilities.tile_cache() != capabilities.tile_cache();
+    const bool regionPermissionChanged = state_->capabilities.region_updates() != capabilities.region_updates() || state_->capabilities.tile_cache() != capabilities.tile_cache() || state_->capabilities.continuous_frames() != capabilities.continuous_frames();
     if (gateChanged || regionPermissionChanged || signature(state_->capabilities) != signature(capabilities)) {
         state_->qualityRefresh = true;
         state_->baselineRequired = true;

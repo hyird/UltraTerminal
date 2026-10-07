@@ -53,6 +53,7 @@ ruvia::task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::t
                 ready.set_channel_id(state.authorization->channelId);
                 ready.mutable_channel_ready()->set_purpose(state.authorization->purpose);
                 ready.mutable_channel_ready()->set_desktop_optimization_contract(2);
+                ready.mutable_channel_ready()->set_continuous_frames(true);
                 auto bytes = protocol::encodeMessage(ready);
                 if (!bytes) {
                     throw std::runtime_error("Invalid channel readiness");

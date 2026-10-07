@@ -24,6 +24,7 @@ class DesktopPipeValidator {
     // Propagates permission to both child validators; no mid-generation switch.
     // The service passes the actual Server gate from DesktopStart explicitly.
     void setOptimizationContract(std::uint32_t contract) noexcept;
+    void setContinuousFrames(bool allowed) noexcept;
 
   private:
     DesktopPipeBinding binding_;

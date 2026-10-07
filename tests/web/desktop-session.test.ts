@@ -204,6 +204,7 @@ function harness(fastBaselineTimeout = false) {
     codec = "avc1.42E033",
     width = 256,
     height = 128,
+    continuousFrames = false,
   ) =>
     video.push({
       generation,
@@ -213,6 +214,7 @@ function harness(fastBaselineTimeout = false) {
         height,
         desktopOptimization: true,
         desktopOptimizationContract: contract,
+        continuousFrames,
       },
     });
   const frame = (generation: number, frameId: number) =>
@@ -251,25 +253,31 @@ function harness(fastBaselineTimeout = false) {
     controlContract = 2,
     videoContract = 2,
     agentContract = 2,
+    continuousFrames = false,
   ) => {
     control.push({
       channelReady: {
         purpose: 2,
         desktopOptimizationContract: controlContract,
+        continuousFrames,
       },
     });
     video.push({
-      channelReady: { purpose: 3, desktopOptimizationContract: videoContract },
+      channelReady: {
+        purpose: 3,
+        desktopOptimizationContract: videoContract,
+        continuousFrames,
+      },
     });
-    config(1, agentContract);
+    config(1, agentContract, "avc1.42E033", 256, 128, continuousFrames);
     await until(() => decoders.length === 1);
     frame(1, 1);
     await until(() => decoders[0].chunks.length === 1);
     decoders[0].output();
   };
-  const activate = async () => {
-    await ready();
-    config(2);
+  const activate = async (continuousFrames = false) => {
+    await ready(2, 2, 2, continuousFrames);
+    config(2, 2, "avc1.42E033", 256, 128, continuousFrames);
     await until(() => decoders.length === 2);
     frame(2, 1);
     await until(() => decoders[1].chunks.length === 1);
@@ -311,6 +319,59 @@ function harness(fastBaselineTimeout = false) {
     },
   };
 }
+
+test("DesktopSession decoded repeats preserve sharp content and its outstanding refinement", async () => {
+  const h = harness();
+  try {
+    await h.activate(true);
+    expect(
+      h.control.sent.some((m) => m.desktopVideoCapabilities?.continuousFrames),
+    ).toBe(true);
+    h.refine(2, 1);
+    await until(() => h.counts().active === 1);
+    for (const frameId of [2, 3]) {
+      h.video.push({
+        generation: 2,
+        frameId,
+        baseFrameId: 1,
+        videoFrame: {
+          timestampMicroseconds: frameId,
+          repeated: true,
+          data: new Uint8Array([4, 5]),
+        },
+      });
+      await until(() => h.decoders[1].chunks.length === frameId);
+      h.decoders[1].output();
+    }
+    expect(h.draws).toEqual(["video", "video"]);
+    expect(h.control.sent.filter((m) => m.desktopRefinementAck)).toHaveLength(
+      0,
+    );
+    h.release();
+    await until(() => h.counts().closed === 1);
+    expect(h.draws).toEqual(["video", "video", "png"]);
+    expect(
+      h.control.sent.find((m) => m.desktopRefinementAck)?.frameId.toString(),
+    ).toBe("1");
+    expect(
+      h.control.sent.find((m) => m.desktopRefinementAck)?.desktopRefinementAck
+        ?.status,
+    ).toBe(wire.DesktopRefinementAck.Status.APPLIED);
+    expect(
+      h.control.sent
+        .filter((m) => m.qualityFeedback)
+        .at(-1)
+        ?.qualityFeedback?.displayedFrame.toString(),
+    ).toBe("3");
+    h.frame(2, 4);
+    await until(() => h.decoders[1].chunks.length === 4);
+    h.decoders[1].output();
+    expect(h.draws.at(-1)).toBe("video");
+    expect(h.endings).toHaveLength(0);
+  } finally {
+    await h.dispose();
+  }
+});
 
 test("DesktopSession v2 refinement does not block new video and emits an independent post-cleanup superseded ACK", async () => {
   const h = harness();

@@ -11,6 +11,9 @@ void DesktopPipeValidator::setOptimizationContract(std::uint32_t contract) noexc
     input_.setOptimizationContract(contract);
     video_.setOptimizationContract(contract);
 }
+void DesktopPipeValidator::setContinuousFrames(bool allowed) noexcept {
+    video_.setContinuousFrames(allowed);
+}
 std::expected<void, DesktopMessageError> DesktopPipeValidator::accept(const wire::Envelope& message) {
     if (!validateMessage(message)) {
         return std::unexpected(DesktopMessageError::kMalformed);

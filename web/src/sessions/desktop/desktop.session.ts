@@ -54,10 +54,15 @@ export class DesktopSession {
   private decoder: VideoDecoder | null = null;
   private generation = 0;
   private frame = 0;
+  private contentFrame = 0;
+  private displayedContentFrame = 0;
+  private readonly continuousReadiness = new Set<number>();
   private pending = new Map<
     number,
     {
       id: number;
+      content: number;
+      repeated: boolean;
       started: number;
       decodeStarted: number;
       receiveQueueMicroseconds: number;
@@ -113,6 +118,8 @@ export class DesktopSession {
       width: number;
       height: number;
       frame: number;
+      content: number;
+      continuous: boolean;
       timestamp: number;
       admission: DesktopRefinementAdmission;
     }
@@ -123,8 +130,8 @@ export class DesktopSession {
     this.tiles,
     () => ({
       generation: this.generation,
-      frame: this.frame,
-      displayedFrame: this.displayedFrame,
+      frame: this.contentFrame,
+      displayedFrame: this.displayedContentFrame,
       identity: this.decoder,
       unavailable: this.stopped || !!this.videoChannel?.isReconfiguring,
       background: document.hidden || !this.visible,
@@ -435,12 +442,14 @@ export class DesktopSession {
       (entry) => entry.purpose === 2 && entry.ready,
     );
     if (this.stopped || !channel || !this.capabilitiesAccepted) return;
+    const contract = this.optimization.request();
     this.send(channel, {
       desktopVideoCapabilities: {
         codecs: this.supportedCodecs,
         regionUpdates: true,
         tileCache: true,
-        desktopOptimizationContract: this.optimization.request(),
+        desktopOptimizationContract: contract,
+        continuousFrames: contract === 2 && this.continuousReadiness.size === 2,
       },
     });
   }
@@ -522,6 +531,9 @@ export class DesktopSession {
         channel.purpose,
         message.channelReady?.desktopOptimizationContract ?? 0,
       );
+      if (message.channelReady.continuousFrames)
+        this.continuousReadiness.add(channel.purpose);
+      else this.continuousReadiness.delete(channel.purpose);
       this.reportCapabilities();
       if (!this.displayedFrame)
         this.status("通道已配对，等待远端采集与视频首帧…");
@@ -733,6 +745,11 @@ export class DesktopSession {
         width: video.width,
         height: video.height,
         frame: 0,
+        content: 0,
+        continuous:
+          this.optimizationV2 &&
+          video.continuousFrames &&
+          this.continuousReadiness.size === 2,
         timestamp: -1,
         admission,
       });
@@ -762,6 +779,7 @@ export class DesktopSession {
       this.displayedFrame = this.observedFrame = 0;
       this.visibleFrameGaps.clear();
       this.frame = 0;
+      this.contentFrame = this.displayedContentFrame = 0;
       this.canvas.width = this.overlay.width = video.width;
       this.canvas.height = this.overlay.height = video.height;
       // Resizing a canvas clears it, including any previously drawn cursor.
@@ -812,7 +830,12 @@ export class DesktopSession {
               throw new Error("Unexpected decoded frame");
             this.pending.delete(frame.timestamp);
             const submitStarted = performance.now();
-            this.context.drawImage(frame, 0, 0);
+            if (pending.repeated) {
+              if (this.displayedContentFrame !== pending.content)
+                throw new Error("Repeated video lost its content baseline");
+            } else {
+              this.context.drawImage(frame, 0, 0);
+            }
             const canvasSubmitMicroseconds = desktopDuration(
               performance.now() - submitStarted,
             );
@@ -827,7 +850,8 @@ export class DesktopSession {
             this.canvas.dataset.generation = String(generation);
             const firstDisplay = !this.displayedFrame;
             this.displayedFrame = pending.id;
-            this.refinements.baselineChanged();
+            this.displayedContentFrame = pending.content;
+            if (!pending.repeated) this.refinements.baselineChanged();
             if (
               this.refinementWait &&
               pending.id >= this.refinementWait.frame
@@ -896,7 +920,7 @@ export class DesktopSession {
         !this.decoder ||
         (region
           ? baseFrameId !== this.frame || frameId <= this.frame
-          : frameId !== this.frame || baseFrameId !== frameId) ||
+          : frameId !== this.contentFrame || baseFrameId !== frameId) ||
         (!patches.length && !copies.length)
       )
         throw new Error("Invalid desktop update baseline");
@@ -1029,7 +1053,11 @@ export class DesktopSession {
         );
         if (region) {
           this.frame = this.displayedFrame = frameId;
-          if (refinementGeneration) refinementGeneration.frame = frameId;
+          this.contentFrame = this.displayedContentFrame = frameId;
+          if (refinementGeneration) {
+            refinementGeneration.frame = frameId;
+            refinementGeneration.content = frameId;
+          }
           this.canvas.dataset.frame = String(frameId);
           this.decodeMicroseconds = Math.min(
             1000000,
@@ -1057,7 +1085,11 @@ export class DesktopSession {
         !channel.receive.isRetiredGeneration(generationId, this.generation)) ||
       (!retired && !rejected && !this.decoder) ||
       integer(frameId, 1) <= refinementGeneration.frame ||
-      baseFrameId ||
+      (image.repeated
+        ? !refinementGeneration.continuous ||
+          !refinementGeneration.content ||
+          baseFrameId !== refinementGeneration.content
+        : !!baseFrameId) ||
       (!refinementGeneration.frame && !image.keyFrame) ||
       integer(image.timestampMicroseconds) <= refinementGeneration.timestamp ||
       !image.data.length
@@ -1066,10 +1098,11 @@ export class DesktopSession {
     // Remember validated wire baselines even if slot admission is interrupted.
     // A queued refinement can refer to that cancelled frame, not a fake tuple.
     refinementGeneration.frame = frameId;
+    if (!image.repeated) refinementGeneration.content = frameId;
     refinementGeneration.timestamp = integer(image.timestampMicroseconds);
     if (retired || rejected) return;
     if (!this.decoder) throw new Error("Desktop decoder unavailable");
-    this.refinements.retire();
+    if (!image.repeated) this.refinements.retire();
     const timestamp = integer(image.timestampMicroseconds);
     const decoder = this.decoder;
     const generation = this.generation;
@@ -1087,6 +1120,7 @@ export class DesktopSession {
         decoder.state === "configured",
       (lease) => {
         this.frame = frameId;
+        this.contentFrame = refinementGeneration.content;
         const started = performance.now();
         // Chunk construction copies the payload; keep that cost out of the
         // decode-call -> output-entry stage but retain the legacy aggregate.
@@ -1098,6 +1132,8 @@ export class DesktopSession {
         const decodeStarted = performance.now();
         this.pending.set(timestamp, {
           id: frameId,
+          content: refinementGeneration.content,
+          repeated: image.repeated,
           started,
           decodeStarted,
           receiveQueueMicroseconds: desktopDuration(decodeStarted - receivedAt),

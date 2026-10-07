@@ -23,7 +23,9 @@ class DesktopFrameFlow {
                          kSharp };
     enum class FrameType { kVideo,
                            kKeyFrame,
-                           kRegion };
+                           kRegion,
+                           kRepeatedVideo,
+                           kRepeatedKeyFrame };
     struct Rate {
         std::uint32_t framesPerSecond = 60;
         std::uint32_t bitrate = 24000000;
@@ -73,6 +75,7 @@ class DesktopFrameFlow {
             refinement_->retired = true;
         }
         acknowledged_ = lastSent_ = 0;
+        lastContentFrame_ = 0;
         lastAcknowledgedAt_ = {};
         baseline_.reset();
         deliveryBytesPerSecond_ = 0;
@@ -96,14 +99,15 @@ class DesktopFrameFlow {
         }
     }
     void observeFrame(FrameType type, std::size_t bytes, std::uint64_t changedPixels, std::chrono::microseconds elapsed) {
-        if (type == FrameType::kKeyFrame) {
+        if (keyFrame(type)) {
             return; // Codec startup and refresh bursts do not describe steady frame cost.
         }
         if (elapsed.count() > 0) {
             encodeMicroseconds_ = encodeMicroseconds_ ? (encodeMicroseconds_ * 7 + static_cast<std::uint64_t>(elapsed.count())) / 8 : static_cast<std::uint64_t>(elapsed.count());
         }
         const auto pixels = std::min(changedPixels, static_cast<std::uint64_t>(width_) * height_);
-        scenePixels_ = scenePixels_ ? (*scenePixels_ * 3 + pixels) / 4 : pixels;
+        scenePixels_ = repeatedFrame(type) ? 0 : scenePixels_ ? (*scenePixels_ * 3 + pixels) / 4
+                                                              : pixels;
         // A rate-controlled codec redistributes its bitrate when cadence changes.
         // Its current bytes/frame cannot predict bytes/frame at another cadence.
         // Lossless regions have a fixed payload cost and still need that bound.
@@ -162,7 +166,7 @@ class DesktopFrameFlow {
     }
     bool sentRefinement(std::uint64_t generation, std::uint64_t frame, std::uint64_t batch, Clock::time_point now, std::size_t bytes, std::chrono::microseconds allowedOccupancy = std::chrono::milliseconds(50)) {
         updateRefinement(now);
-        if (generation != generation_ || !frame || frame != lastSent_ || !batch || batch <= lastRefinementBatch_ || !bytes || bytes > refinementBudget(now, allowedOccupancy)) {
+        if (generation != generation_ || !frame || frame != lastContentFrame_ || !batch || batch <= lastRefinementBatch_ || !bytes || bytes > refinementBudget(now, allowedOccupancy)) {
             return false;
         }
         refinement_ = Refinement{generation, frame, batch, now};
@@ -188,7 +192,7 @@ class DesktopFrameFlow {
             refinement_->retired = true;
         } // Retirement cancels eligibility, NOT the unacknowledged lease.
     }
-    void sent(std::uint64_t generation, std::uint64_t frame, Clock::time_point now, std::size_t bytes) {
+    void sent(std::uint64_t generation, std::uint64_t frame, Clock::time_point now, std::size_t bytes, FrameType type) {
         updateRefinement(now);
         if (generation != generation_) {
             if (!generation || generation < generation_) {
@@ -199,10 +203,16 @@ class DesktopFrameFlow {
         if (!frame || frame <= lastSent_ || pending_.size() >= kMaximumInFlightFrames || bytes > std::numeric_limits<std::size_t>::max() - pendingBytes_) {
             throw std::logic_error("Desktop frame exceeded receiver-credit safety bounds");
         }
-        if (refinement_) {
+        if (repeatedFrame(type) && !lastContentFrame_) {
+            throw std::logic_error("Repeated desktop frame has no content baseline");
+        }
+        if (!repeatedFrame(type) && refinement_) {
             refinement_->retired = true; // New pixels never release unacked credit.
         }
-        pending_.push_back({frame, now, bytes});
+        if (!repeatedFrame(type)) {
+            lastContentFrame_ = frame;
+        }
+        pending_.push_back({frame, now, bytes, type});
         pendingBytes_ += bytes;
         lastSent_ = frame;
     }
@@ -220,6 +230,7 @@ class DesktopFrameFlow {
             return false;
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - found->sent);
+        const bool decodedKeyFrame = keyFrame(found->type);
         const auto transit = elapsed - std::min(elapsed, std::chrono::microseconds(decodeMicroseconds));
         if (!baseline_ || now >= baselineExpiresAt_) {
             baseline_ = transit;
@@ -244,7 +255,9 @@ class DesktopFrameFlow {
         if (background_) {
             return true;
         }
-        decodeMicroseconds_ = decodeMicroseconds_ ? (decodeMicroseconds_ * 7 + decodeMicroseconds) / 8 : decodeMicroseconds;
+        if (!decodedKeyFrame) {
+            decodeMicroseconds_ = decodeMicroseconds_ ? (decodeMicroseconds_ * 7 + decodeMicroseconds) / 8 : decodeMicroseconds;
+        }
         const bool networkPressure = transit > pathDelay() + std::chrono::milliseconds(50);
         const bool decoderPressure = queueDepth > 2 || decodeMicroseconds_ > 25000;
         const bool congested = networkPressure || decoderPressure;
@@ -301,6 +314,8 @@ class DesktopFrameFlow {
     }
 
   private:
+    static bool keyFrame(FrameType type) { return type == FrameType::kKeyFrame || type == FrameType::kRepeatedKeyFrame; }
+    static bool repeatedFrame(FrameType type) { return type == FrameType::kRepeatedVideo || type == FrameType::kRepeatedKeyFrame; }
     struct Refinement {
         std::uint64_t generation, frame, batch;
         Clock::time_point sent;
@@ -335,6 +350,7 @@ class DesktopFrameFlow {
         std::uint64_t frame;
         Clock::time_point sent;
         std::size_t bytes;
+        FrameType type;
     };
     std::chrono::microseconds pathDelay() const {
         return std::clamp(roundTrip_.value_or(baseline_.value_or(std::chrono::microseconds(100000))), std::chrono::microseconds(1000), std::chrono::microseconds(2000000));
@@ -374,6 +390,7 @@ class DesktopFrameFlow {
     std::uint32_t width_ = 1920, height_ = 1080, clientFrameLimit_ = kLegacyMaximumInFlightFrames;
     std::uint32_t receiverFrameRate_ = kMaximumFramesPerSecond;
     std::uint64_t generation_ = 0, acknowledged_ = 0, lastSent_ = 0;
+    std::uint64_t lastContentFrame_ = 0;
     std::uint64_t deliveryBytesPerSecond_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
     std::optional<std::uint64_t> scenePixels_;
     std::uint64_t regionBytes_ = 0;

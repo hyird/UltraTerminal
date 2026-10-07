@@ -173,7 +173,8 @@ struct Worker {
         if (message.has_video_config()) {
             flow.reset(message.generation());
         } else if (message.has_video_frame() || message.has_desktop_region_update()) {
-            flow.sent(message.generation(), message.frame_id(), now, message.ByteSizeLong());
+            flow.sent(message.generation(), message.frame_id(), now, message.ByteSizeLong(), message.has_desktop_region_update() ? agent::DesktopFrameFlow::FrameType::kRegion : message.video_frame().key_frame() ? agent::DesktopFrameFlow::FrameType::kKeyFrame
+                                                                                                                                                                                                                   : agent::DesktopFrameFlow::FrameType::kVideo);
         } else if (trackDetail) {
             require(flow.sentRefinement(message.generation(), message.frame_id(), message.video_refinement().batch_id(), now, message.ByteSizeLong()), "Worker Flow could not send fixture detail");
         }
@@ -427,6 +428,7 @@ asio::awaitable<void> DesktopTransport::watchVideo() {
     co_await state_->boundary.watch.async_wait(asio::redirect_error(asio::use_awaitable, error));
 }
 std::uint32_t DesktopTransport::serverOptimizationContract() const { return 2; }
+bool DesktopTransport::serverContinuousFrames() const { return false; }
 void DesktopTransport::cancel() {
     state_->boundary.input.close();
     state_->boundary.watch.cancel();

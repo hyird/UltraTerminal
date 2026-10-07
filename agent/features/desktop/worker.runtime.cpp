@@ -32,11 +32,12 @@ class DesktopWorker {
     DesktopWorker(ruvia::execution_handle loop, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
         : pipe_(pipe),
           probeTimer_(loop.executor()),
-          video_(std::move(loop), start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract()),
+          video_(std::move(loop), start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract(), start.desktop_start().continuous_frames()),
           incoming_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kService}),
           outgoing_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kDesktop}),
           session_(start.session_id()), writeControl_(start.desktop_start().write_control()),
-          optimization_(start.desktop_start().desktop_optimization_contract()) {
+          optimization_(start.desktop_start().desktop_optimization_contract()),
+          serverContinuousFrames_(start.desktop_start().continuous_frames()) {
         // Both IPC video validators begin with allow0. Start carries Server
         // permission only; it is not a Browser request and cannot activate v2.
         if (!incoming_.accept(start)) {
@@ -303,6 +304,7 @@ class DesktopWorker {
                     optimization_.request(capabilities.desktop_optimization_contract());
                     incoming_.setOptimizationContract(optimization_.allowedContract());
                     outgoing_.setOptimizationContract(optimization_.allowedContract());
+                    outgoing_.setContinuousFrames(serverContinuousFrames_ && capabilities.continuous_frames());
                     capabilities.set_desktop_optimization_contract(optimization_.allowedContract());
                     // A's explicit gate receives FULL pending permission, not
                     // Server capability. Changed permission/capabilities retire
@@ -405,6 +407,7 @@ class DesktopWorker {
     const char* failureStage_ = "worker";
     bool writeControl_;
     DesktopOptimizationGate optimization_;
+    const bool serverContinuousFrames_;
     bool pipelineEnabled_ = false;
     DesktopPipelineBuffer pipeline_;
     bool rebindRequested_ = false;

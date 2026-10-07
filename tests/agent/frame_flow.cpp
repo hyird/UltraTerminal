@@ -40,7 +40,7 @@ struct Link {
                 const auto rate = flow.rate();
                 const auto bytes = std::max(100u, rate.bitrate / (8 * rate.framesPerSecond));
                 flow.observeFrame(FrameType::kVideo, bytes, 1920 * 1080, 5ms);
-                flow.sent(1, ++frame, now, bytes);
+                flow.sent(1, ++frame, now, bytes, FrameType::kVideo);
                 wireFree = std::max(wireFree, now) + std::chrono::microseconds(static_cast<std::uint64_t>(bytes) * 1000000 / bytesPerSecond);
                 acks.push_back({frame, wireFree + rtt + 1ms});
                 encodeAt = now + std::chrono::microseconds(1000000 / rate.framesPerSecond);
@@ -56,8 +56,21 @@ int main() {
     try {
         auto now = DesktopFrameFlow::Clock::time_point{1s};
         DesktopFrameFlow flow;
+        DesktopFrameFlow continuous;
+        continuous.sent(1, 1, now, 1000, FrameType::kKeyFrame);
+        require(continuous.acknowledge(1, 1, 350000, 0, now + 10ms), "Cold keyframe ACK failed");
+        require(continuous.rate().framesPerSecond == 60, "Cold decoder startup poisoned steady cadence");
+        require(continuous.sentRefinement(1, 1, 1, now + 10ms, 1000), "Continuous baseline refinement rejected");
+        continuous.sent(1, 2, now + 20ms, 100, FrameType::kRepeatedVideo);
+        require(continuous.acknowledge(1, 2, 1000, 0, now + 30ms), "Real repeated frame did not return credit");
+        require(continuous.refinementOutstanding(now + 30ms) && !continuous.refinementRetired(now + 30ms), "Repeated picture retired static refinement");
+        require(continuous.acknowledgeRefinement(1, 1, 1, now + 30ms), "Stable content refinement lost its exact ACK tuple");
+        require(!continuous.sentRefinement(1, 2, 2, now + 100ms, 1000), "Delivery alias accepted as a new content baseline");
+        require(continuous.sentRefinement(1, 1, 2, now + 100ms, 1000), "Refinement could not continue after duplicate delivery");
+        continuous.sent(1, 3, now + 110ms, 1000, FrameType::kVideo);
+        require(continuous.refinementRetired(now + 110ms), "Changed content did not retire old refinement");
         require(flow.rate().framesPerSecond == 60, "Healthy desktop retained the old 30 FPS ceiling");
-        flow.sent(1, 1, now, 4000000);
+        flow.sent(1, 1, now, 4000000, FrameType::kVideo);
         require(!flow.canEncode(now + 1ms), "Oversized IDR did not exhaust byte credit");
         require(!flow.acknowledge(1, 2, 1000, 0, now + 20ms, false, 128), "Future ACK accepted");
         require(!flow.acknowledge(2, 1, 1000, 0, now + 20ms, false, 128), "Wrong-generation ACK accepted");
@@ -67,16 +80,16 @@ int main() {
         require(flow.acknowledge(1, 1, 600000, 128, now + 1s, true, 1) && !flow.canEncode(now + 1s), "Repeated ACK did not pause a static desktop");
         require(flow.rate().bitrate == bitrate, "Repeated ACK changed capacity estimate");
         require(flow.acknowledge(1, 1, 1000, 0, now + 2s, false, 128) && flow.canEncode(now + 2s), "Visible static desktop did not resume");
-        flow.sent(1, 2, now + 2s, 1000);
-        flow.sent(1, 3, now + 2s, 1000);
+        flow.sent(1, 2, now + 2s, 1000, FrameType::kVideo);
+        flow.sent(1, 3, now + 2s, 1000, FrameType::kVideo);
         require(flow.acknowledge(1, 3, 1000, 0, now + 2030ms, false, 128) && flow.pendingBytes() == 0, "Cumulative ACK leaked credit");
-        flow.sent(2, 1, now + 3s, 1000);
+        flow.sent(2, 1, now + 3s, 1000, FrameType::kVideo);
         require(!flow.acknowledge(1, 3, 1000, 0, now + 4s), "Retired generation affected flow");
         require(flow.acknowledge(2, 1, 1000, 0, now + 4s), "New baseline ACK failed");
         require(!flow.setGeometry(4096, 4096) && !flow.setGeometry(17, 16), "Invalid geometry accepted");
         DesktopFrameFlow detail;
         const auto detailNow = DesktopFrameFlow::Clock::time_point{1s};
-        detail.sent(1, 1, detailNow, 1000);
+        detail.sent(1, 1, detailNow, 1000, FrameType::kVideo);
         const auto budget = detail.refinementBudget(detailNow);
         require(budget > 0 && budget <= 65536, "Refinement budget is absent/unbounded");
         require(detail.sentRefinement(1, 1, 1, detailNow, budget), "First independent refinement rejected");
@@ -95,39 +108,39 @@ int main() {
         const auto retiredPressure = detail.pressureBytes(detailNow + 100ms);
         require(retiredPressure > 0 && detail.refinementRetired(detailNow + 100ms) && detail.refinementOutstanding(detailNow + 100ms), "Retirement refunded bytes or released unacked resource ownership");
         require(!detail.sentRefinement(1, 1, 4, detailNow + 100ms, 100) && !detail.refinementBudget(detailNow + 100ms), "Retired decode allowed a second unacked batch");
-        detail.sent(1, 2, detailNow + 100ms, 1000);
+        detail.sent(1, 2, detailNow + 100ms, 1000, FrameType::kVideo);
         require(detail.acknowledge(1, 2, 0, 0, detailNow + 100ms) && detail.refinementOutstanding(detailNow + 100ms), "New frame/ordinary ACK released retired refinement credit");
         require(detail.acknowledgeRefinement(1, 1, 3, detailNow + 100ms) && detail.pressureBytes(detailNow + 100ms) == retiredPressure, "Retired tuple cleanup failed or refunded written pressure");
         require(detail.sentRefinement(1, 2, 4, detailNow + 101ms, 1000), "Resource cleanup did not release independent credit");
         require(!detail.acknowledgeRefinement(1, 1, 3, detailNow + 101ms) && detail.refinementOutstanding(detailNow + 101ms), "Late retired ACK released a newer batch's credit");
         const auto beforeBarrier = detail.pressureBytes(detailNow + 101ms);
-        detail.sent(2, 1, detailNow + 101ms, 1000);
+        detail.sent(2, 1, detailNow + 101ms, 1000, FrameType::kVideo);
         require(detail.refinementRetired(detailNow + 101ms) && detail.refinementOutstanding(detailNow + 101ms) && !detail.refinementBudget(detailNow + 101ms), "Generation barrier refunded unacked credit");
         require(detail.pressureBytes(detailNow + 101ms) == beforeBarrier + 1000, "Generation barrier erased refinement byte pressure");
         require(!detail.sentRefinement(2, 1, 1, detailNow + 101ms, 100), "Generation barrier bypassed the single native decode lease");
         require(detail.acknowledgeRefinement(1, 2, 4, detailNow + 101ms), "Cross-generation cleanup ACK could not release its exact old tuple");
         require(detail.sentRefinement(2, 1, 1, detailNow + 101ms, 1000), "Clean new generation could not restart batch IDs");
         require(!detail.acknowledgeRefinement(1, 2, 4, detailNow + 101ms) && detail.refinementOutstanding(detailNow + 101ms), "Old generation duplicate released a new tuple with reused batch ID");
-        detail.sent(2, 2, detailNow + 102ms, 1000);
+        detail.sent(2, 2, detailNow + 102ms, 1000, FrameType::kVideo);
         require(detail.acknowledge(2, 2, 0, 0, detailNow + 103ms) && detail.refinementOutstanding(detailNow + 103ms), "New video failed to progress independently");
         require(detail.refinementPaused(detailNow + 2101ms) && detail.refinementOutstanding(detailNow + 2101ms) && !detail.refinementBudget(detailNow + 2101ms), "Hung PNG timeout dropped the native resource lease or failed to pause detail");
         require(detail.canEncode(detailNow + 2101ms), "Hung PNG blocked independent video progress");
-        detail.sent(3, 1, detailNow + 2101ms, 1000);
+        detail.sent(3, 1, detailNow + 2101ms, 1000, FrameType::kVideo);
         require(!detail.refinementBudget(detailNow + 2101ms) && !detail.sentRefinement(3, 1, 1, detailNow + 2101ms, 100), "New generation restarted optional work while timed-out native decode remained alive");
         require(detail.acknowledgeRefinement(2, 1, 1, detailNow + 2102ms) && !detail.refinementOutstanding(detailNow + 2102ms) && !detail.refinementPaused(detailNow + 2102ms), "Old timeout cleanup paused the new generation");
         require(detail.sentRefinement(3, 1, 1, detailNow + 2102ms, 1000), "Old timeout cleanup did not allow current-generation refinement");
         require(!detail.acknowledgeRefinement(2, 1, 1, detailNow + 2102ms) && detail.refinementOutstanding(detailNow + 2102ms), "Exact old ACK released the current-generation tuple");
         require(detail.acknowledgeRefinement(3, 1, 1, detailNow + 2102ms), "Current-generation cleanup failed");
-        detail.sent(4, 1, detailNow + 2103ms, 1000);
+        detail.sent(4, 1, detailNow + 2103ms, 1000, FrameType::kVideo);
         require(!detail.refinementPaused(detailNow + 2103ms) && detail.sentRefinement(4, 1, 1, detailNow + 2103ms, 1000), "Post-cleanup new generation did not resume optional work");
         require(!detail.acknowledgeRefinement(2, 1, 1, detailNow + 2103ms) && detail.pendingFrames() == 1 && detail.refinementOutstanding(detailNow + 2103ms), "Late cross-generation ACK affected new video/refinement credit");
         // Cleanup itself may be the first update at/after the old deadline.
         for (const auto cleanupDelay : {1999ms, 2000ms, 2100ms}) {
             DesktopFrameFlow crossed;
-            crossed.sent(1, 1, detailNow, 1000);
+            crossed.sent(1, 1, detailNow, 1000, FrameType::kVideo);
             require(crossed.sentRefinement(1, 1, 1, detailNow, 1000), "Cross-generation timeout setup failed");
             crossed.reset(2);
-            crossed.sent(2, 1, detailNow + 1s, 1000);
+            crossed.sent(2, 1, detailNow + 1s, 1000, FrameType::kVideo);
             require(crossed.acknowledge(2, 1, 0, 0, detailNow + 1001ms), "Cross-generation video ACK failed");
             require(crossed.refinementOutstanding(detailNow + 1001ms) && !crossed.refinementBudget(detailNow + 1001ms), "Reset released the old native lease before cleanup");
             const auto cleanupAt = detailNow + cleanupDelay;
@@ -137,31 +150,31 @@ int main() {
             require(crossed.acknowledgeRefinement(2, 1, 1, cleanupAt), "Exact new tuple cleanup failed");
         }
         DesktopFrameFlow sameGeneration;
-        sameGeneration.sent(1, 1, detailNow, 1000);
+        sameGeneration.sent(1, 1, detailNow, 1000, FrameType::kVideo);
         require(sameGeneration.sentRefinement(1, 1, 1, detailNow, 1000), "Same-generation timeout setup failed");
         require(!sameGeneration.refinementPaused(detailNow + 1999ms), "Current generation paused before the timeout");
         require(sameGeneration.refinementPaused(detailNow + 2s) && sameGeneration.refinementOutstanding(detailNow + 2s), "Current-generation timeout did not pause and retain the lease");
         require(sameGeneration.acknowledgeRefinement(1, 1, 1, detailNow + 2100ms) && sameGeneration.refinementPaused(detailNow + 2100ms) && !sameGeneration.refinementBudget(detailNow + 2100ms), "Same-generation timeout cleanup resumed optional work");
         require(!sameGeneration.sentRefinement(1, 1, 2, detailNow + 2100ms, 100), "Timed-out current generation accepted another refinement");
         DesktopFrameFlow unacknowledged;
-        unacknowledged.sent(1, 1, detailNow, 1000);
+        unacknowledged.sent(1, 1, detailNow, 1000, FrameType::kVideo);
         require(unacknowledged.sentRefinement(1, 1, 1, detailNow, 1000), "Unacknowledged lease setup failed");
-        unacknowledged.sent(2, 1, detailNow + 1s, 1000);
+        unacknowledged.sent(2, 1, detailNow + 1s, 1000, FrameType::kVideo);
         require(unacknowledged.acknowledge(2, 1, 0, 0, detailNow + 1001ms), "Initial new-generation video ACK failed");
         for (std::uint64_t frame = 2; frame <= 4; ++frame) {
             const auto videoAt = detailNow + 2100ms + std::chrono::seconds(frame - 2);
             require(unacknowledged.refinementOutstanding(videoAt) && unacknowledged.refinementRetired(videoAt) && !unacknowledged.refinementPaused(videoAt) && !unacknowledged.refinementBudget(videoAt), "Old timed-out lease was freed or paused the current generation without cleanup");
             require(!unacknowledged.sentRefinement(2, frame - 1, 1, videoAt, 100), "Missing old cleanup allowed a second native lease");
             require(unacknowledged.canEncode(videoAt), "Old unacknowledged timeout stopped independent video");
-            unacknowledged.sent(2, frame, videoAt, 1000);
+            unacknowledged.sent(2, frame, videoAt, 1000, FrameType::kVideo);
             require(unacknowledged.acknowledge(2, frame, 0, 0, videoAt + 1ms), "Video could not continue without old refinement cleanup");
         }
         DesktopFrameFlow spent;
-        spent.sent(1, 1, detailNow, 1000);
+        spent.sent(1, 1, detailNow, 1000, FrameType::kVideo);
         const auto spentBudget = spent.refinementBudget(detailNow);
         require(spent.sentRefinement(1, 1, 1, detailNow, spentBudget), "Spent-token setup failed");
         spent.reset(2);
-        spent.sent(2, 1, detailNow, 1000);
+        spent.sent(2, 1, detailNow, 1000, FrameType::kVideo);
         require(spent.pressureBytes(detailNow) == 1000 + spentBudget, "Generation reset refunded written refinement bytes");
         require(spent.acknowledgeRefinement(1, 1, 1, detailNow) && !spent.refinementOutstanding(detailNow) && !spent.refinementBudget(detailNow), "Cross-generation cleanup refunded spent tokens");
         require(spent.pressureBytes(detailNow) == 1000 + spentBudget, "Cross-generation cleanup refunded written refinement bytes");
@@ -181,14 +194,14 @@ int main() {
         decoder.observeRoundTrip(20ms, now);
         for (std::uint64_t id = 1; id <= 12; ++id) {
             now += 300ms;
-            decoder.sent(1, id, now, 1000);
+            decoder.sent(1, id, now, 1000, FrameType::kVideo);
             require(decoder.acknowledge(1, id, 1000, 4, now + 21ms), "Decoder backlog ACK rejected");
         }
         require(decoder.rate().framesPerSecond < 30 && decoder.rate().bitrate == 24000000, "Decoder backlog did not reduce capture independently of network bitrate");
         DesktopFrameFlow idle;
         for (std::uint64_t id = 1; id <= 20; ++id) {
             now += 2s;
-            idle.sent(1, id, now, 1000);
+            idle.sent(1, id, now, 1000, FrameType::kVideo);
             require(idle.acknowledge(1, id, 1000, 0, now + 20ms), "Idle ACK rejected");
         }
         require(idle.rate().framesPerSecond == 60 && idle.rate().bitrate == 24000000, "Static idle time was interpreted as narrow capacity");
@@ -222,7 +235,7 @@ int main() {
         narrow.run(30s, 125000, 40ms);
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Recovery ignored renewed congestion");
         DesktopFrameFlow stalled;
-        stalled.sent(1, 1, now, 1000);
+        stalled.sent(1, 1, now, 1000, FrameType::kVideo);
         require(!stalled.canEncode(now + 1s), "Missing ACK did not stop further encoding");
         require(stalled.acknowledge(1, 1, 1000, 0, now + 2s) && stalled.canEncode(now + 2s), "ACK did not resume a stalled window");
         std::cout << "Receiver credit, finite-capacity congestion/recovery, high RTT, idle, CPU pressure and generation safety passed\n";

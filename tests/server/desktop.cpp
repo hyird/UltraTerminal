@@ -674,6 +674,41 @@ ruvia::task<void> exerciseOptimization(ruvia::execution_handle worker) {
     require(budget->used == 0);
 }
 ruvia::task<void> exercise(ruvia::execution_handle worker) {
+    {
+        auto continuousBudget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
+        server::DesktopSession session(worker, continuousBudget);
+        auto endpoints = co_await pair(session);
+        auto caps = refresh(2);
+        caps.mutable_desktop_video_capabilities()->set_desktop_optimization_contract(2);
+        caps.mutable_desktop_video_capabilities()->set_continuous_frames(true);
+        require(co_await session.forward(endpoints[0], caps));
+        require(bool(co_await endpoints[1]->receive({})));
+        auto config = configuration();
+        config.mutable_video_config()->set_continuous_frames(true);
+        require(co_await session.forward(endpoints[3], config));
+        require(bool(co_await endpoints[2]->receive({})));
+        require(co_await session.forward(endpoints[3], video(3, 1)));
+        require(bool(co_await endpoints[2]->receive({})));
+        require(co_await session.forward(endpoints[3], refinement()));
+        require(bool(co_await endpoints[2]->receive({})));
+        auto repeat = video(5, 2);
+        repeat.set_base_frame_id(1);
+        repeat.mutable_video_frame()->set_repeated(true);
+        require(co_await session.forward(endpoints[3], repeat));
+        require(bool(co_await endpoints[2]->receive({})));
+        require(co_await session.forward(endpoints[0], refinementAck()));
+        require(bool(co_await endpoints[1]->receive({})));
+        auto detail = refinement(6, 1, 2);
+        detail.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(128);
+        require(co_await session.forward(endpoints[3], detail));
+        require(bool(co_await endpoints[2]->receive({})));
+        require(session.diagnostics().videoFrames == 2 && session.diagnostics().refinementMessages == 2);
+        repeat.set_sequence(7);
+        repeat.set_frame_id(3);
+        repeat.set_base_frame_id(2);
+        repeat.mutable_video_frame()->set_timestamp_microseconds(3);
+        require(!(co_await session.forward(endpoints[3], repeat))); // A delivery alias cannot replace the content key.
+    }
     co_await exerciseWriters(worker);
     co_await exerciseDynamicStagePresence(worker);
     co_await exerciseOptimization(worker);

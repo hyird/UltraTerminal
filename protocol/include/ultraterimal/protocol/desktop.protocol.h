@@ -41,6 +41,7 @@ class DesktopChannelValidator {
     // Zero/unknown disables permission, without changing the active generation.
     // Input ACKs are format/direction checked, not matched to the latest frame.
     void setOptimizationContract(std::uint32_t contract) noexcept;
+    void setContinuousFrames(bool allowed) noexcept;
 
   private:
     enum class Mode { kNone,
@@ -54,6 +55,7 @@ class DesktopChannelValidator {
     std::uint64_t sequence_ = 1;
     std::uint64_t generation_ = 0;
     std::uint64_t frame_ = 0;
+    std::uint64_t contentFrame_ = 0;
     std::uint64_t timestamp_ = 0;
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
@@ -61,6 +63,8 @@ class DesktopChannelValidator {
     bool refined_ = false;
     std::uint32_t allowedOptimizationContract_ = 0;
     std::uint32_t activeOptimizationContract_ = 0;
+    bool allowedContinuousFrames_ = false;
+    bool activeContinuousFrames_ = false;
     std::uint64_t refinementBatch_ = 0;
     std::size_t refinementBytes_ = 0;
     std::size_t refinementTiles_ = 0;

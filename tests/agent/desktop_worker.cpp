@@ -39,7 +39,7 @@ struct FakeVideoUpdate {
     wire::VideoFrame frame;
     std::optional<wire::DesktopRegionUpdate> region;
     std::optional<wire::VideoRefinement> refinement;
-    std::uint64_t generation = 7, frameId = 11, baseFrameId = 10;
+    std::uint64_t generation = 7, frameId = 11, baseFrameId = 0, refinementFrameId = 11;
 };
 class FakeVideoRuntime {
   public:
@@ -74,6 +74,7 @@ asio::awaitable<void> fakeRuntimeOutput() {
     const auto expectedBatch = update->refinement->SerializeAsString();
     protocol::DesktopPipeValidator validator({"fake-worker", 1, false, protocol::DesktopPipeSource::kDesktop});
     validator.setOptimizationContract(2);
+    validator.setContinuousFrames(true);
     wire::Envelope ready;
     ready.set_protocol_version(protocol::kVersion);
     ready.set_session_id("fake-worker");
@@ -90,6 +91,7 @@ asio::awaitable<void> fakeRuntimeOutput() {
     config.mutable_video_config()->set_width(256);
     config.mutable_video_config()->set_height(128);
     config.mutable_video_config()->set_desktop_optimization_contract(2);
+    config.mutable_video_config()->set_continuous_frames(true);
     require(validator.accept(config).has_value(), "Fake Worker config rejected");
     std::uint64_t sequence = 2;
     std::vector<wire::Envelope> packets;
@@ -101,7 +103,7 @@ asio::awaitable<void> fakeRuntimeOutput() {
         // before the preceding frame's single-writer send has completed.
         co_await asio::post(co_await asio::this_coro::executor, asio::use_awaitable);
         if (envelope.has_video_refinement()) {
-            require(packets.size() == 1 && packets.front().has_video_frame(), "Dynamic batch preceded frame write completion");
+            require(!packets.empty() && packets.back().has_video_frame(), "Batch preceded frame write completion");
         }
         require(validator.accept(envelope).has_value(), "Worker pixel envelope violated IPC contract");
         auto bytes = protocol::encodeMessage(envelope);
@@ -116,6 +118,17 @@ asio::awaitable<void> fakeRuntimeOutput() {
     require(packets[1].generation() == 7 && packets[1].frame_id() == 11 && packets[1].base_frame_id() == 11, "Dynamic batch is not bound to its preceding composed frame");
     require(packets[0].video_frame().SerializeAsString() == expectedFrame && packets[1].video_refinement().SerializeAsString() == expectedBatch, "Worker reconstructed/lost generated frame or batch metadata");
     require(packets[1].video_refinement().batch_id() == 42 && packets[1].video_refinement().kind() == wire::DYNAMIC_DETAIL && packets[1].video_refinement().stage_timing().png_encode_microseconds() == 17, "Worker failed to preserve dynamic batch identity/kind/timing");
+    update = co_await runtime.next();
+    update->frameId = 12;
+    update->baseFrameId = 11;
+    update->frame.set_timestamp_microseconds(12000);
+    update->frame.set_repeated(true);
+    update->refinement->set_batch_id(43);
+    update->refinement->set_kind(wire::STATIC_DETAIL);
+    update->refinement->mutable_patches(0)->mutable_destination()->set_x(128);
+    co_await agent::writeDesktopPixels(*update, send);
+    require(packets.size() == 4 && packets[2].frame_id() == 12 && packets[2].base_frame_id() == 11 && packets[2].video_frame().repeated(), "Repeated delivery lost its stable content baseline");
+    require(packets[3].frame_id() == 11 && packets[3].base_frame_id() == 11 && packets[3].video_refinement().batch_id() == 43, "Attached static refinement inherited the repeated delivery ID");
 }
 void exerciseFakeRuntime() {
     asio::io_context io;

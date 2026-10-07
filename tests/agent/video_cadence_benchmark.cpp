@@ -83,6 +83,8 @@ struct ConfigMeta {
     std::int32_t left = 0, top = 0;
 };
 struct StageSamples {
+    bool continuous = false;
+    std::uint64_t repeatedFrames = 0;
     cadence::Stages primary, staticDetail;
     cadence::PaintMeasurement paintMeasurement;
     cadence::Coverage staticCoverage, dynamicCoverage;
@@ -162,7 +164,7 @@ struct StageSamples {
         }
         if (update.refinement) {
             const auto& refinement = *update.refinement;
-            RefinementMeta meta{update.generation, update.frameId, refinement.batch_id(), static_cast<std::uint64_t>(refinement.patches_size()), 0, refinement.ByteSizeLong(), static_cast<int>(refinement.kind()), measured};
+            RefinementMeta meta{update.generation, update.refinementFrameId, refinement.batch_id(), static_cast<std::uint64_t>(refinement.patches_size()), 0, refinement.ByteSizeLong(), static_cast<int>(refinement.kind()), measured};
             cadence::Coverage batchCoverage;
             bool first = true;
             for (const auto& patch : refinement.patches()) {
@@ -175,11 +177,11 @@ struct StageSamples {
                 meta.right = std::max(meta.right, right);
                 meta.bottom = std::max(meta.bottom, bottom);
                 first = false;
-                batchCoverage.observe(update.generation, update.frameId, rect.x(), rect.y(), rect.width(), rect.height());
+                batchCoverage.observe(update.generation, update.refinementFrameId, rect.x(), rect.y(), rect.width(), rect.height());
                 if (refinement.kind() == wire::STATIC_DETAIL) {
-                    staticCoverage.observe(update.generation, update.frameId, rect.x(), rect.y(), rect.width(), rect.height());
+                    staticCoverage.observe(update.generation, update.refinementFrameId, rect.x(), rect.y(), rect.width(), rect.height());
                 } else if (refinement.kind() == wire::DYNAMIC_DETAIL) {
-                    dynamicCoverage.observe(update.generation, update.frameId, rect.x(), rect.y(), rect.width(), rect.height());
+                    dynamicCoverage.observe(update.generation, update.refinementFrameId, rect.x(), rect.y(), rect.width(), rect.height());
                 }
             }
             meta.uniqueGrid = batchCoverage.unique();
@@ -417,6 +419,7 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
     capabilities.set_region_updates(regions);
     capabilities.set_tile_cache(regions);
     capabilities.set_desktop_optimization_contract(optimization ? 2 : 0);
+    capabilities.set_continuous_frames(stages.continuous);
     video.capabilities(capabilities);
     stages.initialCapabilities.observe(capabilities);
     const auto until = Clock::now() + 3s + duration;
@@ -457,7 +460,7 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
         if (update && update->refinement && update->refinement->batch_id()) {
             wire::Envelope ack;
             ack.set_generation(update->generation);
-            ack.set_frame_id(update->frameId);
+            ack.set_frame_id(update->refinementFrameId);
             ack.mutable_desktop_refinement_ack()->set_batch_id(update->refinement->batch_id());
             ack.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::APPLIED);
             video.refinementAck(ack); // Local software commit model, NOT network/display.
@@ -478,6 +481,7 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video, s
         video.feedback(feedback);
         if (measured) {
             stages.bodies[5].observe(feedback);
+            stages.repeatedFrames += update->frame.repeated();
             const bool retain = received.size() < cadence::kSampleCapacity;
             if (retain) {
                 received.push_back(now);
@@ -563,7 +567,7 @@ int main(int argc, char** argv) {
         bool sharp = false;
         bool scrolling = false;
         bool motion = false;
-        bool regions = false, optimization = false, detail = false, stationary = false, fullDesktop = false, isolatedDesktop = false;
+        bool regions = false, optimization = false, detail = false, stationary = false, fullDesktop = false, isolatedDesktop = false, continuous = false;
         unsigned regionFrames = 0;
         for (int index = 1; index < argc; ++index) {
             const auto option = std::string_view(argv[index]);
@@ -586,6 +590,9 @@ int main(int argc, char** argv) {
             } else if (option == "--motion") {
                 motion = true;
             } else if (option == "--optimization=v2") {
+                optimization = true;
+            } else if (option == "--continuous") {
+                continuous = true;
                 optimization = true;
             } else if (option == "--detail") {
                 detail = true;
@@ -669,7 +676,7 @@ int main(int argc, char** argv) {
         }
         asio::io_context io;
         ruvia::execution_domain attachment(io);
-        ultraterimal::agent::DesktopVideoRuntime video(attachment.handle(), 0, optimization ? 2 : 0);
+        ultraterimal::agent::DesktopVideoRuntime video(attachment.handle(), 0, optimization ? 2 : 0, continuous);
         std::vector<Clock::time_point> received;
         std::vector<double> sourceAges;
         std::vector<std::uint64_t> presentTicks;
@@ -686,6 +693,7 @@ int main(int argc, char** argv) {
         std::uint64_t totalEncodeMicroseconds = 0, totalEncodedBytes = 0;
         ultraterimal::agent::DesktopVideoDiagnostics captured;
         StageSamples stages;
+        stages.continuous = continuous;
         std::exception_ptr failure;
         asio::co_spawn(attachment.executor(), measure(video, duration, sharp, regions, optimization, regionFrames, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured, stages, paintCounter), [&](std::exception_ptr error) {
             failure = error;
@@ -762,7 +770,7 @@ int main(int argc, char** argv) {
             std::cout << ",\"" << name << "\":";
             cadence::integer(std::cout, value);
         };
-        std::cout << std::setprecision(17) << "{\"workload\":\"real_dxgi_paint_to_video_runtime\",\"ack_model\":\"local_immediate_software_ack\",\"optimization_contract\":" << (optimization ? 2 : 0) << ",\"paint_hz\":" << paintHz << ",\"quality\":\"" << (sharp ? "sharp" : "smooth")
+        std::cout << std::setprecision(17) << "{\"workload\":\"real_dxgi_paint_to_video_runtime\",\"ack_model\":\"local_immediate_software_ack\",\"continuous_frames\":" << continuous << ",\"repeated_frames\":" << stages.repeatedFrames << ",\"optimization_contract\":" << (optimization ? 2 : 0) << ",\"paint_hz\":" << paintHz << ",\"quality\":\"" << (sharp ? "sharp" : "smooth")
                   << "\",\"surface_action\":\"" << action << "\",\"paint_size\":" << paintSize << ",\"source_width\":" << sourceWidth << ",\"source_height\":" << sourceHeight
                   << ",\"isolated_desktop\":" << (isolatedDesktop ? "true" : "false") << ",\"duration_seconds\":" << duration.count() << ",\"paint_calls\":" << paints
                   << ",\"target_fps\":" << targetRate << ",\"encoded_frames\":" << stages.videoUpdates;

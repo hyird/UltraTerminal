@@ -251,6 +251,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     }
     case wire::Envelope::kDesktopStart:
         if (!m.desktop_start().windows_session_id() || m.desktop_start().windows_session_id() == 0xffffffff || m.desktop_start().display_index() >= 64 ||
+            (m.desktop_start().continuous_frames() && m.desktop_start().desktop_optimization_contract() != 2) ||
             (m.desktop_start().write_control() ? m.desktop_start().desktop_input_contract() != 2 : m.desktop_start().desktop_input_contract() != 0)) {
             return invalid();
         }
@@ -285,6 +286,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kChannelReady:
         if (!identifier(m.channel_id()) || m.sequence() != 1 || m.generation() || m.frame_id() || m.base_frame_id() ||
+            (m.channel_ready().continuous_frames() && m.channel_ready().desktop_optimization_contract() != 2) ||
             (m.channel_ready().purpose() != wire::DESKTOP_INPUT && m.channel_ready().purpose() != wire::DESKTOP_VIDEO)) {
             return invalid();
         }
@@ -295,7 +297,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         }
         break;
     case wire::Envelope::kVideoConfig:
-        if (m.video_config().display_modes_size() > 128) {
+        if (m.video_config().display_modes_size() > 128 || (m.video_config().continuous_frames() && m.video_config().desktop_optimization_contract() != 2)) {
             return invalid();
         }
         for (const auto& mode : m.video_config().display_modes()) {
@@ -310,6 +312,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kVideoFrame: {
         const auto& frame = m.video_frame();
         if (!m.generation() || !m.frame_id() || frame.data().empty() || (frame.gpu_encoding() && !frame.hardware_encoding()) ||
+            (frame.repeated() ? !m.base_frame_id() || m.base_frame_id() >= m.frame_id() : m.base_frame_id() != 0) ||
             !stageTiming(frame.stage_timing()) ||
             (frame.has_target_frames_per_second() != frame.has_target_bitrate()) ||
             (frame.has_target_frames_per_second() &&

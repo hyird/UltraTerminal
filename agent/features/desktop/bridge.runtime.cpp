@@ -61,6 +61,7 @@ class Bridge {
             optimization_.request(message.desktop_video_capabilities().desktop_optimization_contract());
             incoming_.setOptimizationContract(optimization_.allowedContract());
             outgoing_.setOptimizationContract(optimization_.allowedContract());
+            incoming_.setContinuousFrames(remote_.serverContinuousFrames() && message.desktop_video_capabilities().continuous_frames());
         }
         co_await pipe_.send(std::move(*bytes));
     }
@@ -84,6 +85,7 @@ class Bridge {
         start.mutable_desktop_start()->set_write_control(writeControl);
         start.mutable_desktop_start()->set_desktop_input_contract(desktopInputContract);
         start.mutable_desktop_start()->set_desktop_optimization_contract(remote_.serverOptimizationContract());
+        start.mutable_desktop_start()->set_continuous_frames(remote_.serverContinuousFrames());
         wire::Envelope first;
         try {
             co_await sendLocal(std::move(start));

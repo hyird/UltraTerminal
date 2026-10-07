@@ -22,12 +22,14 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
     std::unique_ptr<protocol::DesktopChannelValidator> incoming;
     std::array<std::uint64_t, 2> sequences{1, 1};
     std::array<std::uint32_t, 2> serverOptimizationContracts{0, 0};
+    std::array<bool, 2> serverContinuous{false, false};
     std::string sessionId;
     asio::steady_timer deadline;
     bool started = false;
     bool ready = false;
     bool cancelled = false;
     bool browserRequestedV2 = false;
+    bool browserRequestedContinuous = false;
 
     State(ruvia::execution_handle loop, ConnectionConfig config, const wire::Envelope& open) : deadline(loop.executor()) {
         if (!protocol::validateMessage(open) || !open.has_session_open() || open.session_open().kind() != wire::DESKTOP || !open.channel_id().empty()) {
@@ -46,6 +48,9 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
     }
     std::uint32_t serverOptimizationContract() const {
         return ready ? DesktopOptimizationGate::serverContract(serverOptimizationContracts[0], serverOptimizationContracts[1]) : 0;
+    }
+    bool serverContinuousFrames() const {
+        return serverOptimizationContract() == 2 && serverContinuous[0] && serverContinuous[1];
     }
     void cancel() {
         cancelled = true;
@@ -90,6 +95,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
                 throw std::runtime_error("Invalid desktop channel readiness");
             }
             serverOptimizationContracts[slot] = message->channel_ready().desktop_optimization_contract();
+            serverContinuous[slot] = message->channel_ready().continuous_frames();
         } catch (...) {
             cancel();
             throw;
@@ -142,6 +148,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
                     throw std::runtime_error("Desktop v2 configuration preceded browser negotiation");
                 }
                 self->outgoing[1]->setOptimizationContract(self->serverOptimizationContract() == 2 ? allowedOptimizationContract : 0);
+                self->outgoing[1]->setContinuousFrames(self->serverContinuousFrames() && self->browserRequestedContinuous);
             }
             if (!self->outgoing[slot]->accept(message)) {
                 throw std::runtime_error("Invalid outgoing desktop message");
@@ -178,6 +185,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
             }
             if (message->has_desktop_video_capabilities() && message->desktop_video_capabilities().desktop_optimization_contract() == 2) {
                 self->browserRequestedV2 = true;
+                self->browserRequestedContinuous |= message->desktop_video_capabilities().continuous_frames();
             }
             co_return std::move(*message);
         } catch (...) {
@@ -207,5 +215,6 @@ asio::awaitable<void> DesktopTransport::sendCursor(wire::Envelope message) { (vo
 asio::awaitable<wire::Envelope> DesktopTransport::receiveInput() { return State::receiveOwned(state_); }
 asio::awaitable<void> DesktopTransport::watchVideo() { return State::watchOwned(state_); }
 std::uint32_t DesktopTransport::serverOptimizationContract() const { return state_->serverOptimizationContract(); }
+bool DesktopTransport::serverContinuousFrames() const { return state_->serverContinuousFrames(); }
 void DesktopTransport::cancel() { state_->cancel(); }
 } // namespace ultraterimal::agent

@@ -323,6 +323,80 @@ void verifyRefinement() {
     detail.set_base_frame_id(2);
     require(video.accept(detail).has_value());
 }
+void verifyContinuousFrames() {
+    const auto configure = [](DesktopChannelValidator& validator, bool continuous) {
+        auto config = envelope(2);
+        config.set_generation(1);
+        config.mutable_video_config()->set_width(128);
+        config.mutable_video_config()->set_height(64);
+        config.mutable_video_config()->set_codec("avc1.42C01E");
+        config.mutable_video_config()->set_desktop_optimization_contract(2);
+        config.mutable_video_config()->set_continuous_frames(continuous);
+        require(validator.accept(config).has_value());
+        auto frame = envelope(3);
+        frame.set_generation(1);
+        frame.set_frame_id(1);
+        frame.mutable_video_frame()->set_key_frame(true);
+        frame.mutable_video_frame()->set_data("frame");
+        require(validator.accept(frame).has_value());
+        return frame;
+    };
+    DesktopChannelValidator video({"session", "video", wire::DESKTOP_VIDEO, ChannelSource::kAgent, true, 2});
+    video.setContinuousFrames(true);
+    auto repeat = configure(video, true);
+    repeat.set_sequence(4);
+    repeat.set_frame_id(2);
+    repeat.set_base_frame_id(1);
+    repeat.mutable_video_frame()->set_repeated(true);
+    repeat.mutable_video_frame()->set_timestamp_microseconds(16667);
+    require(video.accept(repeat).has_value());
+    repeat.set_sequence(5);
+    repeat.set_frame_id(3);
+    repeat.set_base_frame_id(2);
+    repeat.mutable_video_frame()->set_timestamp_microseconds(33333);
+    require(rejected(video.accept(repeat), DesktopMessageError::kFrameState));
+    repeat.set_base_frame_id(1);
+    require(video.accept(repeat).has_value());
+    auto detail = envelope(6);
+    detail.set_generation(1);
+    detail.set_frame_id(1);
+    detail.set_base_frame_id(1);
+    detail.mutable_video_refinement()->set_batch_id(1);
+    detail.mutable_video_refinement()->set_kind(wire::STATIC_DETAIL);
+    auto* patch = detail.mutable_video_refinement()->add_patches();
+    patch->mutable_destination()->set_width(128);
+    patch->mutable_destination()->set_height(64);
+    std::string png("\211PNG\r\n\032\n", 8);
+    png.resize(33);
+    png[11] = 13;
+    png.replace(12, 4, "IHDR");
+    png[19] = static_cast<char>(128);
+    png[23] = 64;
+    patch->set_png(png);
+    require(video.accept(detail).has_value());
+    detail.set_sequence(7);
+    detail.mutable_video_refinement()->set_batch_id(2);
+    require(rejected(video.accept(detail), DesktopMessageError::kFrameState)); // Repeat did not erase the refined grid.
+    repeat.set_sequence(7);
+    repeat.set_frame_id(4);
+    repeat.set_base_frame_id(0);
+    repeat.mutable_video_frame()->set_repeated(false);
+    repeat.mutable_video_frame()->set_timestamp_microseconds(50000);
+    require(video.accept(repeat).has_value());
+    detail.set_sequence(8);
+    require(rejected(video.accept(detail), DesktopMessageError::kFrameState));
+    detail.set_frame_id(4);
+    detail.set_base_frame_id(4);
+    require(video.accept(detail).has_value());
+    DesktopChannelValidator legacy({"session", "video", wire::DESKTOP_VIDEO, ChannelSource::kAgent, true, 2});
+    repeat = configure(legacy, true);
+    repeat.set_sequence(4);
+    repeat.set_frame_id(2);
+    repeat.set_base_frame_id(1);
+    repeat.mutable_video_frame()->set_repeated(true);
+    repeat.mutable_video_frame()->set_timestamp_microseconds(16667);
+    require(rejected(legacy.accept(repeat), DesktopMessageError::kFrameState));
+}
 } // namespace
 int main() {
     try {
@@ -331,6 +405,7 @@ int main() {
         verifyProbe();
         verifyFrames();
         verifyRefinement();
+        verifyContinuousFrames();
         std::cout << "Desktop channel binding, direction, read-only access, replay and frame continuity passed\n";
         return 0;
     } catch (const std::exception& error) {

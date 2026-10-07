@@ -134,15 +134,15 @@ message Heartbeat { uint64 monotonic_milliseconds = 1; }
 message ChannelGrant { string channel_id = 1; ChannelPurpose purpose = 2; bytes ticket = 3; }
 message SessionOpen { SessionKind kind = 1; string user_id = 2; reserved 3, 4; reserved "operating_system_user"; bool write_control = 5; repeated ChannelGrant channels = 6; uint32 desktop_input_contract = 7; }
 message ChannelOpen { ChannelPurpose purpose = 1; bytes ticket = 2; }
-message ChannelReady { ChannelPurpose purpose = 1; uint32 desktop_optimization_contract = 2; }
+message ChannelReady { ChannelPurpose purpose = 1; uint32 desktop_optimization_contract = 2; bool continuous_frames = 3; }
 // Local service/desktop IPC only. No device credential or remote channel ticket.
-message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; uint32 desktop_optimization_contract = 5; }
+message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; uint32 desktop_optimization_contract = 5; bool continuous_frames = 6; }
 message DesktopReady {}
 message ChannelData { bytes data = 1; }
 message SessionClose { string reason = 1; }
 message SessionError { string code = 1; string message = 2; }
 message DisplayMode { uint32 width = 1; uint32 height = 2; }
-message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; uint32 desktop_optimization_contract = 7; }
+message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; uint32 desktop_optimization_contract = 7; bool continuous_frames = 8; }
 message DesktopResize { uint64 request_id = 1; uint32 width = 2; uint32 height = 3; }
 message DesktopResizeResult { uint64 request_id = 1; bool applied = 2; }
 // Service -> browser. Zero means dispatched, not confirmation of a UI transition.
@@ -190,6 +190,10 @@ message VideoFrame {
   optional uint32 target_bitrate = 7;
   bool gpu_encoding = 8; // No full-frame CPU readback or CPU color conversion.
   DesktopStageTiming stage_timing = 9;
+  // A real encoded picture with unchanged content. Envelope.frame_id still
+  // advances receiver credit; base_frame_id names the stable content frame.
+  // Requires continuous_frames at the VideoConfig generation barrier.
+  bool repeated = 10;
 }
 // Local durations only, each <= 60000000 us. Presence distinguishes unexecuted
 // stages from measured zero. Stages may overlap: never sum as total latency.
@@ -314,6 +318,7 @@ message DesktopVideoCapabilities {
   bool region_updates = 2;
   bool tile_cache = 3;
   uint32 desktop_optimization_contract = 4;
+  bool continuous_frames = 5;
 }
 message RequestRefresh {}
 // Agent issues monotonically increasing nonces on the input channel and retains

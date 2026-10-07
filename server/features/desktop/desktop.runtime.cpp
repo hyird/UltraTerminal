@@ -203,6 +203,7 @@ ruvia::task<bool> DesktopSession::forwardOwned(std::shared_ptr<DesktopEndpoint> 
         browserOptimizationRequest_ = message.desktop_video_capabilities().desktop_optimization_contract();
         // Only the exact request permits the NEXT configuration to activate v2.
         endpoints_[3]->validator_.setOptimizationContract(browserOptimizationRequest_ == 2 ? 2 : 0);
+        endpoints_[3]->validator_.setContinuousFrames(message.desktop_video_capabilities().continuous_frames());
     }
     if (message.has_desktop_pipeline_report()) {
         if (!optimizationActive_ && browserOptimizationRequest_ != 2) {

@@ -37,6 +37,7 @@ class DesktopWorkerChannel {
     asio::awaitable<DesktopSendQueue::Entry> receiveInput();
     void completeInput(DesktopSendQueue::Entry& entry);
     std::uint32_t serverOptimizationContract() const;
+    bool serverContinuousFrames() const;
     void cancel();
     bool cancelled() const;
 

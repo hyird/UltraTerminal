@@ -242,4 +242,5 @@ asio::awaitable<DesktopSendQueue::Entry> DesktopWorkerChannel::receiveInput() {
 }
 void DesktopWorkerChannel::completeInput(DesktopSendQueue::Entry& entry) { state_->input.complete(entry); }
 std::uint32_t DesktopWorkerChannel::serverOptimizationContract() const { return state_->relay.transport.serverOptimizationContract(); }
+bool DesktopWorkerChannel::serverContinuousFrames() const { return state_->relay.transport.serverContinuousFrames(); }
 } // namespace ultraterimal::agent

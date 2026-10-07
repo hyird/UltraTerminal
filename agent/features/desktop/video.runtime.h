@@ -227,6 +227,7 @@ struct DesktopVideoUpdate {
     std::uint64_t generation = 0;
     std::uint64_t frameId = 0;
     std::uint64_t baseFrameId = 0;
+    std::uint64_t refinementFrameId = 0;
     std::uint64_t changedPixels = 0;
     // Local-only QPC tick of the most recent pixel snapshot (not serialized).
     std::uint64_t sourcePresentTicks = 0;
@@ -237,7 +238,7 @@ struct DesktopVideoUpdate {
 // the runtime. stop() interrupts pacing; an in-flight codec operation is joined.
 class DesktopVideoRuntime {
   public:
-    DesktopVideoRuntime(ruvia::execution_handle loop, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract = 0);
+    DesktopVideoRuntime(ruvia::execution_handle loop, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract = 0, bool serverContinuousFrames = false);
     ~DesktopVideoRuntime();
     DesktopVideoRuntime(const DesktopVideoRuntime&) = delete;
     DesktopVideoRuntime& operator=(const DesktopVideoRuntime&) = delete;

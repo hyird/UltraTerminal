@@ -10,6 +10,9 @@ DesktopChannelValidator::DesktopChannelValidator(DesktopChannelBinding binding) 
 void DesktopChannelValidator::setOptimizationContract(std::uint32_t contract) noexcept {
     allowedOptimizationContract_ = contract == 2 ? 2 : 0;
 }
+void DesktopChannelValidator::setContinuousFrames(bool allowed) noexcept {
+    allowedContinuousFrames_ = allowed;
+}
 void DesktopChannelValidator::resetRefinement() noexcept {
     refined_ = false;
     refinementBytes_ = 0;
@@ -61,28 +64,35 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
         }
         generation_ = message.generation();
         frame_ = 0;
+        contentFrame_ = 0;
         timestamp_ = 0;
         width_ = message.video_config().width();
         height_ = message.video_config().height();
         mode_ = Mode::kVideo;
         activeOptimizationContract_ = allowedOptimizationContract_ == 2 && message.video_config().desktop_optimization_contract() == 2 ? 2 : 0;
+        activeContinuousFrames_ = activeOptimizationContract_ == 2 && allowedContinuousFrames_ && message.video_config().continuous_frames();
         refinementBatch_ = 0;
         resetRefinement();
         tiles_ = {};
         return true;
     }
     if (message.has_video_frame()) {
-        if (mode_ != Mode::kVideo || message.generation() != generation_ || message.frame_id() <= frame_ || message.base_frame_id() ||
+        const bool repeated = message.video_frame().repeated();
+        const bool validBase = repeated ? activeContinuousFrames_ && contentFrame_ && message.base_frame_id() == contentFrame_ : !message.base_frame_id();
+        if (mode_ != Mode::kVideo || message.generation() != generation_ || message.frame_id() <= frame_ || !validBase ||
             (frame_ == 0 && !message.video_frame().key_frame()) || (frame_ != 0 && message.video_frame().timestamp_microseconds() <= timestamp_)) {
             return false;
         }
         frame_ = message.frame_id();
         timestamp_ = message.video_frame().timestamp_microseconds();
-        resetRefinement();
+        if (!repeated) {
+            contentFrame_ = frame_;
+            resetRefinement();
+        }
         return true;
     }
     if (message.has_video_refinement()) {
-        if (mode_ != Mode::kVideo || message.generation() != generation_ || !frame_ || message.frame_id() != frame_ || message.base_frame_id() != frame_) {
+        if (mode_ != Mode::kVideo || message.generation() != generation_ || !contentFrame_ || message.frame_id() != contentFrame_ || message.base_frame_id() != contentFrame_) {
             return false;
         }
         return acceptRefinement(message.video_refinement());
@@ -102,6 +112,7 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
             return false;
         }
         frame_ = message.frame_id();
+        contentFrame_ = frame_;
         resetRefinement();
         return true;
     }
@@ -120,8 +131,10 @@ bool DesktopChannelValidator::acceptFrame(const wire::Envelope& message) {
             tiles_ = {};
         }
         mode_ = Mode::kLossless;
+        activeContinuousFrames_ = false;
         generation_ = message.generation();
         frame_ = message.frame_id();
+        contentFrame_ = frame_;
         width_ = full.width();
         height_ = full.height();
         return true;

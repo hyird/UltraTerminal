@@ -26,6 +26,7 @@ asio::awaitable<void> writeDesktopPixels(Update& update, Send send) {
         frame.set_channel_id("video");
         frame.set_generation(update.generation);
         frame.set_frame_id(update.frameId);
+        frame.set_base_frame_id(update.baseFrameId);
         *frame.mutable_video_frame() = std::move(update.frame);
         co_await send(std::move(frame));
     }
@@ -35,8 +36,8 @@ asio::awaitable<void> writeDesktopPixels(Update& update, Send send) {
         wire::Envelope refinement;
         refinement.set_channel_id("video");
         refinement.set_generation(update.generation);
-        refinement.set_frame_id(update.frameId);
-        refinement.set_base_frame_id(update.frameId);
+        refinement.set_frame_id(update.refinementFrameId);
+        refinement.set_base_frame_id(update.refinementFrameId);
         *refinement.mutable_video_refinement() = std::move(*update.refinement);
         co_await send(std::move(refinement));
     }
