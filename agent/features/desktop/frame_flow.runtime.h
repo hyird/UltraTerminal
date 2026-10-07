@@ -79,6 +79,7 @@ class DesktopFrameFlow {
         lastAcknowledgedAt_ = {};
         baseline_.reset();
         deliveryBytesPerSecond_ = 0;
+        videoFrameBytes_ = 0;
         clientFrameLimit_ = kLegacyMaximumInFlightFrames;
         receiverFrameRate_ = kMaximumFramesPerSecond;
         decodeMicroseconds_ = 0;
@@ -125,7 +126,10 @@ class DesktopFrameFlow {
     std::size_t byteWindow() const {
         const auto delivery = deliveryBytesPerSecond_ ? std::min<std::uint64_t>(deliveryBytesPerSecond_, rate_.bitrate / 8) : rate_.bitrate / 8;
         const auto bytes = delivery * static_cast<std::uint64_t>(pathDelay().count() + 50000) / 1000000;
-        return static_cast<std::size_t>(std::clamp<std::uint64_t>(bytes, 16384, 4 * 1024 * 1024));
+        // ACK delay and codec-size variation need a normal two-picture
+        // cushion, just as frameWindow has two slots beyond the path BDP.
+        // Keyframes and repeats cannot inflate it; age/frame guards remain.
+        return static_cast<std::size_t>(std::clamp<std::uint64_t>(std::max(bytes, videoFrameBytes_ * 2), 16384, 4 * 1024 * 1024));
     }
     bool canEncode(Clock::time_point now) const {
         return !background_ && (pending_.empty() || (pending_.size() < frameWindow() && pressureBytes(now) < byteWindow() && now - pending_.front().sent <= pathDelay() + std::chrono::milliseconds(150)));
@@ -227,6 +231,11 @@ class DesktopFrameFlow {
         }
         pending_.push_back({frame, now, bytes, type});
         pendingBytes_ += bytes;
+        const auto normalFrameLimit = static_cast<std::uint64_t>(rate_.bitrate) / (8 * rate_.framesPerSecond) * 2;
+        if (type == FrameType::kVideo && bytes <= normalFrameLimit) {
+            const auto sample = std::min<std::uint64_t>(bytes, 4 * 1024 * 1024);
+            videoFrameBytes_ = videoFrameBytes_ ? (videoFrameBytes_ * 7 + sample) / 8 : sample;
+        }
         lastSent_ = frame;
     }
     bool acknowledge(std::uint64_t generation, std::uint64_t frame, std::uint32_t decodeMicroseconds,
@@ -409,7 +418,7 @@ class DesktopFrameFlow {
     std::uint32_t receiverFrameRate_ = kMaximumFramesPerSecond;
     std::uint64_t generation_ = 0, acknowledged_ = 0, lastSent_ = 0;
     std::uint64_t lastContentFrame_ = 0;
-    std::uint64_t deliveryBytesPerSecond_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
+    std::uint64_t deliveryBytesPerSecond_ = 0, videoFrameBytes_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
     std::optional<std::uint64_t> scenePixels_;
     std::uint64_t regionBytes_ = 0;
     std::deque<Pending> pending_;

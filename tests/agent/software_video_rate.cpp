@@ -144,6 +144,35 @@ void exerciseReliableCadence() {
     require(following.has_value() && !following->keyFrame, "Recovery unnecessarily retained keyframe output");
     recovered.verify(*following);
 }
+void exerciseSceneBurst() {
+    constexpr unsigned width = 320, height = 180, bitrate = 8000000, fps = 30;
+    SoftwareVideoEncoder encoder({width, height, bitrate, fps});
+    Decoder decoder(width, height);
+    std::vector<std::uint8_t> pixels(width * height * 4, 255);
+    std::uint32_t random = 0x165feb32;
+    std::size_t largest = 0;
+    for (unsigned i = 0; i < 80; ++i) {
+        if (i == 60 || i == 68 || i == 76) {
+            for (auto& value : pixels) {
+                random = random * 1664525u + 1013904223u;
+                value = static_cast<std::uint8_t>(random >> 24);
+            }
+        } else if (i == 64 || i == 72) {
+            std::fill(pixels.begin(), pixels.end(), 255);
+        }
+        const auto frame = encoder.encode(pixels, width * 4, static_cast<std::uint64_t>(i) * 33333);
+        require(frame.has_value(), "Abrupt scene change failed to encode");
+        decoder.verify(*frame);
+        if (i >= 60) {
+            largest = std::max(largest, frame->annexB.size());
+        }
+    }
+    // Bound a scene transition around one frame's bitrate budget, allowing
+    // quantizer granularity and headers rather than a second of VBV savings.
+    const auto limit = bitrate / 8 / fps * 3 / 2 + 4096;
+    std::cout << "Scene burst bytes=" << largest << " limit=" << limit << '\n';
+    require(largest <= limit, "Static VBV savings produced a large motion-frame burst");
+}
 } // namespace
 int main() {
     try {
@@ -151,6 +180,7 @@ int main() {
         exercise(18000003);
         exerciseFrameBudget();
         exerciseReliableCadence();
+        exerciseSceneBurst();
         std::cout << "Adaptive non-round bitrate changes preserve a decodable stream\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

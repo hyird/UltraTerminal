@@ -56,6 +56,18 @@ int main() {
     try {
         auto now = DesktopFrameFlow::Clock::time_point{1s};
         DesktopFrameFlow flow;
+        DesktopFrameFlow motionCredit;
+        motionCredit.setQuality(DesktopFrameFlow::Quality::kSmooth);
+        motionCredit.observeFrame(FrameType::kVideo, 1000, 128 * 64, 40ms);
+        motionCredit.observeRoundTrip(10ms, now);
+        motionCredit.sent(1, 1, now, 1000, FrameType::kKeyFrame);
+        require(motionCredit.acknowledge(1, 1, 1000, 0, now + 10ms), "Motion credit baseline ACK failed");
+        motionCredit.sent(1, 2, now + 33ms, 80000, FrameType::kVideo);
+        require(motionCredit.canEncode(now + 34ms), "A normal motion frame exhausted all pipeline credit");
+        motionCredit.sent(1, 3, now + 66ms, 80000, FrameType::kVideo);
+        require(!motionCredit.canEncode(now + 67ms) && motionCredit.pendingBytes() == 160000, "Motion allowance escaped its bounded two-frame cushion");
+        require(!motionCredit.canEncode(now + 230ms), "Motion cushion disabled the oldest-frame guard");
+        require(motionCredit.acknowledge(1, 2, 1000, 0, now + 70ms) && motionCredit.canEncode(now + 70ms), "Motion ACK failed to reopen bounded pipeline credit");
         DesktopFrameFlow continuous;
         continuous.sent(1, 1, now, 1000, FrameType::kKeyFrame);
         require(continuous.acknowledge(1, 1, 350000, 0, now + 10ms), "Cold keyframe ACK failed");

@@ -19,6 +19,11 @@ int codecBitrate(std::uint32_t bitrate, std::uint32_t nominalFps, std::uint32_t 
     // integer kbit/s with x264's supported limits; transport pacing is separate.
     return static_cast<int>(std::clamp<std::uint64_t>(static_cast<std::uint64_t>(bitrate) * nominalFps / captureFps / 1000, 1, 2000000));
 }
+int codecBufferSize(int bitrate, std::uint32_t nominalFps) {
+    // One codec picture of credit prevents an idle desktop from saving a
+    // second of bitrate for the next window movement/closing transition.
+    return std::max(1, (bitrate + static_cast<int>(nominalFps) - 1) / static_cast<int>(nominalFps));
+}
 } // namespace
 struct SoftwareVideoEncoder::State {
     x264_t* encoder = nullptr;
@@ -79,7 +84,8 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
     parameters.rc.i_rc_method = X264_RC_ABR;
     parameters.rc.i_bitrate = codecBitrate(config.bitrate, state_->nominalFps, config.framesPerSecond);
     parameters.rc.i_vbv_max_bitrate = parameters.rc.i_bitrate;
-    parameters.rc.i_vbv_buffer_size = parameters.rc.i_bitrate;
+    parameters.rc.i_vbv_buffer_size = codecBufferSize(parameters.rc.i_bitrate, state_->nominalFps);
+    parameters.rc.f_vbv_buffer_init = 1.0f;
     parameters.rc.i_qp_min = config.sharp ? 10 : 0;
     parameters.rc.i_qp_max = config.sharp ? 18 : 51;
     // Sharp mode may exceed VBV when the quality floor cannot fit the budget;
@@ -126,7 +132,7 @@ void SoftwareVideoEncoder::setRate(std::uint32_t framesPerSecond, std::uint32_t 
         x264_encoder_parameters(state_->encoder, &parameters);
         parameters.rc.i_bitrate = codecBitrate(bitrate, state_->nominalFps, framesPerSecond);
         parameters.rc.i_vbv_max_bitrate = parameters.rc.i_bitrate;
-        parameters.rc.i_vbv_buffer_size = static_cast<int>(bitrate / 1000);
+        parameters.rc.i_vbv_buffer_size = codecBufferSize(parameters.rc.i_bitrate, state_->nominalFps);
         if (x264_encoder_reconfig(state_->encoder, &parameters) < 0) {
             throw std::runtime_error("Cannot update x264 bitrate");
         }

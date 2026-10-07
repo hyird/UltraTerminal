@@ -1614,7 +1614,9 @@ struct VideoWorker {
         if (!encoder || sourceChanged || codecChanged || contractChanged) {
             regionDecision.reset();
             clearComparisonBaseline();
-            encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, rate.sharp, codecs}, capture->device());
+            // V2 restores static detail through lossless PNG. Its live video
+            // must obey VBV instead of a sharp quantizer floor during motion.
+            encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, rate.sharp && !requestedV2, codecs}, capture->device());
             requestedCodecs = std::move(codecs);
             optimizationV2 = requestedV2;
             continuousFrames = requestedContinuous;
@@ -1635,7 +1637,7 @@ struct VideoWorker {
             tiles.clear();
         }
         encoder->setRate(rate.framesPerSecond, rate.bitrate);
-        encoder->setDetail(rate.sharp);
+        encoder->setDetail(rate.sharp && !optimizationV2);
         if ((!fullPixelsValid || (!optimizationV2 && capturedOnGpu)) && !encoder->gpu() && !materialize()) {
             return std::nullopt;
         }
