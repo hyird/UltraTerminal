@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.28)
 cmake_policy(SET CMP0091 NEW)
 project(ultraterimal VERSION 0.1.0 LANGUAGES CXX)
 option(ULTRATERIMAL_BUILD_AGENT "Build the Windows Agent" ${WIN32})
@@ -11,6 +11,8 @@ endif()
 include(CTest)
 option(ULTRATERIMAL_BUILD_SERVER "Build the Ruvia gateway and MariaDB platform" OFF)
 include(FetchContent)
+find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 set(RUVIA_BUILD_CORE ON CACHE BOOL "" FORCE)
 set(RUVIA_BUILD_HTTP ${ULTRATERIMAL_BUILD_SERVER} CACHE BOOL "" FORCE)
 set(RUVIA_BUILD_WEB ${ULTRATERIMAL_BUILD_SERVER} CACHE BOOL "" FORCE)
@@ -23,7 +25,7 @@ set(RUVIA_ENABLE_JWT OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(ruvia
     SYSTEM
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG fb3d10552439f9c9e9c08b3032135a625abce23e)
+    GIT_TAG 09784198adf7daacd45915cd2430c57d7604d22d)
 FetchContent_MakeAvailable(ruvia)
 add_subdirectory(protocol)
 if(ULTRATERIMAL_BUILD_AGENT)

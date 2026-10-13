@@ -34,7 +34,7 @@ struct TlsTransport::State : std::enable_shared_from_this<State> {
     bool writing = false;
     std::uint64_t readWaitGeneration = 0;
 
-    State(ruvia::execution_handle loop, ConnectionConfig settings, std::size_t limit)
+    State(ruvia::event_loop loop, ConnectionConfig settings, std::size_t limit)
         : config(std::move(settings)), maximum(limit), resolver(loop.executor()), stream(loop.executor(), context), connectDeadline(loop.executor()), writeDeadline(loop.executor()), readDeadline(loop.executor()) {
         unsigned port = 0;
         const auto parsed = std::from_chars(config.port.data(), config.port.data() + config.port.size(), port);
@@ -195,7 +195,7 @@ struct TlsTransport::State : std::enable_shared_from_this<State> {
         self->cancel();
     }
 };
-TlsTransport::TlsTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximum) : state_(std::make_shared<State>(loop, config, maximum)) {}
+TlsTransport::TlsTransport(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximum) : state_(std::make_shared<State>(loop, config, maximum)) {}
 TlsTransport::~TlsTransport() { state_->cancel(); }
 asio::awaitable<void> TlsTransport::connect() { return State::connect(state_); }
 asio::awaitable<void> TlsTransport::send(std::string bytes) { return State::send(state_, std::move(bytes)); }

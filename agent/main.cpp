@@ -1,7 +1,6 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/signal_set.hpp>
-#include <asio/use_future.hpp>
 #include <csignal>
 #include <exception>
 #include <iostream>
@@ -9,7 +8,7 @@
 #include <vector>
 
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 
 #include "config/command_line.config.h"
 #include "config/version.config.h"
@@ -69,21 +68,17 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kDesktop: {
             DesktopParent parent(options->windowsSession, options->parentProcess);
             asio::io_context io;
-            ruvia::execution_domain attachment(io);
+            auto attachment = ruvia::attach_event_loop(io);
             auto pipe = NamedPipeTransport::connect(io.get_executor(), options->pipeName, options->parentProcess);
             std::exception_ptr failure;
             std::uint32_t exitCode = 1;
-            asio::co_spawn(attachment.executor(), runDesktopWorker(attachment.handle(), *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
+            asio::co_spawn(attachment.loop().executor(), runDesktopWorker(attachment.loop(), *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
                 failure = error;
                 exitCode = result;
                 pipe->cancel();
-                attachment.request_stop();
+                attachment.stop();
             });
-            io.run();
-            io.restart();
-            auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-            io.run();
-            retired.get();
+            attachment.run();
             if (failure) {
                 std::rethrow_exception(failure);
             }
@@ -95,19 +90,15 @@ int wmain(int argc, wchar_t** argv) {
             std::cin.read(input.data(), static_cast<std::streamsize>(input.size()));
             input.resize(static_cast<std::size_t>(std::cin.gcount()));
             asio::io_context io;
-            ruvia::execution_domain attachment(io);
+            auto attachment = ruvia::attach_event_loop(io);
             ConnectionConfig result;
             std::exception_ptr failure;
-            asio::co_spawn(attachment.executor(), enrollDevice(attachment.handle(), config, std::move(input)), [&](std::exception_ptr error, ConnectionConfig value) {
+            asio::co_spawn(attachment.loop().executor(), enrollDevice(attachment.loop(), config, std::move(input)), [&](std::exception_ptr error, ConnectionConfig value) {
                 failure = error;
                 result = std::move(value);
-                attachment.request_stop();
+                attachment.stop();
             });
-            io.run();
-            io.restart();
-            auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-            io.run();
-            retired.get();
+            attachment.run();
             if (failure) {
                 std::rethrow_exception(failure);
             }
@@ -117,19 +108,15 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kConnectionCheck: {
             const auto config = loadConnectionConfig(options->configPath);
             asio::io_context io;
-            ruvia::execution_domain attachment(io);
+            auto attachment = ruvia::attach_event_loop(io);
             ControlCheck result;
             std::exception_ptr failure;
-            asio::co_spawn(attachment.executor(), checkControlConnection(attachment.handle(), config), [&](std::exception_ptr error, ControlCheck value) {
+            asio::co_spawn(attachment.loop().executor(), checkControlConnection(attachment.loop(), config), [&](std::exception_ptr error, ControlCheck value) {
                 failure = error;
                 result = value;
-                attachment.request_stop();
+                attachment.stop();
             });
-            io.run();
-            io.restart();
-            auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-            io.run();
-            retired.get();
+            attachment.run();
             if (failure) {
                 std::rethrow_exception(failure);
             }
@@ -139,8 +126,8 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kConnect: {
             const auto config = loadConnectionConfig(options->configPath);
             asio::io_context io;
-            ruvia::execution_domain attachment(io);
-            ControlRuntime runtime(attachment.handle(), config, agentExecutablePath());
+            auto attachment = ruvia::attach_event_loop(io);
+            ControlRuntime runtime(attachment.loop(), config, agentExecutablePath());
             asio::signal_set signals(io, SIGINT, SIGTERM);
             signals.async_wait([&](std::error_code error, int) {
                 if (!error) {
@@ -148,16 +135,12 @@ int wmain(int argc, wchar_t** argv) {
                 }
             });
             std::exception_ptr failure;
-            asio::co_spawn(attachment.executor(), runtime.run(), [&](std::exception_ptr error) {
+            asio::co_spawn(attachment.loop().executor(), runtime.run(), [&](std::exception_ptr error) {
                 failure = error;
                 signals.cancel();
-                attachment.request_stop();
+                attachment.stop();
             });
-            io.run();
-            io.restart();
-            auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-            io.run();
-            retired.get();
+            attachment.run();
             if (failure) {
                 std::rethrow_exception(failure);
             }
@@ -184,16 +167,12 @@ int wmain(int argc, wchar_t** argv) {
             dispatchService([](std::stop_token stop, ConsoleSessionEvents& consoleEvents) {
                 const auto config = loadConnectionConfig(serviceConfigPath());
                 asio::io_context io;
-                ruvia::execution_domain attachment(io);
-                ControlRuntime runtime(attachment.handle(), config, agentExecutablePath(), &consoleEvents);
+                auto attachment = ruvia::attach_event_loop(io);
+                ControlRuntime runtime(attachment.loop(), config, agentExecutablePath(), &consoleEvents);
                 std::stop_callback cancellation(stop, [&] { runtime.stop(); });
                 std::exception_ptr failure;
-                asio::co_spawn(attachment.executor(), runtime.run(), [&](std::exception_ptr error) { failure = error; attachment.request_stop(); });
-                io.run();
-                io.restart();
-                auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-                io.run();
-                retired.get();
+                asio::co_spawn(attachment.loop().executor(), runtime.run(), [&](std::exception_ptr error) { failure = error; attachment.stop(); });
+                attachment.run();
                 if (failure) {
                     std::rethrow_exception(failure);
                 }

@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "connection.config.h"
 #include "ultraterimal/protocol/native.protocol.h"
@@ -13,7 +13,7 @@ namespace ultraterimal::agent {
 // Authenticated native device connection; no HTTP or WebSocket dependency.
 class DeviceTransport {
   public:
-    DeviceTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes, wire::NativeConnect::Purpose purpose = wire::NativeConnect::CONTROL);
+    DeviceTransport(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes, wire::NativeConnect::Purpose purpose = wire::NativeConnect::CONTROL);
     ~DeviceTransport();
     DeviceTransport(const DeviceTransport&) = delete;
     DeviceTransport& operator=(const DeviceTransport&) = delete;

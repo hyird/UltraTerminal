@@ -2,7 +2,6 @@
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
-#include <asio/use_future.hpp>
 #include <asio/windows/object_handle.hpp>
 #include <chrono>
 #include <exception>
@@ -11,7 +10,7 @@
 #include <stdexcept>
 
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/pipe.transport.h"
@@ -33,7 +32,7 @@ void reject(F&& action) {
     }
     require(rejected, "Invalid launch accepted");
 }
-asio::awaitable<void> exercise(ruvia::execution_handle loop, std::filesystem::path executable) {
+asio::awaitable<void> exercise(ruvia::event_loop loop, std::filesystem::path executable) {
     DWORD session = 0;
     require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session, "Interactive session required");
     reject([] { agent::DesktopIdentity invalid(0); });
@@ -73,17 +72,13 @@ int wmain(int argc, wchar_t** argv) {
     }
     try {
         asio::io_context io;
-        ruvia::execution_domain attachment(io);
+        auto attachment = ruvia::attach_event_loop(io);
         std::exception_ptr failure;
-        asio::co_spawn(attachment.executor(), exercise(attachment.handle(), argv[1]), [&](std::exception_ptr error) {
+        asio::co_spawn(attachment.loop().executor(), exercise(attachment.loop(), argv[1]), [&](std::exception_ptr error) {
             failure = error;
-            attachment.request_stop();
+            attachment.stop();
         });
-        io.run();
-        io.restart();
-        auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-        io.run();
-        retired.get();
+        attachment.run();
         if (failure) {
             std::rethrow_exception(failure);
         }

@@ -4,21 +4,20 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
-#include <asio/use_future.hpp>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 
 #include <openssl/evp.h>
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 
 #include "features/connection/connection.transport.h"
 #include "platform/windows/credential.transport.h"
 #include "platform/windows/update.transport.h"
 namespace ultraterimal::agent {
 namespace {
-asio::awaitable<void> download(ruvia::execution_handle loop, const std::filesystem::path& root, wire::AgentUpdate update) {
+asio::awaitable<void> download(ruvia::event_loop loop, const std::filesystem::path& root, wire::AgentUpdate update) {
     auto config = loadConnectionConfig(root / "agent.json");
     auto transport = std::make_shared<DeviceTransport>(loop, config, protocol::kMaximumControlBytes, wire::NativeConnect::AGENT_UPDATE);
     asio::steady_timer deadline(loop.executor());
@@ -75,14 +74,10 @@ int runAgentUpdate() {
     WindowsAgentUpdate update;
     try {
         asio::io_context io;
-        ruvia::execution_domain attachment(io);
+        auto attachment = ruvia::attach_event_loop(io);
         std::exception_ptr failure;
-        asio::co_spawn(attachment.executor(), download(attachment.handle(), update.root(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.request_stop(); });
-        io.run();
-        io.restart();
-        auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-        io.run();
-        retired.get();
+        asio::co_spawn(attachment.loop().executor(), download(attachment.loop(), update.root(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.stop(); });
+        attachment.run();
         if (failure) {
             std::rethrow_exception(failure);
         }

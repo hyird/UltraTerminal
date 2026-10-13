@@ -2,7 +2,6 @@
 #include <array>
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
-#include <asio/use_future.hpp>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -24,7 +23,7 @@
 
 #include <psapi.h>
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 
 #include "capture.fixture.h"
 #include "config/version.config.h"
@@ -671,8 +670,8 @@ int main(int argc, char** argv) {
             staticReadyFuture.get();
         }
         asio::io_context io;
-        ruvia::execution_domain attachment(io);
-        ultraterimal::agent::DesktopVideoRuntime video(attachment.handle(), 0, optimization ? 2 : 0, continuous);
+        auto attachment = ruvia::attach_event_loop(io);
+        ultraterimal::agent::DesktopVideoRuntime video(attachment.loop(), 0, optimization ? 2 : 0, continuous);
         std::vector<Clock::time_point> received;
         std::vector<double> sourceAges;
         std::vector<std::uint64_t> presentTicks;
@@ -691,17 +690,13 @@ int main(int argc, char** argv) {
         StageSamples stages;
         stages.continuous = continuous;
         std::exception_ptr failure;
-        asio::co_spawn(attachment.executor(), measure(video, duration, regions, optimization, regionFrames, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured, stages, paintCounter), [&](std::exception_ptr error) {
+        asio::co_spawn(attachment.loop().executor(), measure(video, duration, regions, optimization, regionFrames, received, sourceAges, presentTicks, encodeStartedUs, frequency.QuadPart, sourceWidth, sourceHeight, targetRate, hardwareFrames, gpuFrames, totalEncodeMicroseconds, totalEncodedBytes, calls, noUpdate, cursorOnly, captured, stages, paintCounter), [&](std::exception_ptr error) {
             failure = error;
             video.stop();
-            attachment.request_stop();
+            attachment.stop();
         });
         const auto cpuStarted = cpuTicks();
-        io.run();
-        io.restart();
-        auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-        io.run();
-        retired.get();
+        attachment.run();
         painter.request_stop();
         painter.join();
         const auto cpuMilliseconds = (cpuTicks() - cpuStarted) / 10000.0;

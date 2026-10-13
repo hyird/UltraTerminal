@@ -45,13 +45,6 @@ void verifyPermissions() {
     auto feedback = envelope(2, "input");
     feedback.mutable_quality_feedback()->set_queue_depth(1);
     require(viewer.accept(feedback).has_value());
-    feedback.set_sequence(3);
-    feedback.mutable_quality_feedback()->set_preference(static_cast<wire::QualityFeedback::Preference>(99));
-    require(rejected(viewer.accept(feedback), DesktopMessageError::kMalformed));
-    feedback.set_sequence(2);
-    feedback.mutable_quality_feedback()->set_preference(wire::QualityFeedback::SHARP);
-    DesktopChannelValidator qualityViewer({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, false});
-    require(qualityViewer.accept(feedback).has_value());
     auto timed = envelope(2, "input");
     timed.mutable_quality_feedback()->set_displayed_frame(1);
     auto* timing = timed.mutable_quality_feedback()->mutable_visible_frame_timing();

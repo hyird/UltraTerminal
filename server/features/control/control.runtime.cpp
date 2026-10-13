@@ -6,7 +6,7 @@
 #include <utility>
 
 namespace ultraterimal::server {
-ControlConnection::ControlConnection(ruvia::execution_handle worker) : worker_(worker), queue_(ruvia::make_channel<std::string>(std::move(worker), {.capacity_ = 32})) {}
+ControlConnection::ControlConnection(ruvia::worker_handle worker) : worker_(worker), queue_(ruvia::make_channel<std::string>(std::move(worker), {.capacity_ = 32})) {}
 ruvia::task<std::optional<wire::WindowsLoginResult>> ControlConnection::windowsLogin(wire::WindowsLoginRequest request) {
     if (!ready || !capabilities.windows_login_settings() || loginPending_ || loginRequest_ == std::numeric_limits<std::uint64_t>::max()) {
         co_return std::nullopt;
@@ -23,7 +23,7 @@ ruvia::task<std::optional<wire::WindowsLoginResult>> ControlConnection::windowsL
     if (!enqueue(std::move(envelope))) {
         co_return std::nullopt;
     }
-    auto result = co_await receiver.wait(ruvia::operation_timeout(std::chrono::seconds(5)));
+    auto result = co_await receiver.wait_for(std::chrono::seconds(5));
     if (!result.has_value()) {
         co_return std::nullopt;
     }

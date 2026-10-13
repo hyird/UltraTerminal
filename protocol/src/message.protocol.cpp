@@ -351,7 +351,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kQualityFeedback: {
         const auto& feedback = m.quality_feedback();
-        if (!wire::QualityFeedback_Preference_IsValid(feedback.preference()) || feedback.maximum_pending_video_frames() > 128 ||
+        if (feedback.maximum_pending_video_frames() > 128 ||
             !browserTiming(feedback.browser_timing()) || (feedback.has_browser_timing() && (!feedback.displayed_generation() || !feedback.displayed_frame()))) {
             return invalid();
         }

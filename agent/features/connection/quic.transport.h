@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "connection.config.h"
 #include "ultraterimal/protocol/message.protocol.h"
@@ -13,7 +13,7 @@
 namespace ultraterimal::agent {
 class QuicTransport {
   public:
-    QuicTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes);
+    QuicTransport(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes);
     ~QuicTransport();
     QuicTransport(const QuicTransport&) = delete;
     QuicTransport& operator=(const QuicTransport&) = delete;

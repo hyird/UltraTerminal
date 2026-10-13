@@ -32,7 +32,7 @@ class DesktopFrameFlow {
     // decide the actual cadence below this ceiling.
     static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
-    static constexpr std::uint32_t kTargetVideoBitrate = 24000000;
+    static constexpr std::uint32_t kTargetVideoBitrate = 32000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
     Rate rate() const { return rate_; }
     bool background() const { return background_; }
@@ -310,7 +310,8 @@ class DesktopFrameFlow {
         }
         // RTT overlap alone is not bandwidth saturation: a stream of 1KB cache
         // regions can have several outstanding ACKs on a completely idle link.
-        const auto pathBytes = std::max<std::uint64_t>(16384, static_cast<std::uint64_t>(rate_.bitrate) * pathDelay().count() / 8000000);
+        constexpr std::uint64_t minimumCapacityBytes = 16 * 1024;
+        const auto pathBytes = std::max(minimumCapacityBytes, static_cast<std::uint64_t>(rate_.bitrate) * pathDelay().count() / 8000000);
         const bool byteSaturated = ordinaryFlightBytes >= pathBytes;
         const auto interval = std::chrono::duration_cast<std::chrono::microseconds>(now - lastAcknowledgedAt_);
         const bool capacitySample = ordinaryDelivery && !background_ && !background && decodeMicroseconds <= 25000 && queueDepth <= 2 &&
@@ -336,7 +337,10 @@ class DesktopFrameFlow {
         if (!decodedKeyFrame) {
             decodeMicroseconds_ = decodeMicroseconds_ ? (decodeMicroseconds_ * 7 + decodeMicroseconds) / 8 : decodeMicroseconds;
         }
-        const bool networkPressure = transit > pathDelay() + std::chrono::milliseconds(50);
+        // Sparse updates can be delayed by the receiver or local scheduling
+        // without exhausting link capacity. Credit still bounds those delays;
+        // require the estimator's minimum byte flight before reducing bitrate.
+        const bool networkPressure = ordinaryFlightBytes >= minimumCapacityBytes && transit > pathDelay() + std::chrono::milliseconds(50);
         const bool decoderPressure = queueDepth > 2 || decodeMicroseconds_ > 25000;
         const bool congested = networkPressure || decoderPressure;
         congestionSamples_ = congested ? std::min(3u, congestionSamples_ + 1) : 0;

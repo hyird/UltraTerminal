@@ -76,8 +76,7 @@ class DesktopEndpoint {
 
   private:
     friend class DesktopSession;
-    DesktopEndpoint(ruvia::execution_handle worker, protocol::DesktopChannelBinding binding);
-    ruvia::task<std::unique_ptr<DesktopDelivery>> receiveOwned(ruvia::stop_token stop);
+    DesktopEndpoint(ruvia::worker_handle worker, protocol::DesktopChannelBinding binding);
     void close();
     bool closed_ = false;
     bool waiting_ = false;
@@ -87,7 +86,7 @@ class DesktopEndpoint {
 };
 class DesktopSession {
   public:
-    DesktopSession(ruvia::execution_handle worker, std::shared_ptr<DesktopBudget> global);
+    DesktopSession(ruvia::worker_handle worker, std::shared_ptr<DesktopBudget> global);
     ~DesktopSession();
     DesktopSession(const DesktopSession&) = delete;
     DesktopSession& operator=(const DesktopSession&) = delete;
@@ -106,7 +105,6 @@ class DesktopSession {
     void writeCompleted(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed);
 
   private:
-    ruvia::task<bool> forwardOwned(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop);
     void logDiagnostics(std::string_view event) const;
     void logCadence(std::chrono::steady_clock::time_point now);
     void optimizationBarrier(const wire::Envelope& message);
@@ -129,7 +127,7 @@ class DesktopSession {
     std::uint32_t browserOptimizationRequest_ = 0, agentOptimizationCapability_ = 0;
     bool optimizationActive_ = false;
     DesktopFrameKey cumulativeVideoStages_{};
-    ruvia::execution_handle worker_;
+    ruvia::worker_handle worker_;
     std::shared_ptr<DesktopBudget> global_;
     std::shared_ptr<DesktopBudget> local_ = std::make_shared<DesktopBudget>(32 * 1024 * 1024);
     std::array<std::shared_ptr<DesktopEndpoint>, 4> endpoints_;

@@ -27,10 +27,8 @@
 #include <timeapi.h>
 // clang-format on
 
-#include <asio/use_future.hpp>
-
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 #include <wrl/client.h>
 
 #include "features/desktop/frame_flow.runtime.h"
@@ -65,17 +63,17 @@ std::uint64_t rgbHash(std::span<const std::uint8_t> pixels) {
     return hash;
 }
 std::atomic<unsigned> timerFault{0}, timerBegins{0}, timerEnds{0}, liveTimers{0};
-// At 24Mbps, 64KiB supplies >17ms of ENTER allowance. Keep the real 12ms
+// At 32Mbps, 96KiB supplies >19ms of ENTER allowance. Keep the real 12ms
 // optional-work window plus PNG sending and a 2ms independent margin even
 // when a cold WIC observation consumes most of that window.
-constexpr std::size_t kKnownVideoBytes = 65536, kTinyKnownVideoBytes = 12288;
+constexpr std::size_t kKnownVideoBytes = 98304, kTinyKnownVideoBytes = 12288;
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
 // Known-cost mechanism cases prepare their real software surrogate with the
 // capture resources, on the same worker. The first VIDEO still encodes the
 // actual source as a key frame; codec construction is not a GPU timing model.
 thread_local std::unique_ptr<ultraterimal::agent::SoftwareVideoEncoder> preparedKnownCodec;
 #endif
-static_assert(kTinyKnownVideoBytes * 8 * 30 * 11 / 10 < 24000000);
+static_assert(kTinyKnownVideoBytes * 8 * 30 * 11 / 10 < ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate);
 struct TinyCodecSample {
     std::uint64_t call = 0, sleepUs = 0, codecUs = 0, wallUs = 0, bytes = 0;
     std::uint32_t fps = 0, bitrate = 0;
@@ -323,7 +321,7 @@ void verifyPixels(const ultraterimal::wire::VideoRefinement& detail, unsigned so
 #error Job-return fixture requires the GPU Runtime fixture boundary
 #endif
 struct JobReturnGate {
-    ruvia::execution_handle loop;
+    ruvia::event_loop loop;
     std::function<void()> control;
     std::mutex mutex;
     std::condition_variable condition;
@@ -480,7 +478,7 @@ struct DesktopCapture::State {
 DesktopCapture::DesktopCapture(std::uint32_t) : state_(std::make_unique<State>()) {
 #ifdef ULTRATERIMAL_GPU_RUNTIME_FIXTURE
     if (fixture::knownTinyCodec || fixture::knownCheapStatic) {
-        fixture::preparedKnownCodec = std::make_unique<SoftwareVideoEncoder>(VideoEncoderConfig{1024, 512, 24000000, 30, false, {wire::AVC}});
+        fixture::preparedKnownCodec = std::make_unique<SoftwareVideoEncoder>(VideoEncoderConfig{1024, 512, ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, 30, false, {wire::AVC}});
     }
 #endif
 }
@@ -1030,7 +1028,7 @@ asio::awaitable<void> v2(agent::DesktopVideoRuntime& video, bool expectActive) {
     }
     configured = std::move(gpuSource);
     require(fixture::knownCheapStatic && configured.frame.data().size() >= fixture::kKnownVideoBytes &&
-                configured.frame.target_frames_per_second() == 30 && configured.frame.target_bitrate() == 24000000,
+                configured.frame.target_frames_per_second() == 30 && configured.frame.target_bitrate() == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate,
             "Known-cheap static fixture lost its synthetic VIDEO/QoS premise");
     const auto initialCost = video.diagnostics().optional;
     require(initialCost.roiSource && !initialCost.cpuSource && initialCost.probe && initialCost.unknownPrediction,
@@ -1281,7 +1279,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         }
         // Cheap regions raise the cadence to the adaptive ceiling; measure the
         // tiny budget only after that rate is steady.
-        ready = fps == agent::DesktopFrameFlow::kMaximumFramesPerSecond && bitrate == 24000000;
+        ready = fps == agent::DesktopFrameFlow::kMaximumFramesPerSecond && bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate;
         if (!ready) {
             ++fixture::version;
         }
@@ -1300,7 +1298,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         std::cerr << "tiny_codec_numeric call=" << sample.call << " sleepUs=" << sample.sleepUs << " codecUs=" << sample.codecUs << " wallUs=" << sample.wallUs
                   << " bytes=" << sample.bytes << " fps=" << sample.fps << " bitrate=" << sample.bitrate << " refresh=" << sample.refresh << '\n';
     }
-    require(ready, "Existing rate controller did not establish fixed sharp 24Mbps at the steady FPS ceiling");
+    require(ready, "Existing rate controller did not establish fixed sharp target bitrate at the steady FPS ceiling");
     fixture::tinyFreshPalette = true; // Two new cheap WIC colors plus known reliable slots.
     unsigned regions = 0, definitions = 0, references = 0;
     std::vector<Clock::time_point> regionTimes;
@@ -1328,13 +1326,13 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         if (!update->region) {
             continue;
         }
-        if (update->region->target_bitrate() != 24000000 || update->region->target_frames_per_second() != agent::DesktopFrameFlow::kMaximumFramesPerSecond) {
+        if (update->region->target_bitrate() != ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate || update->region->target_frames_per_second() != agent::DesktopFrameFlow::kMaximumFramesPerSecond) {
             if (const auto snapshot = video.diagnostics().lastAdmission) {
                 admissionNumeric(*snapshot);
             }
             std::cerr << "tiny rate bitrate=" << update->region->target_bitrate() << " fps=" << update->region->target_frames_per_second() << '\n';
         }
-        require(update->region->target_bitrate() == 24000000 && update->region->target_frames_per_second() == agent::DesktopFrameFlow::kMaximumFramesPerSecond, "Tiny fixture changed fixed sharp 24Mbps steady-ceiling conditions");
+        require(update->region->target_bitrate() == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && update->region->target_frames_per_second() == agent::DesktopFrameFlow::kMaximumFramesPerSecond, "Tiny fixture changed fixed sharp target bitrate steady-ceiling conditions");
         require(update->region->ByteSizeLong() + 512 <= 8333, "Tiny region exceeded its independent byte budget");
         require(update->region->patches_size() == 1, "Tiny CPU update did not remain one patch");
         const auto& patch = update->region->patches(0);
@@ -1799,10 +1797,10 @@ void run(unsigned gate, bool legacyMode, bool pendingMode = false, bool reliable
     fixture::sequence = 1;
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, gate);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, gate);
     std::exception_ptr failure;
-    asio::co_spawn(attachment.executor(),
+    asio::co_spawn(attachment.loop().executor(),
 #ifdef ULTRATERIMAL_PNG_COST_FIXTURE
                    costMode ? costFailure(video, costMode) :
 #endif
@@ -1820,12 +1818,8 @@ void run(unsigned gate, bool legacyMode, bool pendingMode = false, bool reliable
                                                  : legacyMode       ? legacy(video)
                                                                     : v2(video, gate == 2),
 #endif
-                   [&](std::exception_ptr error) { failure = error; video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+                   [&](std::exception_ptr error) { failure = error; video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         std::cerr << "runtime_case_failure gate=" << gate << " ordering=" << orderingMode << " fault=" << fault << " tiny=" << tinyMode << " cost=" << costMode << '\n';
         readbackDiagnostic(video.diagnostics());
@@ -1958,8 +1952,8 @@ void initialSnapshotCase() {
     fixture::boundedOrdering = true;
     fixture::zeroInitialPresent = true;
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure;
     auto verify = [&]() -> asio::awaitable<void> {
         wire::DesktopVideoCapabilities caps;
@@ -1979,12 +1973,8 @@ void initialSnapshotCase() {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         std::rethrow_exception(failure);
     }
@@ -2008,8 +1998,8 @@ void fusedComparisonCase(unsigned fault) {
     fixture::sequence = 1;
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false, 2});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure;
     auto verify = [&]() -> asio::awaitable<void> {
         wire::DesktopVideoCapabilities caps;
@@ -2185,12 +2175,8 @@ void fusedComparisonCase(unsigned fault) {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         const auto d = video.diagnostics();
         readbackDiagnostic(d);
@@ -2216,8 +2202,8 @@ void fusedMoveAndBackgroundCase(bool rejectRegion) {
     }
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false, 2});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure, producerFailure;
     std::optional<agent::DesktopVideoDiagnostics> pngDiagnostic;
     bool producerFinished = false;
@@ -2305,7 +2291,7 @@ void fusedMoveAndBackgroundCase(bool rejectRegion) {
             }
             throw std::runtime_error("Private primary did not reach baseline gate");
         };
-        asio::co_spawn(attachment.executor(), produce(), [&](std::exception_ptr error) { producerFailure = error; producerFinished = true; });
+        asio::co_spawn(attachment.loop().executor(), produce(), [&](std::exception_ptr error) { producerFailure = error; producerFinished = true; });
         asio::steady_timer timer(io);
         const auto until = Clock::now() + std::chrono::seconds(5);
         while (!fixture::privateVideoGate.entered && !producerFinished && Clock::now() < until) {
@@ -2319,7 +2305,6 @@ void fusedMoveAndBackgroundCase(bool rejectRegion) {
         visibility.set_displayed_generation(accepted.generation);
         visibility.set_displayed_frame(accepted.frameId);
         visibility.set_background(true);
-        visibility.set_preference(wire::QualityFeedback::SHARP);
         video.feedback(visibility);
         fixture::privateVideoGate.open();
         while (!producerFinished && Clock::now() < until) {
@@ -2345,12 +2330,8 @@ void fusedMoveAndBackgroundCase(bool rejectRegion) {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; fixture::privateVideoGate.open(); video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; fixture::privateVideoGate.open(); video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         const auto d = video.diagnostics();
         readbackDiagnostic(d);
@@ -2372,8 +2353,8 @@ void fusedMoveCoverageCase(unsigned mode) {
     fixture::sequence = 1;
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false, 2});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure;
     auto verify = [&]() -> asio::awaitable<void> {
         wire::DesktopVideoCapabilities caps;
@@ -2392,7 +2373,6 @@ void fusedMoveCoverageCase(unsigned mode) {
             wire::QualityFeedback feedback;
             feedback.set_displayed_generation(first.generation);
             feedback.set_displayed_frame(first.frameId);
-            feedback.set_preference(wire::QualityFeedback::SHARP);
             feedback.set_maximum_pending_video_frames(1);
             video.feedback(feedback);
             auto held = co_await baseline(video, true);
@@ -2440,12 +2420,8 @@ void fusedMoveCoverageCase(unsigned mode) {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         readbackDiagnostic(video.diagnostics());
         std::rethrow_exception(failure);
@@ -2463,8 +2439,8 @@ void auxiliaryRevisionCase(unsigned reason) {
     }
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false, 2});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure, producerFailure;
     bool produced = false;
     auto verify = [&]() -> asio::awaitable<void> {
@@ -2501,7 +2477,6 @@ void auxiliaryRevisionCase(unsigned reason) {
         wire::QualityFeedback feedback;
         feedback.set_displayed_generation(primary.generation);
         feedback.set_displayed_frame(primary.frameId);
-        feedback.set_preference(wire::QualityFeedback::SHARP);
         feedback.set_video_refinement(false);
         video.feedback(feedback);
         feedback.set_video_refinement(true);
@@ -2533,7 +2508,7 @@ void auxiliaryRevisionCase(unsigned reason) {
             }
             throw std::runtime_error("Auxiliary Runtime did not reach existing private gate");
         };
-        asio::co_spawn(attachment.executor(), produce(), [&](std::exception_ptr error) { producerFailure = error; produced = true; });
+        asio::co_spawn(attachment.loop().executor(), produce(), [&](std::exception_ptr error) { producerFailure = error; produced = true; });
         asio::steady_timer control(io);
         const auto until = Clock::now() + std::chrono::seconds(5);
         while (!fixture::privateVideoGate.entered && !produced && Clock::now() < until) {
@@ -2581,12 +2556,8 @@ void auxiliaryRevisionCase(unsigned reason) {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; fixture::privateVideoGate.open(); video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; fixture::privateVideoGate.open(); video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         readbackDiagnostic(video.diagnostics());
         std::rethrow_exception(failure);
@@ -2600,8 +2571,8 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
     fixture::sequence = 1;
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false, 2});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    const auto loop = attachment.handle();
+    auto attachment = ruvia::attach_event_loop(io);
+    const auto loop = attachment.loop();
     agent::DesktopVideoRuntime video(loop, 0, 2);
     auto gate = std::make_shared<fixture::JobReturnGate>();
     gate->loop = loop;
@@ -2621,8 +2592,8 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
         fixture::displayed(video, primary, true);
         primary = co_await baseline(video, true); // Explicit refresh under the fixed sharp policy.
         fixture::displayed(video, primary, true);
-        require(primary.frame.target_frames_per_second() == 30 && primary.frame.target_bitrate() == 24000000 && primary.frame.data().size() >= fixture::kTinyKnownVideoBytes,
-                "Final auxiliary fixture changed the 12kiB/24Mbps/30 actual VIDEO premise");
+        require(primary.frame.target_frames_per_second() == 30 && primary.frame.target_bitrate() == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && primary.frame.data().size() >= fixture::kTinyKnownVideoBytes,
+                "Final auxiliary fixture changed the 12kiB/target bitrate/30 actual VIDEO premise");
         ++fixture::version; // Genuine equal-RGB GPU snapshot, no full-CPU bypass.
         auto nextBatch = [&]() -> asio::awaitable<agent::DesktopVideoUpdate> {
             const auto until = Clock::now() + std::chrono::seconds(5);
@@ -2645,7 +2616,6 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
         wire::QualityFeedback feedback;
         feedback.set_displayed_generation(primary.generation);
         feedback.set_displayed_frame(primary.frameId);
-        feedback.set_preference(wire::QualityFeedback::SHARP);
         feedback.set_video_refinement(false);
         video.feedback(feedback);
         feedback.set_video_refinement(true);
@@ -2672,19 +2642,16 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
                         gate->prepared.refinementTiles == before.refinementTiles + gate->patches && gate->patches && gate->pngBytes && gate->association &&
                         gate->association->batch.generation == acceptedGeneration && gate->association->batch.frame == acceptedFrame &&
                         gate->association->admission.composedBase == acceptedFrame && gate->association->admission.sourceSerial == fixture::version &&
-                        gate->association->admission.framesPerSecond == 30 && gate->association->admission.bitrate == 24000000,
+                        gate->association->admission.framesPerSecond == 30 && gate->association->admission.bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate,
                     "Final PNG gate did not separate worker-prepared product from owner publication");
             require(gate->prepared.videoEncodeCalls == before.videoEncodeCalls && fixture::baselineCopies == copies && fixture::baselineClears == clears,
                     "Preparing auxiliary PNG modified accepted PRIMARY/source baseline");
             if (reason == 1) {
-                feedback.set_video_refinement(false); // Revision only, retaining accepted PRIMARY and SHARP.
+                feedback.set_video_refinement(false); // Revision only, retaining accepted PRIMARY.
                 video.feedback(feedback);
             } else if (reason == 2) {
                 caps.set_region_updates(false); // Permission negative control requires later PRIMARY refresh.
                 video.capabilities(caps);
-            } else if (reason >= 3) {
-                feedback.set_preference(reason == 3 ? wire::QualityFeedback::SMOOTH : wire::QualityFeedback::BALANCED);
-                video.feedback(feedback); // Legacy preferences must not invalidate a genuine prepared PNG.
             }
             const auto controlled = video.diagnostics();
             const bool controlPreservedOwnerState = controlled.ownerRevision == before.ownerRevision + (reason == 1 || reason == 2 ? 1u : 0u) &&
@@ -2719,10 +2686,10 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
                     after.videoEncodeCalls == before.videoEncodeCalls && after.publishedVideoFrames == before.publishedVideoFrames &&
                     after.rejectedPrivateVideoFrames == before.rejectedPrivateVideoFrames && fixture::baselineCopies == copies && fixture::baselineClears == clears && fixture::fullReads == 0,
                 "Final auxiliary completion lost prepared count or reset/encoded accepted PRIMARY");
-        if (reason == 0 || reason >= 3) {
+        if (reason == 0) {
             require(completed && completed->refinement && completed->refinementAdmission == gate->association && after.latestPublishedRefinement == gate->association &&
                         after.rejectedPrivateJobs == before.rejectedPrivateJobs && after.ownerRevision == before.ownerRevision,
-                    "No-toggle/legacy-preference final PNG positive control was not genuinely published");
+                    "No-toggle final PNG positive control was not genuinely published");
             fixture::verifyPixels(*completed->refinement, fixture::version);
             fixture::displayed(video, *completed, true);
             video.refinementAck(fixture::ack(*completed));
@@ -2749,7 +2716,7 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
             const auto proof = video.diagnostics();
             require(proof.comparison.unchanged == after.comparison.unchanged + 1 && proof.comparison.lastBaselineFrame == primary.frameId &&
                         proof.lastReadback && proof.lastReadback->comparisonBaseline && proof.lastReadback->comparisonBaseline->composedBase == primary.frameId &&
-                        proof.lastReadback->admission.bitrate == 24000000 && proof.lastReadback->admission.framesPerSecond == 30 &&
+                        proof.lastReadback->admission.bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && proof.lastReadback->admission.framesPerSecond == 30 &&
                         fixture::baselineCopies == copies && fixture::baselineClears == clears && proof.videoEncodeCalls == before.videoEncodeCalls,
                     "Final PNG boundary downgraded the fixed sharp rate or lost the accepted source-key baseline for subsequent genuine proof");
         } else {
@@ -2762,18 +2729,14 @@ void finalAuxiliaryOwnerCase(unsigned reason) {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) {
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) {
         failure = error;
         fixture::releaseJobReturn();
         gate->open();
         video.stop();
-        attachment.request_stop();
+        attachment.stop();
     });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    attachment.run();
     stopping.reset();
     gate->control = {}; // No callback retains references beyond joined runtime work.
     if (failure) {
@@ -2791,8 +2754,8 @@ void ordinaryLateExpiryCase() {
     fixture::sequence = 1;
     fixture::validator = std::make_unique<protocol::DesktopChannelValidator>(protocol::DesktopChannelBinding{"fixture", "video", wire::DESKTOP_VIDEO, protocol::ChannelSource::kAgent, false, 2});
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure;
     auto verify = [&]() -> asio::awaitable<void> {
         wire::DesktopVideoCapabilities caps;
@@ -2840,12 +2803,8 @@ void ordinaryLateExpiryCase() {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         readbackDiagnostic(video.diagnostics());
         std::rethrow_exception(failure);
@@ -2854,8 +2813,8 @@ void ordinaryLateExpiryCase() {
 void privateVideoCase() {
     fixture::reset(false);
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime video(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime video(attachment.loop(), 0, 2);
     std::exception_ptr failure, producerFailure;
     std::optional<agent::DesktopVideoUpdate> published;
     bool producerFinished = false;
@@ -2865,7 +2824,7 @@ void privateVideoCase() {
         caps.add_codecs(wire::AVC);
         caps.set_desktop_optimization_contract(2);
         video.capabilities(caps);
-        asio::co_spawn(attachment.executor(), baseline(video), [&](std::exception_ptr error, agent::DesktopVideoUpdate update) {
+        asio::co_spawn(attachment.loop().executor(), baseline(video), [&](std::exception_ptr error, agent::DesktopVideoUpdate update) {
             producerFailure = error;
             published = std::move(update);
             producerFinished = true;
@@ -2895,12 +2854,8 @@ void privateVideoCase() {
         video.stop();
         co_await video.next();
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; fixture::privateVideoGate.open(); video.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; fixture::privateVideoGate.open(); video.stop(); attachment.stop(); });
+    attachment.run();
     if (failure) {
         std::rethrow_exception(failure);
     }
@@ -2912,8 +2867,8 @@ void timerLifecycleCases() {
     fixture::require(fixture::liveTimers == 0, "Prior Runtime leaked a timer request");
     fixture::reset(false);
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
-    agent::DesktopVideoRuntime first(attachment.handle(), 0, 2), second(attachment.handle(), 0, 2);
+    auto attachment = ruvia::attach_event_loop(io);
+    agent::DesktopVideoRuntime first(attachment.loop(), 0, 2), second(attachment.loop(), 0, 2);
     std::exception_ptr failure;
     const auto begins = fixture::timerBegins.load();
     auto verify = [&]() -> asio::awaitable<void> {
@@ -2947,7 +2902,7 @@ void timerLifecycleCases() {
         // Failures are non-fatal and do not issue a per-frame begin retry.
         for (unsigned fault = 1; fault <= 2; ++fault) {
             fixture::timerFault = fault;
-            agent::DesktopVideoRuntime failed(attachment.handle(), 0, 2);
+            agent::DesktopVideoRuntime failed(attachment.loop(), 0, 2);
             failed.capabilities(caps);
             auto frame = co_await baseline(failed);
             fixture::require(!frame.frame.data().empty() && failed.diagnostics().timerResolution.requested && !failed.diagnostics().timerResolution.active,
@@ -2988,12 +2943,8 @@ void timerLifecycleCases() {
         }
         fixture::timerFault = 0;
     };
-    asio::co_spawn(attachment.executor(), verify(), [&](std::exception_ptr error) { failure = error; first.stop(); second.stop(); attachment.request_stop(); });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    asio::co_spawn(attachment.loop().executor(), verify(), [&](std::exception_ptr error) { failure = error; first.stop(); second.stop(); attachment.stop(); });
+    attachment.run();
     fixture::timerFault = 0;
     if (failure) {
         std::rethrow_exception(failure);
@@ -3116,7 +3067,7 @@ int main(int argc, char** argv) {
     try {
         // Dedicated executable only, never a substitute for the full suite.
         require(argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--aux-owner-only"), "Job-return runner only owns the final auxiliary group");
-        for (unsigned reason = 0; reason < 5; ++reason) {
+        for (unsigned reason = 0; reason < 3; ++reason) {
             finalAuxiliaryOwnerCase(reason);
         }
         require(fixture::liveTimers == 0 && fixture::timerBegins == fixture::timerEnds, "Final auxiliary suite leaked Runtime timer references");

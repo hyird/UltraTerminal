@@ -6,10 +6,10 @@
 #include "middleware/authentication.h"
 
 namespace ultraterimal::server {
-class DesktopController final : public ruvia::controller<DesktopController> {
+class DesktopController final {
   public:
     RUVIA_CONTROLLER_GROUP("/api/desktop")
-    RUVIA_ROUTES_BEGIN
+    RUVIA_ROUTES_BEGIN(DesktopController)
     RUVIA_GET_WS_OPTIONS("/control", control, socketOptions(), BrowserOrigin, UserAuthentication);
     RUVIA_GET_WS_OPTIONS("/video", video, socketOptions(), BrowserOrigin, UserAuthentication);
     RUVIA_ROUTES_END
@@ -19,7 +19,7 @@ class DesktopController final : public ruvia::controller<DesktopController> {
         // The video channel can be idle independently of the input probes.
         return {.lifecycle_ = {.heartbeat_ = {.ping_interval_ = std::chrono::seconds(15), .pong_timeout_ = std::chrono::seconds(15)}}};
     }
-    ruvia::task<void> control(ruvia::context& context) const;
-    ruvia::task<void> video(ruvia::context& context) const;
+    ruvia::task<void> control(ruvia::context& context);
+    ruvia::task<void> video(ruvia::context& context);
 };
 } // namespace ultraterimal::server

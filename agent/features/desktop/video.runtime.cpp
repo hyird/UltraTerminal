@@ -1821,7 +1821,7 @@ struct VideoWorker {
 };
 } // namespace
 struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
-    ruvia::execution_handle loop;
+    ruvia::event_loop loop;
     ruvia::blocking_pool pool{{.thread_count_ = 1, .queue_capacity_ = 1}};
     std::shared_ptr<VideoWorker> worker = std::make_shared<VideoWorker>();
     WindowsDeadlineTimer pace;
@@ -1875,7 +1875,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         diagnostics.rejectedPrivateJobs = rejectedPrivateJobs;
         diagnostics.rejectedPrivateVideoFrames = rejectedPrivateVideoFrames;
     }
-    State(ruvia::execution_handle owner, std::uint32_t index, std::uint32_t serverContract, bool continuous) : loop(std::move(owner)), pace(loop.executor()), releaseWait(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
+    State(ruvia::event_loop owner, std::uint32_t index, std::uint32_t serverContract, bool continuous) : loop(std::move(owner)), pace(loop.executor()), releaseWait(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
         if (display >= 64) {
             throw std::invalid_argument("Desktop display index exceeds limit");
         }
@@ -2000,7 +2000,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
-        auto operation = ruvia::run_blocking(self->pool, self->loop, [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, allowRefinement, capabilities = self->capabilities, requestedV2, requestedContinuous, detailBudget, regionByteBudget, acknowledgement = std::exchange(self->refinementAcknowledgement, std::nullopt), revision, initialStages, queuedAt, rejectedPublication = std::exchange(self->rejectedPublication, std::nullopt)]() mutable {
+        auto operation = ruvia::run_blocking(self->pool, self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, allowRefinement, capabilities = self->capabilities, requestedV2, requestedContinuous, detailBudget, regionByteBudget, acknowledgement = std::exchange(self->refinementAcknowledgement, std::nullopt), revision, initialStages, queuedAt, rejectedPublication = std::exchange(self->rejectedPublication, std::nullopt)]() mutable {
             const auto computeStarted = VideoClock::now();
             initialStages.workerQueue = DesktopStageDurations::microseconds(queuedAt, computeStarted);
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
@@ -2026,7 +2026,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
 #endif
             return completed;
         });
-        auto [result, retryAt, geometryChanged, diagnostics, baselineRequired, activeV2, retirementSerial] = (co_await ruvia::as_awaitable(std::move(operation))).value();
+        auto [result, retryAt, geometryChanged, diagnostics, baselineRequired, activeV2, retirementSerial] = (co_await ruvia::as_awaitable(std::move(operation)));
         if (retirementSerial != self->retirementSerial) {
             self->retirementSerial = retirementSerial;
             self->flow.retireRefinement(VideoClock::now()); // Retire validity, NEVER unacked credit.
@@ -2145,7 +2145,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             ~Pending() { value = false; }
         } guard{self->pending};
         self->pending = true;
-        auto operation = ruvia::run_blocking(self->pool, self->loop, [owned = self->worker, width, height] {
+        auto operation = ruvia::run_blocking(self->pool, self->loop.handle(), [owned = self->worker, width, height] {
             try {
                 if (!owned->capture || !owned->capture->resize(width, height)) {
                     return false;
@@ -2161,7 +2161,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                 return false;
             }
         });
-        const bool applied = (co_await ruvia::as_awaitable(std::move(operation))).value();
+        const bool applied = (co_await ruvia::as_awaitable(std::move(operation)));
         if (applied) {
             self->nextFrameAt = {};
             self->baselineRequired = true;
@@ -2169,7 +2169,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         co_return applied;
     }
 };
-DesktopVideoRuntime::DesktopVideoRuntime(ruvia::execution_handle loop, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract, bool serverContinuousFrames) : state_(std::make_shared<State>(std::move(loop), displayIndex, serverOptimizationContract, serverContinuousFrames)) {}
+DesktopVideoRuntime::DesktopVideoRuntime(ruvia::event_loop loop, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract, bool serverContinuousFrames) : state_(std::make_shared<State>(std::move(loop), displayIndex, serverOptimizationContract, serverContinuousFrames)) {}
 DesktopVideoRuntime::~DesktopVideoRuntime() { stop(); }
 asio::awaitable<std::optional<DesktopVideoUpdate>> DesktopVideoRuntime::next(bool refresh) { return State::nextOwned(state_, refresh); }
 asio::awaitable<bool> DesktopVideoRuntime::resize(std::uint32_t width, std::uint32_t height) { return State::resizeOwned(state_, width, height); }
@@ -2279,7 +2279,5 @@ void DesktopVideoRuntime::feedback(const wire::QualityFeedback& feedback) {
     if (!hadCredit && state_->flow.canEncode(std::chrono::steady_clock::now())) {
         state_->pace.cancel();
     }
-    // Agent 1.0.36 ignores the legacy wire preference: the original sharp
-    // policy is fixed. ACK, receiver pressure and refinement opt-in still apply.
 }
 } // namespace ultraterimal::agent

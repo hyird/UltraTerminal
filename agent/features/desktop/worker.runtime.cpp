@@ -29,7 +29,7 @@ namespace ultraterimal::agent {
 namespace {
 class DesktopWorker {
   public:
-    DesktopWorker(ruvia::execution_handle loop, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
+    DesktopWorker(ruvia::event_loop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
         : pipe_(pipe),
           probeTimer_(loop.executor()),
           video_(std::move(loop), start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract(), start.desktop_start().continuous_frames()),
@@ -437,7 +437,7 @@ class DesktopWorker {
     bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false;
 };
 } // namespace
-asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::execution_handle loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
+asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::event_loop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
     asio::steady_timer deadline(loop.executor());
     deadline.expires_after(std::chrono::seconds(10));
     deadline.async_wait([&pipe](std::error_code error) { if (!error) { pipe.cancel(); } });

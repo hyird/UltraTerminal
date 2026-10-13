@@ -24,7 +24,11 @@ function png() {
   return bytes;
 }
 function harness(
-  options: { fastBaselineTimeout?: boolean; manualPerformance?: boolean } = {},
+  options: {
+    fastBaselineTimeout?: boolean;
+    manualPerformance?: boolean;
+    pixelRatio?: number;
+  } = {},
 ) {
   const globals = new Map<string, PropertyDescriptor | undefined>();
   const replace = (name: string, value: unknown) => {
@@ -115,11 +119,13 @@ function harness(
     clearRect() {},
     putImageData() {},
   };
+  const viewport = { clientWidth: 800, clientHeight: 600 };
+  const stage = { parentElement: viewport, style: { width: "", height: "" } };
   const makeCanvas = () => ({
     width: 256,
     height: 128,
     dataset: {} as Record<string, string>,
-    parentElement: null,
+    parentElement: stage,
     getContext: () => context,
     closest: () => null,
     style: { removeProperty() {}, setProperty() {} },
@@ -174,7 +180,7 @@ function harness(
   replace("location", { href: "https://desktop.test/" });
   replace("document", documentMock);
   replace("window", {
-    devicePixelRatio: 1,
+    devicePixelRatio: options.pixelRatio ?? 1,
     matchMedia: () => ({ addEventListener() {} }),
   });
   replace("requestAnimationFrame", () => 1);
@@ -303,6 +309,9 @@ function harness(
   };
   return {
     session,
+    stage,
+    viewport,
+    overlay,
     control,
     video,
     ackResources,
@@ -347,6 +356,29 @@ function harness(
     },
   };
 }
+
+test("DesktopSession fit preserves aspect ratio in both viewport orientations and native uses physical pixels", async () => {
+  const h = harness({ pixelRatio: 2 });
+  try {
+    await h.ready();
+    h.session.setScaleMode("fit");
+    expect(h.stage.style).toEqual({ width: "800px", height: "400px" });
+    h.viewport.clientWidth = 300;
+    h.viewport.clientHeight = 900;
+    h.session.setScaleMode("fit");
+    expect(h.stage.style).toEqual({ width: "300px", height: "150px" });
+    h.overlay.width = 1080;
+    h.overlay.height = 1920;
+    h.viewport.clientWidth = 800;
+    h.viewport.clientHeight = 600;
+    h.session.setScaleMode("fit");
+    expect(h.stage.style).toEqual({ width: "337.5px", height: "600px" });
+    h.session.setScaleMode("native");
+    expect(h.stage.style).toEqual({ width: "540px", height: "960px" });
+  } finally {
+    await h.dispose();
+  }
+});
 
 test("DesktopSession decoded repeats preserve sharp content and its outstanding refinement", async () => {
   const h = harness();
@@ -825,14 +857,12 @@ async function fillDecodeSlots(h: ReturnType<typeof harness>) {
   expect(decoder.chunks).toHaveLength(5);
 }
 
-test("DesktopSession always sends SHARP while sustained decode pressure preserves bounded admission and timing", async () => {
+test("DesktopSession sustained decode pressure preserves bounded admission and timing", async () => {
   const h = harness({ manualPerformance: true });
   try {
     await h.activate();
     const firstFeedback = h.control.sent.find((m) => m.qualityFeedback);
-    expect(firstFeedback?.qualityFeedback?.preference).toBe(
-      wire.QualityFeedback.Preference.SHARP,
-    );
+    expect(firstFeedback?.qualityFeedback).toBeDefined();
     await fillDecodeSlots(h);
     for (let cycle = 0; cycle < 4; cycle++) {
       h.advanceClock(200);
@@ -865,11 +895,6 @@ test("DesktopSession always sends SHARP while sustained decode pressure preserve
       .filter((m) => m.qualityFeedback)
       .map((m) => m.qualityFeedback);
     expect(feedback.length).toBeGreaterThan(4);
-    expect(
-      feedback.every(
-        (m) => m?.preference === wire.QualityFeedback.Preference.SHARP,
-      ),
-    ).toBe(true);
     expect(feedback.some((m) => (m?.queueDepth ?? 0) >= 4)).toBe(true);
     expect(feedback.some((m) => (m?.decodeMicroseconds ?? 0) > 50000)).toBe(
       true,

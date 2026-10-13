@@ -19,10 +19,10 @@ struct DesktopWorkerChannel::State {
     DesktopRelay::State& relay;
     DesktopSendQueue input;
     bool cancelled = false;
-    State(DesktopRelay::State& owner, ruvia::execution_handle worker) : relay(owner), input(std::move(worker), 64, 2 * 1024 * 1024) {}
+    State(DesktopRelay::State& owner, ruvia::event_loop worker) : relay(owner), input(worker.handle(), 64, 2 * 1024 * 1024) {}
 };
 struct DesktopRelay::State {
-    ruvia::execution_handle loop;
+    ruvia::event_loop loop;
     DesktopTransport& transport;
     DesktopSendQueue control, video;
     DesktopContinuity continuity;
@@ -42,8 +42,8 @@ struct DesktopRelay::State {
     std::exception_ptr failure;
     wire::Envelope terminal;
     bool stopped = false;
-    State(ruvia::execution_handle owner, DesktopTransport& remote)
-        : loop(owner), transport(remote), control(owner, 32, 2 * 1024 * 1024), video(owner, 2, 32 * 1024 * 1024) {}
+    State(ruvia::event_loop owner, DesktopTransport& remote)
+        : loop(owner), transport(remote), control(owner.handle(), 32, 2 * 1024 * 1024), video(owner.handle(), 2, 32 * 1024 * 1024) {}
     void detach() {
         if (worker) {
             worker->cancel();
@@ -150,7 +150,7 @@ struct DesktopRelay::State {
         }
     }
 };
-DesktopRelay::DesktopRelay(ruvia::execution_handle loop, DesktopTransport& transport) : state_(std::make_unique<State>(std::move(loop), transport)) {}
+DesktopRelay::DesktopRelay(ruvia::event_loop loop, DesktopTransport& transport) : state_(std::make_unique<State>(std::move(loop), transport)) {}
 DesktopRelay::~DesktopRelay() { stop(); }
 asio::awaitable<void> DesktopRelay::run() {
     using namespace asio::experimental::awaitable_operators;

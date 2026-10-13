@@ -3,7 +3,6 @@
 #include <asio/post.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/steady_timer.hpp>
-#include <asio/use_future.hpp>
 #include <chrono>
 #include <exception>
 #include <iostream>
@@ -14,7 +13,7 @@
 #include <vector>
 
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 
 #include "features/desktop/desktop.transport.h"
 #include "features/desktop/frame_flow.runtime.h"
@@ -112,8 +111,8 @@ struct Boundary {
     std::uint64_t videoSequence = 1, inputSequence = 1, controlSequence = 1;
     std::size_t handled = 0, cleanups = 0;
     bool delivered = false, holdNext = false, blocked = false;
-    explicit Boundary(ruvia::execution_handle loop)
-        : input(loop, 128, 2 * 1024 * 1024), changed(ruvia::make_channel<bool>(loop, {.capacity_ = 512})), writeHold(loop.executor()), watch(loop.executor()) {
+    explicit Boundary(ruvia::event_loop loop)
+        : input(loop.handle(), 128, 2 * 1024 * 1024), changed(ruvia::make_channel<bool>(loop.handle(), {.capacity_ = 512})), writeHold(loop.executor()), watch(loop.executor()) {
         watch.expires_at(asio::steady_timer::time_point::max());
     }
     void notify() { require(changed.first.send(true).accepted(), "Fixture observation queue overflow"); }
@@ -363,7 +362,7 @@ struct DesktopTransport::State {
     fixture::Boundary& boundary;
     explicit State(fixture::Boundary& value) : boundary(value) {}
 };
-DesktopTransport::DesktopTransport(ruvia::execution_handle, ConnectionConfig, wire::Envelope) : state_(std::make_shared<State>(*fixture::activeBoundary)) {}
+DesktopTransport::DesktopTransport(ruvia::event_loop, ConnectionConfig, wire::Envelope) : state_(std::make_shared<State>(*fixture::activeBoundary)) {}
 DesktopTransport::~DesktopTransport() = default;
 asio::awaitable<std::chrono::microseconds> DesktopTransport::sendVideo(wire::Envelope message, std::uint32_t contract) {
     auto& boundary = state_->boundary;
@@ -437,7 +436,7 @@ void DesktopTransport::cancel() {
 } // namespace ultraterimal::agent
 
 namespace fixture {
-asio::awaitable<void> exercise(ruvia::execution_handle loop, unsigned mode) {
+asio::awaitable<void> exercise(ruvia::event_loop loop, unsigned mode) {
     Boundary boundary(loop);
     activeBoundary = &boundary;
     agent::DesktopTransport transport(loop, {}, {});
@@ -474,7 +473,7 @@ int main() {
     try {
         for (unsigned mode = 0; mode < 4; ++mode) {
             asio::io_context io;
-            ruvia::execution_domain owner(io);
+            auto owner = ruvia::attach_event_loop(io);
             std::exception_ptr failure;
             asio::steady_timer deadline(io, std::chrono::seconds(5));
             deadline.async_wait([&](std::error_code error) {
@@ -483,16 +482,12 @@ int main() {
                     io.stop();
                 }
             });
-            asio::co_spawn(owner.executor(), fixture::exercise(owner.handle(), mode), [&](std::exception_ptr error) {
+            asio::co_spawn(owner.loop().executor(), fixture::exercise(owner.loop(), mode), [&](std::exception_ptr error) {
                 failure = error;
                 deadline.cancel();
                 io.stop();
             });
-            io.run();
-            io.restart();
-            auto retired = asio::co_spawn(owner.executor(), ruvia::as_awaitable(owner.join()), asio::use_future);
-            io.run();
-            retired.get();
+            owner.run();
             if (failure) {
                 std::rethrow_exception(failure);
             }

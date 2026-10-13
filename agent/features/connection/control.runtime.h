@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <memory>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "connection.config.h"
 
@@ -13,7 +13,7 @@ namespace ultraterimal::agent {
 struct ControlCheck {
     unsigned heartbeatSeconds = 0;
 };
-asio::awaitable<ControlCheck> checkControlConnection(ruvia::execution_handle loop, const ConnectionConfig& config);
+asio::awaitable<ControlCheck> checkControlConnection(ruvia::event_loop loop, const ConnectionConfig& config);
 struct ControlStatistics {
     std::uint64_t attempts = 0;
     std::uint64_t connections = 0;
@@ -29,7 +29,7 @@ class ConsoleSessionEvents;
 class ControlRuntime {
   public:
     // Empty executable disables desktop dispatch for connection-only probes.
-    ControlRuntime(ruvia::execution_handle loop, ConnectionConfig config, std::filesystem::path desktopExecutable = {}, ConsoleSessionEvents* consoleEvents = nullptr);
+    ControlRuntime(ruvia::event_loop loop, ConnectionConfig config, std::filesystem::path desktopExecutable = {}, ConsoleSessionEvents* consoleEvents = nullptr);
     ~ControlRuntime();
     ControlRuntime(const ControlRuntime&) = delete;
     ControlRuntime& operator=(const ControlRuntime&) = delete;

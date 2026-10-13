@@ -291,7 +291,7 @@ function DesktopPanel({
             session.current?.setScaleMode(mode);
           }}
           items={[
-            { id: "fit", label: "适应窗口" },
+            { id: "fit", label: "适应大小" },
             { id: "native", label: "原始大小" },
           ]}
         />

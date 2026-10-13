@@ -79,11 +79,11 @@ class NativeMessage {
 // and the Web/business Worker. Protocol handlers never touch native sockets.
 class NativeChannel {
   public:
-    explicit NativeChannel(ruvia::execution_handle networkWorker)
+    explicit NativeChannel(ruvia::worker_handle networkWorker)
         : outgoing(ruvia::make_channel<std::string>(networkWorker, {.capacity_ = 1})),
           readCredit(ruvia::make_channel<bool>(networkWorker, {.capacity_ = 1})),
           initialized(ruvia::make_channel<bool>(networkWorker, {.capacity_ = 1})) {}
-    void attach(ruvia::execution_handle businessWorker) {
+    void attach(ruvia::worker_handle businessWorker) {
         incoming.emplace(ruvia::make_channel<NativeMessage>(businessWorker, {.capacity_ = 1}));
         writeDone.emplace(ruvia::make_channel<bool>(businessWorker, {.capacity_ = 1}));
         attached.store(true);

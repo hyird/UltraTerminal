@@ -15,7 +15,7 @@
 #include <type_traits>
 
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/io_runtime.h>
+#include <ruvia/core/event_loop_pool.h>
 #include <spdlog/spdlog.h>
 
 #include "config/server.runtime.h"
@@ -31,11 +31,11 @@ namespace ultraterimal::server {
 namespace {
 class NativeContext {
   public:
-    NativeContext(ruvia::service_context& context, DeviceIdentity device, std::shared_ptr<NativeChannel> channel)
+    NativeContext(ruvia::web_worker_context& context, DeviceIdentity device, std::shared_ptr<NativeChannel> channel)
         : context_(context), device_(std::move(device)), channel_(std::move(channel)) {}
-    const ruvia::execution_handle& execution() const { return context_.execution(); }
+    const ruvia::worker_handle& worker() const { return context_.worker(); }
     template <typename T>
-    T& connection_state() { return context_.service_state<T>(); }
+    T& worker_state() { return context_.worker_state<T>(); }
     template <typename Fn>
     auto run_blocking(Fn&& operation) { return context_.run_blocking(std::forward<Fn>(operation)); }
     template <typename T>
@@ -49,13 +49,13 @@ class NativeContext {
     std::string_view transport_close_cause() const { return nativeCloseCauseName(channel_->closeCause.load()); }
 
   private:
-    ruvia::service_context& context_;
+    ruvia::web_worker_context& context_;
     DeviceIdentity device_;
     std::shared_ptr<NativeChannel> channel_;
 };
-ruvia::task<void> serveNative(ruvia::service_context& context, std::shared_ptr<NativeChannel> channel) {
+ruvia::task<void> serveNative(ruvia::web_worker_context& context, std::shared_ptr<NativeChannel> channel) {
     try {
-        channel->attach(context.execution());
+        channel->attach(context.worker());
         auto first = co_await channel->read();
         if (!first) {
             channel->abort();
@@ -68,11 +68,11 @@ ruvia::task<void> serveNative(ruvia::service_context& context, std::shared_ptr<N
             co_return;
         }
         const auto purpose = request->purpose();
-        auto& runtime = *context.service_state<std::shared_ptr<ServerRuntime>>();
+        auto& runtime = *context.worker_state<std::shared_ptr<ServerRuntime>>();
         wire::NativeAccepted response;
         response.set_protocol_version(protocol::kVersion);
         if (purpose == wire::NativeConnect::ENROLLMENT) {
-            auto registration = (co_await context.run_blocking([service = runtime.devices, code = request->enrollment_code(), name = request->device_name()] { return service.registerDevice(code, name); })).value();
+            auto registration = (co_await context.run_blocking([service = runtime.devices, code = request->enrollment_code(), name = request->device_name()] { return service.registerDevice(code, name); }));
             request->Clear();
             if (registration) {
                 response.set_accepted(true);
@@ -81,7 +81,7 @@ ruvia::task<void> serveNative(ruvia::service_context& context, std::shared_ptr<N
             }
             co_await channel->binary(response.SerializeAsString());
         } else {
-            auto device = (co_await context.run_blocking([service = runtime.devices, credential = request->credential()] { return service.authenticate(credential); })).value();
+            auto device = (co_await context.run_blocking([service = runtime.devices, credential = request->credential()] { return service.authenticate(credential); }));
             request->Clear();
             if (device) {
                 channel->authorizeNetwork(purpose == wire::NativeConnect::CONTROL ? protocol::kMaximumControlBytes : protocol::kMaximumMessageBytes);
@@ -106,7 +106,7 @@ ruvia::task<void> serveNative(ruvia::service_context& context, std::shared_ptr<N
     channel->abort();
 }
 struct NativePeer : std::enable_shared_from_this<NativePeer> {
-    ruvia::execution_handle loop;
+    ruvia::event_loop loop;
     std::unique_ptr<NativeStream> stream;
     asio::steady_timer authDeadline, readDeadline, writeDeadline;
     std::shared_ptr<NativeChannel> channel;
@@ -114,8 +114,8 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
     std::size_t maximum = protocol::kMaximumNativeHandshakeBytes;
     bool stopped = false;
 
-    NativePeer(ruvia::execution_handle owner, std::unique_ptr<NativeStream> transport, std::shared_ptr<std::atomic<std::size_t>> receiveBudget)
-        : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner)), budget(std::move(receiveBudget)) {}
+    NativePeer(ruvia::event_loop owner, std::unique_ptr<NativeStream> transport, std::shared_ptr<std::atomic<std::size_t>> receiveBudget)
+        : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner.handle())), budget(std::move(receiveBudget)) {}
     void bind() {
         channel->abortNetwork = [weak = weak_from_this(), owner = loop] {
             (void)owner.post([weak] {
@@ -216,14 +216,14 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
         }
         stop();
     }
-    static asio::awaitable<void> run(std::shared_ptr<NativePeer> self, ruvia::service_handle businessWorker) {
+    static asio::awaitable<void> run(std::shared_ptr<NativePeer> self, ruvia::web_worker_handle businessWorker) {
         bool handshaken = false;
         try {
             self->bind();
             self->arm(self->authDeadline, NativeCloseCause::kAuthorizationTimeout);
             co_await self->stream->handshake();
             handshaken = true;
-            auto posted = businessWorker.post([channel = self->channel](ruvia::service_context& context) { return serveNative(context, channel); });
+            auto posted = businessWorker.post([channel = self->channel](ruvia::web_worker_context& context) { return serveNative(context, channel); });
             if (!posted.accepted()) {
                 throw std::runtime_error("Native business worker unavailable");
             }
@@ -246,15 +246,15 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
 };
 } // namespace
 struct NativeServer::State : std::enable_shared_from_this<State> {
-    ruvia::io_runtime pool{{.thread_count_ = 1, .submission_capacity_ = 1024}};
-    ruvia::execution_handle loop = pool.control();
+    ruvia::event_loop_pool pool{{.loop_count_ = 1, .queue_capacity_ = 1024}};
+    ruvia::event_loop loop = pool.loop(0);
     asio::ssl::context tls{asio::ssl::context::tls_server};
     asio::ip::tcp::acceptor acceptor{loop.executor()};
     std::unique_ptr<QuicListener> quic;
     std::shared_ptr<std::atomic<std::size_t>> budget = std::make_shared<std::atomic<std::size_t>>(0);
     std::map<std::uint64_t, std::shared_ptr<NativePeer>> peers;
-    ruvia::execution_stop_registration stopping;
-    ruvia::service_handle business;
+    ruvia::event_loop_stop_registration stopping;
+    ruvia::web_worker_handle business;
     std::string alpn;
     std::uint64_t sequence = 0;
     asio::steady_timer peersDone{loop.executor()};
@@ -335,7 +335,7 @@ NativeServer::NativeServer(const ServerConfig& config) : state_(std::make_shared
     });
 }
 NativeServer::~NativeServer() { stop(); }
-void NativeServer::start(ruvia::service_handle businessWorker) {
+void NativeServer::start(ruvia::web_worker_handle businessWorker) {
     state_->business = std::move(businessWorker);
     state_->stopping = state_->loop.on_stop([weak = std::weak_ptr<State>(state_)]() -> ruvia::task<void> {
         if (const auto state = weak.lock()) {

@@ -5,7 +5,7 @@
 #include <mutex>
 #include <stdexcept>
 
-#include <ruvia/web/application.h>
+#include <ruvia/web/app.h>
 
 #include "modules/sessions/session.service.h"
 

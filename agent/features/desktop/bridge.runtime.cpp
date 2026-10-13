@@ -26,7 +26,7 @@ namespace ultraterimal::agent {
 namespace {
 class Bridge {
   public:
-    Bridge(ruvia::execution_handle loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote, NamedPipeTransport& pipe,
+    Bridge(ruvia::event_loop loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote, NamedPipeTransport& pipe,
            std::string session, std::uint32_t windowsSession, bool writeControl)
         : loop_(loop), windowsSession_(windowsSession), systemPool_(systemPool), remote_(remote), pipe_(pipe), deadline_(loop.executor()), session_(std::move(session)),
           incoming_({session_, windowsSession, writeControl, protocol::DesktopPipeSource::kDesktop}),
@@ -130,15 +130,15 @@ class Bridge {
                     std::uint32_t error = 1237; // ERROR_RETRY
                     if (now >= nextSecureAttention_) {
                         nextSecureAttention_ = now + std::chrono::seconds(2);
-                        error = (co_await ruvia::as_awaitable(ruvia::run_blocking(systemPool_, loop_, [session = windowsSession_] {
-                                    try {
-                                        return DesktopIdentity(session).sendSecureAttention();
-                                    } catch (const std::system_error& failure) {
-                                        return static_cast<std::uint32_t>(failure.code().value());
-                                    } catch (...) {
-                                        return std::uint32_t{5}; // ERROR_ACCESS_DENIED
-                                    }
-                                }))).value();
+                        error = (co_await ruvia::as_awaitable(ruvia::run_blocking(systemPool_, loop_.handle(), [session = windowsSession_] {
+                            try {
+                                return DesktopIdentity(session).sendSecureAttention();
+                            } catch (const std::system_error& failure) {
+                                return static_cast<std::uint32_t>(failure.code().value());
+                            } catch (...) {
+                                return std::uint32_t{5}; // ERROR_ACCESS_DENIED
+                            }
+                        })));
                     }
                     wire::Envelope result;
                     result.mutable_desktop_secure_attention_result()->set_win32_error(error);
@@ -196,7 +196,7 @@ class Bridge {
     }
     bool stopped_ = false, startupTimedOut_ = false, waitingForReady_ = true;
     std::optional<std::pair<wire::DesktopFault::Stage, wire::DesktopFault::Code>> failure_;
-    ruvia::execution_handle loop_;
+    ruvia::event_loop loop_;
     std::uint32_t windowsSession_;
     ruvia::blocking_pool& systemPool_;
     std::chrono::steady_clock::time_point nextSecureAttention_{};
@@ -211,7 +211,7 @@ class Bridge {
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 } // namespace
-asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::execution_handle loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote,
+asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::event_loop loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote,
                                               NamedPipeTransport& pipe, std::string sessionId, std::uint32_t windowsSession,
                                               std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract) {
     Bridge bridge(std::move(loop), systemPool, remote, pipe, std::move(sessionId), windowsSession, writeControl);

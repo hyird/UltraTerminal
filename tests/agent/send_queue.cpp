@@ -1,8 +1,9 @@
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 
-#include <ruvia/core/io_runtime.h>
+#include <ruvia/core/event_loop_pool.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 
@@ -22,7 +23,7 @@ ruvia::task<void> enqueue(DesktopSendQueue& queue, Envelope message, bool& compl
     accepted = co_await queue.send(std::move(message), false, optimizationContract);
     completed = true;
 }
-ruvia::task<void> exercise(ruvia::execution_handle worker) {
+ruvia::task<void> exercise(ruvia::worker_handle worker) {
     DesktopSendQueue video(worker, 1, 1024), control(worker, 4, 1024);
     Envelope frame;
     frame.set_sequence(1);
@@ -45,49 +46,95 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
     require(wrongOwner && video.pendingCount() == 1, "Wrong queue released someone else's write");
     frame.set_sequence(2);
     bool completed = false, accepted = false;
-    co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& writes) -> ruvia::task<void> {
-        ultraterimal::agent::DesktopOptimizationGate gate(2);
-        gate.request(2);
-        writes.spawn(enqueue(video, frame, completed, accepted, gate.allowedContract()));
-        gate.request(99); // Newer capabilities cannot rewrite a suspended enqueue's snapshot.
-        (void)co_await ruvia::sleep_for(worker, std::chrono::milliseconds(5));
-        require(!completed, "Budget did not include active video write");
-        Envelope probe;
-        probe.mutable_desktop_probe()->set_nonce(1);
-        require(co_await control.send(probe), "Video congestion blocked control enqueue");
-        auto reply = co_await control.receive();
-        require(reply && reply->message.desktop_probe().nonce() == 1 && !completed, "Control waited for video completion");
-        control.complete(*reply);
-        video.complete(*active);
-        bool duplicate = false;
+    {
+        const auto writesWorker = worker;
+        ruvia::task_scope writes(writesWorker);
+        bool writesJoined = false;
+        std::exception_ptr writesFailure;
         try {
-            video.complete(*active);
-        } catch (const std::logic_error&) {
-            duplicate = true;
-        }
-        require(duplicate && video.pendingBytes() == 0, "Duplicate completion underflowed queue budget");
-        co_await writes.join();
-        require(completed && accepted, "Video backpressure did not resume");
-        active.reset();
-        auto second = co_await video.receive();
-        require(second && second->message.sequence() == 2, "Video frame lost under backpressure");
-        require(second->optimizationContract == 2 && gate.allowedContract() == 0, "Queue replaced the configuration's gate snapshot with a newer request");
-        require(second->enqueuedAt - second->receivedAt >= std::chrono::milliseconds(5), "Admission backpressure disappeared from queue timing sidecar");
-        completed = accepted = false;
-        co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& closing) -> ruvia::task<void> {
-            closing.spawn(enqueue(video, frame, completed, accepted));
+            ultraterimal::agent::DesktopOptimizationGate gate(2);
+            gate.request(2);
+            writes.spawn(enqueue(video, frame, completed, accepted, gate.allowedContract()));
+            gate.request(99); // Newer capabilities cannot rewrite a suspended enqueue's snapshot.
             (void)co_await ruvia::sleep_for(worker, std::chrono::milliseconds(5));
-            video.close();
-            co_await closing.join();
-            require(completed && !accepted, "Close did not wake blocked producer");
-            video.complete(*second);
-            require(video.pendingBytes() == 0 && video.pendingCount() == 0, "Mutated/closed writes leaked byte credit");
-            require(!(co_await video.receive()), "Closed queue remained readable");
-            frame.mutable_video_frame()->set_data(std::string(2048, 'v'));
-            require(!(co_await control.send(frame)), "Oversized message bypassed byte budget");
-            control.close();
-        });
-    });
+            require(!completed, "Budget did not include active video write");
+            Envelope probe;
+            probe.mutable_desktop_probe()->set_nonce(1);
+            require(co_await control.send(probe), "Video congestion blocked control enqueue");
+            auto reply = co_await control.receive();
+            require(reply && reply->message.desktop_probe().nonce() == 1 && !completed, "Control waited for video completion");
+            control.complete(*reply);
+            video.complete(*active);
+            bool duplicate = false;
+            try {
+                video.complete(*active);
+            } catch (const std::logic_error&) {
+                duplicate = true;
+            }
+            require(duplicate && video.pendingBytes() == 0, "Duplicate completion underflowed queue budget");
+            writesJoined = true;
+            co_await writes.join();
+            require(completed && accepted, "Video backpressure did not resume");
+            active.reset();
+            auto second = co_await video.receive();
+            require(second && second->message.sequence() == 2, "Video frame lost under backpressure");
+            require(second->optimizationContract == 2 && gate.allowedContract() == 0, "Queue replaced the configuration's gate snapshot with a newer request");
+            require(second->enqueuedAt - second->receivedAt >= std::chrono::milliseconds(5), "Admission backpressure disappeared from queue timing sidecar");
+            completed = accepted = false;
+            {
+                const auto closingWorker = worker;
+                ruvia::task_scope closing(closingWorker);
+                bool closingJoined = false;
+                std::exception_ptr closingFailure;
+                try {
+                    closing.spawn(enqueue(video, frame, completed, accepted));
+                    (void)co_await ruvia::sleep_for(worker, std::chrono::milliseconds(5));
+                    video.close();
+                    closingJoined = true;
+                    co_await closing.join();
+                    require(completed && !accepted, "Close did not wake blocked producer");
+                    video.complete(*second);
+                    require(video.pendingBytes() == 0 && video.pendingCount() == 0, "Mutated/closed writes leaked byte credit");
+                    require(!(co_await video.receive()), "Closed queue remained readable");
+                    frame.mutable_video_frame()->set_data(std::string(2048, 'v'));
+                    require(!(co_await control.send(frame)), "Oversized message bypassed byte budget");
+                    control.close();
+
+                } catch (...) {
+                    closingFailure = std::current_exception();
+                }
+                if (!closingJoined) {
+                    closing.request_stop();
+                    try {
+                        co_await closing.join();
+                    } catch (...) {
+                        if (!closingFailure) {
+                            closingFailure = std::current_exception();
+                        }
+                    }
+                }
+                if (closingFailure) {
+                    std::rethrow_exception(closingFailure);
+                }
+            }
+
+        } catch (...) {
+            writesFailure = std::current_exception();
+        }
+        if (!writesJoined) {
+            writes.request_stop();
+            try {
+                co_await writes.join();
+            } catch (...) {
+                if (!writesFailure) {
+                    writesFailure = std::current_exception();
+                }
+            }
+        }
+        if (writesFailure) {
+            std::rethrow_exception(writesFailure);
+        }
+    }
 }
 void diagnostics() {
     using ultraterimal::agent::DesktopPipelineBuffer;
@@ -119,9 +166,9 @@ void diagnostics() {
 int main() {
     try {
         diagnostics();
-        ruvia::io_runtime pool({.thread_count_ = 1});
+        ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
-        auto task = pool.control().start(exercise(pool.control()));
+        auto task = pool.loop(0).start(exercise(pool.loop(0).handle()));
         task.get();
         pool.join();
         std::cout << "Independent control/video writers, in-flight budget, FIFO backpressure and close passed\n";

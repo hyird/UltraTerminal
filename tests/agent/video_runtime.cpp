@@ -1,7 +1,6 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
-#include <asio/use_future.hpp>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -13,7 +12,7 @@
 #include <windows.h>
 
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 #include <wels/codec_api.h>
 
 #include "features/desktop/video.runtime.h"
@@ -160,7 +159,6 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     wire::QualityFeedback firstDisplayed;
     firstDisplayed.set_displayed_generation(first->generation);
     firstDisplayed.set_displayed_frame(first->frameId);
-    firstDisplayed.set_preference(wire::QualityFeedback::SHARP);
     video.feedback(firstDisplayed);
 
     // No test window change is needed: refresh must also work on a static desktop.
@@ -182,16 +180,6 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     *message.mutable_video_frame() = refreshed->frame;
     require(bool(validator.accept(message)), "Runtime refresh violates channel protocol");
     decode(*refreshed, refreshed->configuration.value_or(configuration));
-
-    wire::QualityFeedback feedbackPreference;
-    feedbackPreference.set_displayed_generation(refreshed->generation);
-    feedbackPreference.set_displayed_frame(refreshed->frameId);
-    const auto revision = video.diagnostics().ownerRevision;
-    for (const auto preference : {wire::QualityFeedback::BALANCED, wire::QualityFeedback::SMOOTH}) {
-        feedbackPreference.set_preference(preference);
-        video.feedback(feedbackPreference);
-        require(video.diagnostics().ownerRevision == revision, "Legacy preference invalidated the fixed sharp baseline");
-    }
 
     std::optional<agent::DesktopVideoUpdate> rebuilt;
     auto previousTimestamp = refreshed->frame.timestamp_microseconds();
@@ -397,8 +385,8 @@ int main(int argc, char** argv) {
         DisplayRestore displayRestore(changeResolution);
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
         asio::io_context io;
-        ruvia::execution_domain attachment(io);
-        agent::DesktopVideoRuntime video(attachment.handle(), 0, optimization ? 2 : 0);
+        auto attachment = ruvia::attach_event_loop(io);
+        agent::DesktopVideoRuntime video(attachment.loop(), 0, optimization ? 2 : 0);
         asio::steady_timer pulse(io);
         unsigned ticks = 0;
         std::function<void(std::error_code)> tick;
@@ -412,17 +400,13 @@ int main(int argc, char** argv) {
         pulse.expires_after(std::chrono::milliseconds(1));
         pulse.async_wait(tick);
         std::exception_ptr failure;
-        asio::co_spawn(attachment.executor(), verify(video, pulse, ticks, changeResolution, optimization), [&](std::exception_ptr error) {
+        asio::co_spawn(attachment.loop().executor(), verify(video, pulse, ticks, changeResolution, optimization), [&](std::exception_ptr error) {
             failure = error;
             pulse.cancel();
             video.stop();
-            attachment.request_stop();
+            attachment.stop();
         });
-        io.run();
-        io.restart();
-        auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-        io.run();
-        retired.get();
+        attachment.run();
         if (failure) {
             std::rethrow_exception(failure);
         }

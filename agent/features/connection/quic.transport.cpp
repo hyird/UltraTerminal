@@ -33,7 +33,7 @@ struct QuicTransport::State : std::enable_shared_from_this<State> {
     bool started = false, connected = false, cancelled = false;
     bool reading = false, writing = false;
 
-    State(ruvia::execution_handle loop, ConnectionConfig settings, std::size_t limit)
+    State(ruvia::event_loop loop, ConnectionConfig settings, std::size_t limit)
         : config(std::move(settings)), maximum(limit), resolver(loop.executor()), socket(loop.executor()), connectDeadline(loop.executor()), eventTimer(loop.executor()) {
         if (config.host.empty() || config.host.find('\0') != std::string::npos || maximum == 0 || maximum > protocol::kMaximumMessageBytes || config.connectTimeout <= std::chrono::seconds::zero()) {
             throw std::invalid_argument("Invalid QUIC configuration");
@@ -349,7 +349,7 @@ struct QuicTransport::State : std::enable_shared_from_this<State> {
         }
     }
 };
-QuicTransport::QuicTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximum) : state_(std::make_shared<State>(loop, config, maximum)) {}
+QuicTransport::QuicTransport(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximum) : state_(std::make_shared<State>(loop, config, maximum)) {}
 QuicTransport::~QuicTransport() { state_->cancel(); }
 asio::awaitable<bool> QuicTransport::connect() { return State::connect(state_); }
 asio::awaitable<void> QuicTransport::send(std::string bytes) { return State::send(state_, std::move(bytes)); }

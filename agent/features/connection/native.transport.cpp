@@ -9,7 +9,7 @@ struct NativeTransport::State {
     TlsTransport tls;
     NativeLink link = NativeLink::kDisconnected;
     bool started = false, cancelled = false;
-    State(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximum) : quic(loop, config, maximum), tls(loop, config, maximum) {}
+    State(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximum) : quic(loop, config, maximum), tls(loop, config, maximum) {}
     void cancel() {
         cancelled = true;
         link = NativeLink::kDisconnected;
@@ -84,7 +84,7 @@ struct NativeTransport::State {
         }
     }
 };
-NativeTransport::NativeTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximum) : state_(std::make_shared<State>(loop, config, maximum)) {}
+NativeTransport::NativeTransport(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximum) : state_(std::make_shared<State>(loop, config, maximum)) {}
 NativeTransport::~NativeTransport() { state_->cancel(); }
 asio::awaitable<void> NativeTransport::connect() { return State::connect(state_); }
 asio::awaitable<void> NativeTransport::send(std::string bytes) { return State::send(state_, std::move(bytes)); }

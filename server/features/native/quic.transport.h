@@ -3,7 +3,7 @@
 #include <functional>
 #include <memory>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "config/server.config.h"
 #include "stream.transport.h"
@@ -11,7 +11,7 @@
 namespace ultraterimal::server {
 class QuicListener {
   public:
-    QuicListener(ruvia::execution_handle loop, const ServerConfig& config, std::function<void(std::unique_ptr<NativeStream>)> accept);
+    QuicListener(ruvia::event_loop loop, const ServerConfig& config, std::function<void(std::unique_ptr<NativeStream>)> accept);
     ~QuicListener();
     QuicListener(const QuicListener&) = delete;
     QuicListener& operator=(const QuicListener&) = delete;

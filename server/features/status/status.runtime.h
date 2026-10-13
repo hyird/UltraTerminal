@@ -12,7 +12,7 @@ namespace ultraterimal::server {
 // authorized state before delivery, so stale queued data cannot grant access.
 class StatusSubscription {
   public:
-    StatusSubscription(ruvia::execution_handle worker, std::string user);
+    StatusSubscription(ruvia::worker_handle worker, std::string user);
     const std::string userId;
     bool enqueue(std::string event);
     ruvia::task<std::optional<std::string>> receive(ruvia::stop_token stop);
@@ -26,7 +26,7 @@ class StatusSubscription {
 };
 class StatusHub {
   public:
-    std::shared_ptr<StatusSubscription> subscribe(ruvia::execution_handle worker, const std::string& user);
+    std::shared_ptr<StatusSubscription> subscribe(ruvia::worker_handle worker, const std::string& user);
     void publish(const std::string& event);
     void invalidate();
 

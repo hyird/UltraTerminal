@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "features/connection/connection.config.h"
 #include "ultraterimal/protocol/message.protocol.h"
@@ -17,7 +17,7 @@ namespace ultraterimal::agent {
 // and one video disconnect observer; callers join outstanding operations after cancel().
 class DesktopTransport {
   public:
-    DesktopTransport(ruvia::execution_handle loop, ConnectionConfig config, wire::Envelope sessionOpen);
+    DesktopTransport(ruvia::event_loop loop, ConnectionConfig config, wire::Envelope sessionOpen);
     ~DesktopTransport();
     DesktopTransport(const DesktopTransport&) = delete;
     DesktopTransport& operator=(const DesktopTransport&) = delete;

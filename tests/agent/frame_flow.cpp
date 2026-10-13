@@ -98,6 +98,17 @@ void smallRegionToSharpMotion() {
     require(link.minimumBitrate >= 12000000, "Unsaturated region ACKs collapsed a fixed ample-capacity sharp path");
     require(link.videoTimes.size() >= 280, "Repeated small-region/sharp-video transitions remained stuck at 3-5 FPS");
 }
+void lowLoadJitter() {
+    Link link;
+    link.run(5s, 10000000, 100ms, {.type = FrameType::kRegion, .fixedBytes = 1000, .changedPixels = 128 * 64});
+    for (unsigned cycle = 0; cycle < 30; ++cycle) {
+        link.run(1s, 10000000, 100ms, {.type = FrameType::kRegion, .fixedBytes = 1000, .changedPixels = 128 * 64, .delayedFrames = 3, .feedbackDelay = 120ms});
+    }
+    require(link.minimumBitrate == DesktopFrameFlow::kTargetVideoBitrate && link.flow.rate().bitrate == DesktopFrameFlow::kTargetVideoBitrate,
+            "Sparse delayed ACKs collapsed bitrate despite ample link capacity");
+    require(link.peakBytes < 16384 && link.peakFrames <= DesktopFrameFlow::kMaximumInFlightFrames,
+            "Sparse jitter fixture exceeded its bounded low-load byte flight");
+}
 void normalVbvAfterBurst() {
     // V2 VBV pictures: one oversized changed picture is bounded by byte credit,
     // not by seconds of reduced cadence while the +1 FPS probe revalidates.
@@ -124,7 +135,7 @@ void normalVbvAfterBurst() {
             }
         }
         std::cout << "fixed_cost_after_single_burst initial_fps=" << reduced << " frames=100 overhead_bytes=" << overhead << " ending_fps=" << flow.rate().framesPerSecond << " first_30fps_sample=" << firstRecovered << '\n';
-        require(reduced == 7 && flow.rate().framesPerSecond >= 30 && firstRecovered, "A single fixed-cost burst permanently locked cadence without an artificial cheap frame");
+        require(reduced == 10 && flow.rate().framesPerSecond >= 30 && firstRecovered, "A single fixed-cost burst permanently locked cadence without an artificial cheap frame");
     }
     DesktopFrameFlow cpu;
     cpu.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 40ms);
@@ -137,10 +148,10 @@ void normalVbvAfterBurst() {
 void actualFrameCost() {
     DesktopFrameFlow flow;
     flow.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
-    require(flow.rate().framesPerSecond == 7 && flow.byteWindow() == 800000, "A real over-budget sharp picture did not bound the next encode cadence/credit");
+    require(flow.rate().framesPerSecond == 10 && flow.byteWindow() == 800000, "A real over-budget sharp picture did not bound the next encode cadence/credit");
     const auto window = flow.byteWindow();
     flow.observeFrame(FrameType::kKeyFrame, 4000000, 1920 * 1080, 350ms);
-    require(flow.rate().framesPerSecond == 7 && flow.byteWindow() == window, "Keyframe burst poisoned steady frame cost");
+    require(flow.rate().framesPerSecond == 10 && flow.byteWindow() == window, "Keyframe burst poisoned steady frame cost");
     flow.observeFrame(FrameType::kRepeatedVideo, 100, 0, 5ms);
     flow.observeFrame(FrameType::kVideo, 4000000, 0, 5ms);
     require(flow.byteWindow() == window, "Repeated/static frames inflated or diluted the actual changed-picture window");
@@ -149,19 +160,19 @@ void actualFrameCost() {
     }
     require(flow.rate().framesPerSecond >= 30, "Historical sharp picture cost throttled cheap regions");
     flow.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
-    require(flow.rate().framesPerSecond == 7, "Region-to-sharp transition lost the real video payload floor");
+    require(flow.rate().framesPerSecond == 10, "Region-to-sharp transition lost the real video payload floor");
     unsigned probes = 0;
     for (unsigned sample = 0; sample < 100; ++sample) {
         const auto previousFps = flow.rate().framesPerSecond;
         flow.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
         const auto fps = flow.rate().framesPerSecond;
-        require(fps == 7 || fps == 8, "Cost revalidation unconditionally released a genuinely fixed sharp payload floor");
-        if (previousFps == 8) {
-            require(fps == 7, "A fixed sharp frame that exceeded the probe budget did not immediately restore its real cost");
+        require(fps == 10 || fps == 11, "Cost revalidation unconditionally released a genuinely fixed sharp payload floor");
+        if (previousFps == 11) {
+            require(fps == 10, "A fixed sharp frame that exceeded the probe budget did not immediately restore its real cost");
         }
-        probes += fps == 8;
+        probes += fps == 11;
     }
-    std::cout << "fixed_sharp_cost_revalidation samples=100 baseline_fps=7 maximum_probe_fps=8 probes=" << probes << " ending_fps=" << flow.rate().framesPerSecond << '\n';
+    std::cout << "fixed_sharp_cost_revalidation samples=100 baseline_fps=10 maximum_probe_fps=11 probes=" << probes << " ending_fps=" << flow.rate().framesPerSecond << '\n';
     require(probes > 0 && flow.byteWindow() == window, "Cost revalidation was absent or widened the existing ordinary-frame credit cushion");
 }
 void fixedSharpCapacityChange() {
@@ -178,18 +189,18 @@ void fixedSharpCapacityChange() {
     const auto beforeRecovery = link.videoTimes.size();
     link.run(30s, 10000000, 40ms, {.fixedBytes = 100000});
     std::cout << "fixed_sharp_recovery frames_30s=" << link.videoTimes.size() - beforeRecovery << " bitrate=" << link.flow.rate().bitrate << " fps=" << link.flow.rate().framesPerSecond << '\n';
-    require(link.flow.rate().bitrate == 24000000 && link.flow.rate().framesPerSecond == 30, "Stale delivery/frame-cost history prevented capacity recovery");
+    require(link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && link.flow.rate().framesPerSecond >= 40 && link.flow.rate().framesPerSecond <= 42, "Stale delivery/frame-cost history prevented capacity recovery");
     link.run(20s, 125000, 40ms, {.fixedBytes = 100000});
     require(link.flow.rate().bitrate < 2000000 && link.flow.rate().framesPerSecond == 5, "Restoration hysteresis ignored renewed fixed-sharp congestion");
     Link distant;
     distant.run(12s, 10000000, 600ms, {.fixedBytes = 100000});
-    require(distant.videoTimes.size() > 300 && distant.flow.rate().bitrate == 24000000 && distant.flow.rate().framesPerSecond >= 30, "High RTT alone throttled fixed sharp pictures");
+    require(distant.videoTimes.size() > 300 && distant.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && distant.flow.rate().framesPerSecond >= 30, "High RTT alone throttled fixed sharp pictures");
 }
 void lowLoadBackgroundAndDecode() {
     for (const auto type : {FrameType::kRegion, FrameType::kVideo}) {
         Link link;
         link.run(5s, 10000000, 80ms, {.type = type, .fixedBytes = 1000, .changedPixels = 128 * 64});
-        require(!link.flow.snapshot(link.now).deliveryBytesPerSecond && link.flow.rate().bitrate == 24000000, "Unsaturated small updates created a false capacity ceiling");
+        require(!link.flow.snapshot(link.now).deliveryBytesPerSecond && link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Unsaturated small updates created a false capacity ceiling");
         // A cumulative display ACK releases all real outstanding frames before
         // the hidden interval; no queued dependent frame is silently discarded.
         link.now += 1s;
@@ -199,11 +210,11 @@ void lowLoadBackgroundAndDecode() {
         require(link.flow.acknowledge(1, link.frame, 1000, 0, link.now, false, 128), "Foreground duplicate ACK was rejected");
         const auto before = link.videoTimes.size();
         link.run(5s, 10000000, 80ms, {.fixedBytes = 100000});
-        require(link.videoTimes.size() - before >= 140 && link.flow.rate().bitrate == 24000000, "Hidden time/decoder feedback polluted foreground sharp recovery");
+        require(link.videoTimes.size() - before >= 140 && link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Hidden time/decoder feedback polluted foreground sharp recovery");
     }
     Link decoder;
     decoder.run(8s, 10000000, 80ms, {.fixedBytes = 100000, .decodeMicroseconds = 60000, .queueDepth = 4});
-    require(decoder.flow.rate().bitrate == 24000000 && decoder.flow.rate().framesPerSecond <= 13 && !decoder.flow.snapshot(decoder.now).deliveryBytesPerSecond,
+    require(decoder.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && decoder.flow.rate().framesPerSecond <= 13 && !decoder.flow.snapshot(decoder.now).deliveryBytesPerSecond,
             "Slow decoding became a false bandwidth ceiling or failed to bound capture cadence");
     const auto now = DesktopFrameFlow::Clock::time_point{1s};
     DesktopFrameFlow startup;
@@ -218,6 +229,7 @@ int main() {
     try {
         normalVbvAfterBurst();
         smallRegionToSharpMotion();
+        lowLoadJitter();
         actualFrameCost();
         fixedSharpCapacityChange();
         lowLoadBackgroundAndDecode();
@@ -263,7 +275,7 @@ int main() {
         require(continuous.sentRefinement(1, 1, 2, now + 100ms, 1000), "Refinement could not continue after duplicate delivery");
         continuous.sent(1, 3, now + 110ms, 1000, FrameType::kVideo);
         require(continuous.refinementRetired(now + 110ms), "Changed content did not retire old refinement");
-        require(flow.rate().framesPerSecond == 30 && flow.rate().bitrate == 24000000, "Desktop did not default to the fixed sharp rate");
+        require(flow.rate().framesPerSecond == 30 && flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Desktop did not default to the fixed sharp rate");
         flow.sent(1, 1, now, 4000000, FrameType::kKeyFrame);
         require(!flow.canEncode(now + 1ms), "Oversized IDR did not exhaust byte credit");
         const auto blocked = flow.snapshot(now + 1ms);
@@ -393,14 +405,14 @@ int main() {
             decoder.sent(1, id, now, 1000, FrameType::kVideo);
             require(decoder.acknowledge(1, id, 1000, 4, now + 21ms), "Decoder backlog ACK rejected");
         }
-        require(decoder.rate().framesPerSecond < 30 && decoder.rate().bitrate == 24000000, "Decoder backlog did not reduce capture independently of network bitrate");
+        require(decoder.rate().framesPerSecond < 30 && decoder.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Decoder backlog did not reduce capture independently of network bitrate");
         DesktopFrameFlow idle;
         for (std::uint64_t id = 1; id <= 20; ++id) {
             now += 2s;
             idle.sent(1, id, now, 1000, FrameType::kVideo);
             require(idle.acknowledge(1, id, 1000, 0, now + 20ms), "Idle ACK rejected");
         }
-        require(idle.rate().framesPerSecond >= 30 && idle.rate().bitrate == 24000000, "Static idle time was interpreted as narrow capacity");
+        require(idle.rate().framesPerSecond >= 30 && idle.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Static idle time was interpreted as narrow capacity");
         Link fast;
         fast.run(12s, 10000000, 20ms);
         std::cout << "fast_12s frames=" << fast.frame << " fps=" << fast.flow.rate().framesPerSecond << '\n';

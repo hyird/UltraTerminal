@@ -15,7 +15,7 @@ namespace ultraterimal::server {
 // All access belongs to the gateway Worker, including sequence allocation and queue accounting.
 class ControlConnection {
   public:
-    explicit ControlConnection(ruvia::execution_handle worker);
+    explicit ControlConnection(ruvia::worker_handle worker);
     bool ready = false;
     wire::Capabilities capabilities;
     std::string agentVersion;
@@ -30,7 +30,7 @@ class ControlConnection {
     std::vector<std::string> restartOperations() const;
 
   private:
-    ruvia::execution_handle worker_;
+    ruvia::worker_handle worker_;
     std::optional<ruvia::one_shot_completion<wire::WindowsLoginResult>> loginPending_;
     std::uint64_t loginRequest_ = 0;
     std::deque<std::string> sentRestartOperations_;

@@ -3,7 +3,6 @@
 #include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
-#include <asio/use_future.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -20,7 +19,7 @@
 #include <windows.h>
 
 #include <ruvia/core/asio_task.h>
-#include <ruvia/core/execution_domain.h>
+#include <ruvia/core/event_loop_attachment.h>
 
 #include "desktop_process.fixture.h"
 #include "features/desktop/optimization.runtime.h"
@@ -436,7 +435,7 @@ void run(const std::wstring& executable, const std::string& mode) {
     DWORD session = 0;
     require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session != 0, "Interactive test session required");
     asio::io_context io;
-    ruvia::execution_domain attachment(io);
+    auto attachment = ruvia::attach_event_loop(io);
     agent::NamedPipeTransport pipe(io.get_executor(), agent::currentLogonSid());
     Child child(executable, pipe.name(), mode == "process_session" ? session + 1 : session);
     if (mode == "process_session") {
@@ -450,17 +449,13 @@ void run(const std::wstring& executable, const std::string& mode) {
                                                                                                                 : std::chrono::seconds(10));
     deadline.async_wait([&](std::error_code error) { if (!error) { timedOut = true; pipe.cancel(); } });
     std::exception_ptr failure;
-    asio::co_spawn(attachment.executor(), exchange(pipe, child, session, mode), [&](std::exception_ptr error) {
+    asio::co_spawn(attachment.loop().executor(), exchange(pipe, child, session, mode), [&](std::exception_ptr error) {
         failure = error;
         deadline.cancel();
         pipe.cancel();
-        attachment.request_stop();
+        attachment.stop();
     });
-    io.run();
-    io.restart();
-    auto retired = asio::co_spawn(attachment.executor(), ruvia::as_awaitable(attachment.join()), asio::use_future);
-    io.run();
-    retired.get();
+    attachment.run();
     if (failure) {
         std::rethrow_exception(failure);
     }

@@ -13,7 +13,7 @@ bool boolean(const boost::json::object& object, std::string_view name) {
     return field->as_bool();
 }
 } // namespace
-ruvia::task<ruvia::http_response> SessionController::create(ruvia::context& context) const {
+ruvia::task<ruvia::http_response> SessionController::create(ruvia::context& context) {
     const auto body = requestObject(co_await context.req().text(), {"device_id", "kind", "write_control", "preempt", "desktop_input_contract", "approval_id", "verification_code", "reconnect_session_id"});
     SessionRequest request;
     request.verificationCode = optionalText(body, "verification_code", 6);
@@ -46,12 +46,12 @@ ruvia::task<ruvia::http_response> SessionController::create(ruvia::context& cont
     } else if (contract) {
         co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_field", .message_ = "Input contract only applies to writable desktop sessions"});
     }
-    auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
+    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
     const auto found = runtime.controlConnections.find(request.deviceId);
     std::shared_ptr<ControlConnection> control = found == runtime.controlConnections.end() ? nullptr : found->second;
     request.agentInputContractSupported = control && control->ready && control->capabilities.capture_available() && control->capabilities.desktop_input_contract() == 2;
     // Authorize before exposing online/capability state or dispatching to the device.
-    const auto issued = (co_await context.run_blocking([service = runtime.sessions, request] { return service.create(request); })).value();
+    const auto issued = (co_await context.run_blocking([service = runtime.sessions, request] { return service.create(request); }));
     if (!issued) {
         if (issued.error() == SessionFailure::kVerificationRequired || issued.error() == SessionFailure::kVerificationFailed) {
             co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = issued.error() == SessionFailure::kVerificationRequired ? "connection_verification_required" : "connection_verification_failed", .message_ = "Authenticator verification required"});
@@ -100,29 +100,29 @@ ruvia::task<ruvia::http_response> SessionController::create(ruvia::context& cont
         channels.push_back(boost::json::object{{"id", channel.id}, {"purpose", static_cast<int>(channel.purpose)}, {"ticket", channel.browserTicket}});
     }
     if (!capable || !control->enqueue(std::move(command))) {
-        (co_await context.run_blocking([service = runtime.sessions, user = request.userId, session = issued->id] { service.close(user, session, SessionEnd::kFailure); })).value();
+        (co_await context.run_blocking([service = runtime.sessions, user = request.userId, session = issued->id] { service.close(user, session, SessionEnd::kFailure); }));
         co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "device_unavailable", .message_ = "Device capability or control connection unavailable"});
     }
     context.status(ruvia::http_status::accepted);
     co_return jsonResponse(context, {{"id", issued->id}, {"state", "pending"}, {"expires_in", 60}, {"channels", std::move(channels)}});
 }
-ruvia::task<ruvia::http_response> SessionController::get(ruvia::context& context) const {
-    const auto info = (co_await context.run_blocking([service = (*context.connection_state<std::shared_ptr<ServerRuntime>>()).sessions, user = context.request_state<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] { return service.get(user, session); })).value();
+ruvia::task<ruvia::http_response> SessionController::get(ruvia::context& context) {
+    const auto info = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).sessions, user = context.request_state<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] { return service.get(user, session); }));
     if (!info) {
         co_return context.error({.status_ = ruvia::http_status::not_found, .code_ = "not_found", .message_ = "Session not found"});
     }
     co_return jsonResponse(context, {{"id", info->id}, {"device_id", info->deviceId}, {"state", info->state}, {"end_reason", info->endReason}});
 }
-ruvia::task<ruvia::http_response> SessionController::close(ruvia::context& context) const {
+ruvia::task<ruvia::http_response> SessionController::close(ruvia::context& context) {
     (void)requestObject(co_await context.req().text(), {});
-    auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
+    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
     const auto info = (co_await context.run_blocking([service = runtime.sessions, user = context.request_state<UserIdentity>().id, session = std::string(context.req().param("id").value_or(""))] {
-                          const auto info = service.get(user, session);
-                          if (info) {
-                              service.close(user, session, SessionEnd::kUser);
-                          }
-                          return info;
-                      })).value();
+        const auto info = service.get(user, session);
+        if (info) {
+            service.close(user, session, SessionEnd::kUser);
+        }
+        return info;
+    }));
     if (!info) {
         co_return context.error({.status_ = ruvia::http_status::not_found, .code_ = "not_found", .message_ = "Session not found"});
     }

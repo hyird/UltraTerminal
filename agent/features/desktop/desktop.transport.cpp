@@ -31,7 +31,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
     bool browserRequestedV2 = false;
     bool browserRequestedContinuous = false;
 
-    State(ruvia::execution_handle loop, ConnectionConfig config, const wire::Envelope& open) : deadline(loop.executor()) {
+    State(ruvia::event_loop loop, ConnectionConfig config, const wire::Envelope& open) : deadline(loop.executor()) {
         if (!protocol::validateMessage(open) || !open.has_session_open() || open.session_open().kind() != wire::DESKTOP || !open.channel_id().empty()) {
             throw std::invalid_argument("Invalid desktop session grant");
         }
@@ -206,7 +206,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
         }
     }
 };
-DesktopTransport::DesktopTransport(ruvia::execution_handle loop, ConnectionConfig config, wire::Envelope sessionOpen)
+DesktopTransport::DesktopTransport(ruvia::event_loop loop, ConnectionConfig config, wire::Envelope sessionOpen)
     : state_(std::make_shared<State>(std::move(loop), std::move(config), sessionOpen)) {}
 DesktopTransport::~DesktopTransport() { state_->cancel(); }
 asio::awaitable<void> DesktopTransport::connect(std::string credential) { return State::connectOwned(state_, std::move(credential)); }

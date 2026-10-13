@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <iostream>
 #include <source_location>
 #include <stdexcept>
@@ -9,8 +10,8 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/core/execution_domain.h>
-#include <ruvia/core/io_runtime.h>
+#include <ruvia/core/event_loop_attachment.h>
+#include <ruvia/core/event_loop_pool.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 
@@ -42,7 +43,7 @@ ruvia::task<void> awaitClose(server::DesktopEndpoint& endpoint, bool& finished) 
     require(!(co_await endpoint.receive({})));
     finished = true;
 }
-ruvia::task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, ruvia::execution_handle caller, bool& finished) {
+ruvia::task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, ruvia::worker_handle caller, bool& finished) {
     for (std::uint64_t sequence = 10; sequence <= 100; ++sequence) {
         require(caller.is_current());
         require(co_await session.forward(sender, refresh(sequence)));
@@ -156,7 +157,7 @@ wire::DesktopStageTiming workerStages() {
     return timing;
 }
 struct TestDesktopWriter {
-    ruvia::execution_handle worker;
+    ruvia::worker_handle worker;
     std::vector<wire::Envelope> messages;
     bool aborted = false;
     ruvia::task<void> binary(std::string_view bytes) {
@@ -169,103 +170,125 @@ struct TestDesktopWriter {
     }
     void abort() { aborted = true; }
 };
-ruvia::task<void> exerciseWriters(ruvia::execution_handle worker) {
-    ruvia::execution_domain browserInput(worker.io_context()), agentInput(worker.io_context()), browserVideo(worker.io_context()), agentVideo(worker.io_context());
+ruvia::task<void> exerciseWriters(ruvia::worker_handle worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     auto owner = std::make_shared<server::DesktopSession>(worker, budget);
     auto& session = *owner;
     std::array<server::ChannelState, 4> states;
-    std::array<TestDesktopWriter, 4> writers{{{browserInput.handle(), {}, false}, {agentInput.handle(), {}, false}, {browserVideo.handle(), {}, false}, {agentVideo.handle(), {}, false}}};
-    co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
-        for (std::size_t slot = 0; slot < states.size(); ++slot) {
-            auto& state = states[slot];
-            state.authorization = authorization(slot >= 2);
-            state.source = slot % 2 ? protocol::ChannelSource::kAgent : protocol::ChannelSource::kBrowser;
-            state.session = owner;
-            state.endpoint = session.attach(*state.authorization, state.source);
-            require(bool(state.endpoint));
+    std::array<TestDesktopWriter, 4> writers{{{worker, {}, false}, {worker, {}, false}, {worker, {}, false}, {worker, {}, false}}};
+    {
+        const auto scopeWorker = worker;
+        ruvia::task_scope scope(scopeWorker);
+        bool scopeJoined = false;
+        std::exception_ptr scopeFailure;
+        try {
+            for (std::size_t slot = 0; slot < states.size(); ++slot) {
+                auto& state = states[slot];
+                state.authorization = authorization(slot >= 2);
+                state.source = slot % 2 ? protocol::ChannelSource::kAgent : protocol::ChannelSource::kBrowser;
+                state.session = owner;
+                state.endpoint = session.attach(*state.authorization, state.source);
+                require(bool(state.endpoint));
+            }
+            for (std::size_t slot = 0; slot < states.size(); ++slot) {
+                scope.spawn(server::writeChannel(writers[slot], states[slot], scope));
+            }
+            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
+            for (std::size_t slot = 0; slot < writers.size(); ++slot) {
+                require(writers[slot].messages.size() == 1 && writers[slot].messages[0].has_channel_ready());
+                require(writers[slot].messages[0].channel_ready().desktop_optimization_contract() == 2);
+                require(writers[slot].messages[0].channel_ready().purpose() == (slot >= 2 ? wire::DESKTOP_VIDEO : wire::DESKTOP_INPUT));
+            }
+            auto caps = refresh(2);
+            caps.mutable_desktop_video_capabilities()->set_desktop_optimization_contract(2);
+            require(co_await session.forward(states[0].endpoint, caps));
+            require(co_await session.forward(states[3].endpoint, configuration()));
+            require(co_await session.forward(states[3].endpoint, video(3, 1)));
+            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20));
+            const auto& pipeline = session.diagnostics().pipeline;
+            const auto writes = pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary();
+            require(writes.samples == 2 && writes.meanMicroseconds >= 1000); // Completion, not dequeue, measured by real writer code.
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoQueueWait)].summary().samples == 2);
+            require(writers[2].messages.size() == 3 && writers[0].messages.size() == 1);
+            auto frame = video(4, 2);
+            *frame.mutable_video_frame()->mutable_stage_timing() = workerStages();
+            auto dynamic = refinement(5, 2);
+            dynamic.mutable_video_refinement()->set_kind(wire::DYNAMIC_DETAIL);
+            *dynamic.mutable_video_refinement()->mutable_stage_timing() = workerStages();
+            require(co_await session.forward(states[3].endpoint, frame));
+            require(co_await session.forward(states[3].endpoint, dynamic));
+            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20));
+            for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
+                require(pipeline.stages[index].summary().samples == 1);
+            }
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kWorkerQueue)].summary().meanMicroseconds == 0);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kPngEncode)].summary().meanMicroseconds == 7);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == writes.samples + 2);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoQueueWait)].summary().samples == 4);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoAdmission)].summary().samples == 4);
+            require(writers[2].messages.size() == 5);
+            require(writers[2].messages[3].SerializeAsString() == frame.SerializeAsString());
+            require(writers[2].messages[4].SerializeAsString() == dynamic.SerializeAsString());
+            auto report = pipelineReport(2, 2);
+            report.mutable_desktop_pipeline_report()->clear_samples();
+            for (const auto batch : {0u, 1u}) {
+                auto* ipc = report.mutable_desktop_pipeline_report()->add_samples();
+                ipc->set_generation(1);
+                ipc->set_frame_id(2);
+                ipc->set_batch_id(batch);
+                ipc->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
+                ipc->set_ipc_write_microseconds(0);
+                auto* native = report.mutable_desktop_pipeline_report()->add_samples();
+                native->set_generation(1);
+                native->set_frame_id(2);
+                native->set_batch_id(batch);
+                native->set_source(wire::DesktopPipelineSample::AGENT_RELAY);
+                native->set_send_queue_wait_microseconds(0);
+                native->set_native_write_microseconds(0);
+            }
+            require(co_await session.forward(states[1].endpoint, report));
+            for (const auto stage : {server::DesktopStage::kWorkerIpcWrite, server::DesktopStage::kRelaySendQueueWait, server::DesktopStage::kRelayNativeWrite}) {
+                const auto summary = pipeline.stages[static_cast<std::size_t>(stage)].summary();
+                require(summary.samples == 2 && summary.meanMicroseconds == 0);
+            }
+            require(co_await session.forward(states[0].endpoint, refinementAck(3, 2)));
+            auto detail = refinement(6, 2, 2);                                                        // A separate static worker invocation on the same base.
+            detail.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(128); // Not the already-refined dynamic tile.
+            *detail.mutable_video_refinement()->mutable_stage_timing() = workerStages();
+            require(co_await session.forward(states[3].endpoint, detail));
+            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20));
+            for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
+                require(pipeline.stages[index].summary().samples == 2);
+            }
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == 5);
+            require(writers[2].messages.size() == 6 && writers[2].messages.back().SerializeAsString() == detail.SerializeAsString());
+            session.close();
+            scopeJoined = true;
+            co_await scope.join();
+            for (const auto& writer : writers) {
+                require(writer.aborted);
+            }
+            require(budget->used == 0);
+
+        } catch (...) {
+            scopeFailure = std::current_exception();
         }
-        for (std::size_t slot = 0; slot < states.size(); ++slot) {
-            scope.spawn(ruvia::on(writers[slot].worker, server::writeChannel(writers[slot], states[slot], scope)));
+        if (!scopeJoined) {
+            scope.request_stop();
+            try {
+                co_await scope.join();
+            } catch (...) {
+                if (!scopeFailure) {
+                    scopeFailure = std::current_exception();
+                }
+            }
         }
-        co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
-        for (std::size_t slot = 0; slot < writers.size(); ++slot) {
-            require(writers[slot].messages.size() == 1 && writers[slot].messages[0].has_channel_ready());
-            require(writers[slot].messages[0].channel_ready().desktop_optimization_contract() == 2);
-            require(writers[slot].messages[0].channel_ready().purpose() == (slot >= 2 ? wire::DESKTOP_VIDEO : wire::DESKTOP_INPUT));
+        if (scopeFailure) {
+            std::rethrow_exception(scopeFailure);
         }
-        auto caps = refresh(2);
-        caps.mutable_desktop_video_capabilities()->set_desktop_optimization_contract(2);
-        require(co_await session.forward(states[0].endpoint, caps));
-        require(co_await session.forward(states[3].endpoint, configuration()));
-        require(co_await session.forward(states[3].endpoint, video(3, 1)));
-        co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20));
-        const auto& pipeline = session.diagnostics().pipeline;
-        const auto writes = pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary();
-        require(writes.samples == 2 && writes.meanMicroseconds >= 1000); // Completion, not dequeue, measured by real writer code.
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoQueueWait)].summary().samples == 2);
-        require(writers[2].messages.size() == 3 && writers[0].messages.size() == 1);
-        auto frame = video(4, 2);
-        *frame.mutable_video_frame()->mutable_stage_timing() = workerStages();
-        auto dynamic = refinement(5, 2);
-        dynamic.mutable_video_refinement()->set_kind(wire::DYNAMIC_DETAIL);
-        *dynamic.mutable_video_refinement()->mutable_stage_timing() = workerStages();
-        require(co_await session.forward(states[3].endpoint, frame));
-        require(co_await session.forward(states[3].endpoint, dynamic));
-        co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20));
-        for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
-            require(pipeline.stages[index].summary().samples == 1);
-        }
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kWorkerQueue)].summary().meanMicroseconds == 0);
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kPngEncode)].summary().meanMicroseconds == 7);
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == writes.samples + 2);
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoQueueWait)].summary().samples == 4);
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoAdmission)].summary().samples == 4);
-        require(writers[2].messages.size() == 5);
-        require(writers[2].messages[3].SerializeAsString() == frame.SerializeAsString());
-        require(writers[2].messages[4].SerializeAsString() == dynamic.SerializeAsString());
-        auto report = pipelineReport(2, 2);
-        report.mutable_desktop_pipeline_report()->clear_samples();
-        for (const auto batch : {0u, 1u}) {
-            auto* ipc = report.mutable_desktop_pipeline_report()->add_samples();
-            ipc->set_generation(1);
-            ipc->set_frame_id(2);
-            ipc->set_batch_id(batch);
-            ipc->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
-            ipc->set_ipc_write_microseconds(0);
-            auto* native = report.mutable_desktop_pipeline_report()->add_samples();
-            native->set_generation(1);
-            native->set_frame_id(2);
-            native->set_batch_id(batch);
-            native->set_source(wire::DesktopPipelineSample::AGENT_RELAY);
-            native->set_send_queue_wait_microseconds(0);
-            native->set_native_write_microseconds(0);
-        }
-        require(co_await session.forward(states[1].endpoint, report));
-        for (const auto stage : {server::DesktopStage::kWorkerIpcWrite, server::DesktopStage::kRelaySendQueueWait, server::DesktopStage::kRelayNativeWrite}) {
-            const auto summary = pipeline.stages[static_cast<std::size_t>(stage)].summary();
-            require(summary.samples == 2 && summary.meanMicroseconds == 0);
-        }
-        require(co_await session.forward(states[0].endpoint, refinementAck(3, 2)));
-        auto detail = refinement(6, 2, 2);                                                        // A separate static worker invocation on the same base.
-        detail.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(128); // Not the already-refined dynamic tile.
-        *detail.mutable_video_refinement()->mutable_stage_timing() = workerStages();
-        require(co_await session.forward(states[3].endpoint, detail));
-        co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20));
-        for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
-            require(pipeline.stages[index].summary().samples == 2);
-        }
-        require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == 5);
-        require(writers[2].messages.size() == 6 && writers[2].messages.back().SerializeAsString() == detail.SerializeAsString());
-        session.close();
-        co_await scope.join();
-        for (const auto& writer : writers) {
-            require(writer.aborted);
-        }
-        require(budget->used == 0);
-    });
+    }
 }
-ruvia::task<void> exerciseDynamicStagePresence(ruvia::execution_handle worker) {
+ruvia::task<void> exerciseDynamicStagePresence(ruvia::worker_handle worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     for (int presence = 0; presence < 6; ++presence) {
         server::DesktopSession session(worker, budget);
@@ -308,7 +331,7 @@ ruvia::task<void> exerciseDynamicStagePresence(ruvia::execution_handle worker) {
         require(stages[0].summary().meanMicroseconds == 0 && budget->used == 0);
     }
 }
-ruvia::task<void> exerciseRefinementCleanup(ruvia::execution_handle worker) {
+ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_handle worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     for (const auto status : {wire::DesktopRefinementAck::APPLIED, wire::DesktopRefinementAck::SUPERSEDED}) {
         for (const auto contract : {2u, 0u, 3u}) {
@@ -440,7 +463,7 @@ ruvia::task<void> exerciseRefinementCleanup(ruvia::execution_handle worker) {
         require(session.diagnostics().feedbackMessages == 0 && budget->used == 0);
     }
 }
-ruvia::task<void> exerciseOptimization(ruvia::execution_handle worker) {
+ruvia::task<void> exerciseOptimization(ruvia::worker_handle worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     {
         server::DesktopSession session(worker, budget);
@@ -673,7 +696,7 @@ ruvia::task<void> exerciseOptimization(ruvia::execution_handle worker) {
     }
     require(budget->used == 0);
 }
-ruvia::task<void> exercise(ruvia::execution_handle worker) {
+ruvia::task<void> exercise(ruvia::worker_handle worker) {
     {
         auto continuousBudget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
         server::DesktopSession session(worker, continuousBudget);
@@ -837,21 +860,43 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
             require(co_await session.forward(endpoints[0], refresh(sequence)));
         }
         bool finished = false;
-        ruvia::execution_domain ingress(worker.io_context());
-        co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
-            scope.spawn(ruvia::on(ingress.handle(), forwardBurst(session, endpoints[0], ingress.handle(), finished)));
-            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
-            require(session.ready() && !finished);
-            require(budget->used == 9 * protocol::encodeMessage(refresh(2))->size());
-            for (std::uint64_t sequence = 2; sequence <= 100; ++sequence) {
-                auto delivery = co_await endpoints[1]->receive({});
-                require(delivery && delivery->bytes() == *protocol::encodeMessage(refresh(sequence)));
+        {
+            const auto scopeWorker = worker;
+            ruvia::task_scope scope(scopeWorker);
+            bool scopeJoined = false;
+            std::exception_ptr scopeFailure;
+            try {
+                scope.spawn(forwardBurst(session, endpoints[0], worker, finished));
+                co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
+                require(session.ready() && !finished);
+                require(budget->used == 9 * protocol::encodeMessage(refresh(2))->size());
+                for (std::uint64_t sequence = 2; sequence <= 100; ++sequence) {
+                    auto delivery = co_await endpoints[1]->receive({});
+                    require(delivery && delivery->bytes() == *protocol::encodeMessage(refresh(sequence)));
+                }
+                scopeJoined = true;
+                co_await scope.join();
+                require(finished && session.ready() && budget->used == 0);
+                require(session.diagnostics().backpressureEvents > 0);
+                require(session.diagnostics().forwardedMessages == 99);
+
+            } catch (...) {
+                scopeFailure = std::current_exception();
             }
-            co_await scope.join();
-            require(finished && session.ready() && budget->used == 0);
-            require(session.diagnostics().backpressureEvents > 0);
-            require(session.diagnostics().forwardedMessages == 99);
-        });
+            if (!scopeJoined) {
+                scope.request_stop();
+                try {
+                    co_await scope.join();
+                } catch (...) {
+                    if (!scopeFailure) {
+                        scopeFailure = std::current_exception();
+                    }
+                }
+            }
+            if (scopeFailure) {
+                std::rethrow_exception(scopeFailure);
+            }
+        }
     }
     {
         server::DesktopSession session(worker, budget);
@@ -867,30 +912,53 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
         require(deliveredConfiguration && deliveredConfiguration->bytes() == *protocol::encodeMessage(configuration));
         deliveredConfiguration.reset();
         bool finished = false;
-        co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
-            scope.spawn(forwardVideoBurst(session, endpoints[3], configuration, finished));
-            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
-            require(session.ready() && !finished && budget->used > 2 * kSimulatedFrameBytes && budget->used < 4 * kSimulatedFrameBytes);
-            // A backed-up video route must not hold the separate input route.
-            const auto control = refresh(2);
-            require(co_await session.forward(endpoints[0], control));
-            auto controlDelivery = co_await endpoints[1]->receive({});
-            require(controlDelivery && controlDelivery->bytes() == *protocol::encodeMessage(control) && !finished);
-            controlDelivery.reset();
-            const std::string expectedFrame(kSimulatedFrameBytes, 'v');
-            for (std::uint64_t index = 1; index <= 30; ++index) {
-                auto delivery = co_await endpoints[2]->receive({});
-                const auto frame = delivery ? protocol::decodeMessage(delivery->bytes()) : std::unexpected(protocol::MessageError::kInvalidField);
-                require(frame && frame->frame_id() == index && frame->sequence() == index + 2 && frame->video_frame().timestamp_microseconds() == index * 33333 &&
-                        frame->video_frame().key_frame() == (index == 1) && frame->video_frame().data() == expectedFrame);
+        {
+            const auto scopeWorker = worker;
+            ruvia::task_scope scope(scopeWorker);
+            bool scopeJoined = false;
+            std::exception_ptr scopeFailure;
+            try {
+                scope.spawn(forwardVideoBurst(session, endpoints[3], configuration, finished));
                 co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
+                require(session.ready() && !finished && budget->used > 2 * kSimulatedFrameBytes && budget->used < 4 * kSimulatedFrameBytes);
+                // A backed-up video route must not hold the separate input route.
+                const auto control = refresh(2);
+                require(co_await session.forward(endpoints[0], control));
+                auto controlDelivery = co_await endpoints[1]->receive({});
+                require(controlDelivery && controlDelivery->bytes() == *protocol::encodeMessage(control) && !finished);
+                controlDelivery.reset();
+                const std::string expectedFrame(kSimulatedFrameBytes, 'v');
+                for (std::uint64_t index = 1; index <= 30; ++index) {
+                    auto delivery = co_await endpoints[2]->receive({});
+                    const auto frame = delivery ? protocol::decodeMessage(delivery->bytes()) : std::unexpected(protocol::MessageError::kInvalidField);
+                    require(frame && frame->frame_id() == index && frame->sequence() == index + 2 && frame->video_frame().timestamp_microseconds() == index * 33333 &&
+                            frame->video_frame().key_frame() == (index == 1) && frame->video_frame().data() == expectedFrame);
+                    co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
+                }
+                scopeJoined = true;
+                co_await scope.join();
+                require(finished && session.ready() && session.diagnostics().videoFrames == 30 && session.diagnostics().backpressureEvents > 0 && budget->used == 0);
+                const auto& stages = session.diagnostics().pipeline.stages;
+                require(stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoAdmission)].summary().maximumMicroseconds >= 8000);
+                require(stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == 0); // Receiving is not a completed WS write.
+
+            } catch (...) {
+                scopeFailure = std::current_exception();
             }
-            co_await scope.join();
-            require(finished && session.ready() && session.diagnostics().videoFrames == 30 && session.diagnostics().backpressureEvents > 0 && budget->used == 0);
-            const auto& stages = session.diagnostics().pipeline.stages;
-            require(stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoAdmission)].summary().maximumMicroseconds >= 8000);
-            require(stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == 0); // Receiving is not a completed WS write.
-        });
+            if (!scopeJoined) {
+                scope.request_stop();
+                try {
+                    co_await scope.join();
+                } catch (...) {
+                    if (!scopeFailure) {
+                        scopeFailure = std::current_exception();
+                    }
+                }
+            }
+            if (scopeFailure) {
+                std::rethrow_exception(scopeFailure);
+            }
+        }
     }
     for (bool cancel : {false, true}) {
         server::DesktopSession session(worker, budget);
@@ -899,38 +967,84 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
             require(co_await session.forward(endpoints[0], refresh(sequence)));
         }
         bool finished = false;
-        co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
-            ruvia::stop_source stop;
-            scope.spawn(awaitRejected(session, endpoints[0], stop.token(), finished));
-            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
-            require(!finished && session.ready());
-            if (cancel) {
-                stop.request_stop();
-            } else {
-                session.close();
+        {
+            const auto scopeWorker = worker;
+            ruvia::task_scope scope(scopeWorker);
+            bool scopeJoined = false;
+            std::exception_ptr scopeFailure;
+            try {
+                ruvia::stop_source stop;
+                scope.spawn(awaitRejected(session, endpoints[0], stop.token(), finished));
+                co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10));
+                require(!finished && session.ready());
+                if (cancel) {
+                    stop.request_stop();
+                } else {
+                    session.close();
+                }
+                scopeJoined = true;
+                co_await scope.join();
+                require(finished && !session.ready());
+                require(!(co_await endpoints[1]->receive({})));
+                require(budget->used == 0);
+
+            } catch (...) {
+                scopeFailure = std::current_exception();
             }
-            co_await scope.join();
-            require(finished && !session.ready());
-            require(!(co_await endpoints[1]->receive({})));
-            require(budget->used == 0);
-        });
+            if (!scopeJoined) {
+                scope.request_stop();
+                try {
+                    co_await scope.join();
+                } catch (...) {
+                    if (!scopeFailure) {
+                        scopeFailure = std::current_exception();
+                    }
+                }
+            }
+            if (scopeFailure) {
+                std::rethrow_exception(scopeFailure);
+            }
+        }
     }
     require(budget->used == 0);
     {
         auto session = std::make_unique<server::DesktopSession>(worker, budget);
         auto endpoints = co_await pair(*session);
         std::array<bool, 4> finished{};
-        co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& scope) -> ruvia::task<void> {
-            for (std::size_t i = 0; i < endpoints.size(); ++i) {
-                scope.spawn(awaitClose(*endpoints[i], finished[i]));
+        {
+            const auto scopeWorker = worker;
+            ruvia::task_scope scope(scopeWorker);
+            bool scopeJoined = false;
+            std::exception_ptr scopeFailure;
+            try {
+                for (std::size_t i = 0; i < endpoints.size(); ++i) {
+                    scope.spawn(awaitClose(*endpoints[i], finished[i]));
+                }
+                co_await ruvia::sleep_for(worker, std::chrono::milliseconds(1));
+                session.reset(); // Destruction must wake all four writers while endpoint handles survive.
+                scopeJoined = true;
+                co_await scope.join();
+                for (bool complete : finished) {
+                    require(complete);
+                }
+
+            } catch (...) {
+                scopeFailure = std::current_exception();
             }
-            co_await ruvia::sleep_for(worker, std::chrono::milliseconds(1));
-            session.reset(); // Destruction must wake all four writers while endpoint handles survive.
-            co_await scope.join();
-            for (bool complete : finished) {
-                require(complete);
+            if (!scopeJoined) {
+                scope.request_stop();
+                try {
+                    co_await scope.join();
+                } catch (...) {
+                    if (!scopeFailure) {
+                        scopeFailure = std::current_exception();
+                    }
+                }
             }
-        });
+            if (scopeFailure) {
+                std::rethrow_exception(scopeFailure);
+            }
+        }
     }
     {
         auto small = std::make_shared<server::DesktopBudget>(protocol::encodeMessage(refresh(2))->size());
@@ -1096,9 +1210,9 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
 } // namespace
 int main() {
     try {
-        ruvia::io_runtime pool({.thread_count_ = 1});
+        ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
-        auto task = pool.control().start(exercise(pool.control()));
+        auto task = pool.loop(0).start(exercise(pool.loop(0).handle()));
         task.get();
         pool.join();
         std::cout << "Desktop four-endpoint pairing, binding, FIFO, replay, read-only access and bounded in-flight ownership passed\n";

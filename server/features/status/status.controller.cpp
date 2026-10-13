@@ -1,12 +1,14 @@
 #include "status.controller.h"
 
 #include <chrono>
+#include <exception>
 #include <set>
 #include <stdexcept>
 
 #include <boost/json.hpp>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
+#include <ruvia/web/websocket.h>
 
 namespace ultraterimal::server {
 namespace {
@@ -19,12 +21,12 @@ ruvia::task<void> send(ruvia::context& context, boost::json::object event) {
     if (bytes.size() > 1024 * 1024) {
         throw std::runtime_error("Device snapshot exceeds limit");
     }
-    co_await context.websocket().text(bytes);
+    co_await context.get_websocket().text(bytes);
 }
 ruvia::task<void> sendAccount(ruvia::context& context, const UserIdentity& user) {
-    auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
-    const auto telegram = (co_await context.run_blocking([service = runtime.telegram, user] { return service.state(user.id); })).value();
-    const auto approvals = (co_await context.run_blocking([service = runtime.telegram, user] { return service.approvals(user); })).value();
+    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    const auto telegram = (co_await context.run_blocking([service = runtime.telegram, user] { return service.state(user.id); }));
+    const auto approvals = (co_await context.run_blocking([service = runtime.telegram, user] { return service.approvals(user); }));
     boost::json::array items;
     for (const auto& a : approvals) {
         items.push_back(boost::json::object{{"id", a.id}, {"device_id", a.deviceId}, {"state", a.state}, {"write_control", a.writeControl}, {"expires_at", a.expiresAt}});
@@ -33,13 +35,13 @@ ruvia::task<void> sendAccount(ruvia::context& context, const UserIdentity& user)
 }
 ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subscription, ruvia::task_scope& scope, bool& awaitingPong) {
     try {
-        auto& runtime = (*context.connection_state<std::shared_ptr<ServerRuntime>>());
+        auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
         const auto token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""));
         const bool administration = context.req().query("scope").value_or("") == "administration";
         if (administration && context.request_state<UserIdentity>().role != "admin") {
             throw std::runtime_error("Administrator required");
         }
-        const auto devices = (co_await context.run_blocking([service = runtime.devices, user = subscription.userId, administration] { return service.list(user, administration); })).value();
+        const auto devices = (co_await context.run_blocking([service = runtime.devices, user = subscription.userId, administration] { return service.list(user, administration); }));
         std::set<std::string> visible;
         boost::json::array snapshot;
         for (const auto& device : devices) {
@@ -49,11 +51,11 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
         co_await send(context, {{"type", "snapshot"}, {"devices", std::move(snapshot)}});
         co_await sendAccount(context, context.request_state<UserIdentity>());
         while (!scope.stop_requested()) {
-            const auto event = co_await subscription.receive(scope.stop_token());
+            const auto event = co_await subscription.receive(scope.get_stop_token());
             if (!event || scope.stop_requested()) {
                 break;
             }
-            const auto user = (co_await context.run_blocking([service = runtime.identities, token] { return service.authenticate(token); })).value();
+            const auto user = (co_await context.run_blocking([service = runtime.identities, token] { return service.authenticate(token); }));
             if (!user || user->id != subscription.userId || (administration && user->role != "admin") || subscription.closed()) {
                 break;
             }
@@ -64,7 +66,7 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
                 co_await sendAccount(context, *user);
             } else if (event->starts_with("d:")) {
                 const auto id = event->substr(2);
-                const auto device = (co_await context.run_blocking([service = runtime.devices, user = subscription.userId, id, administration] { return service.find(user, id, administration); })).value();
+                const auto device = (co_await context.run_blocking([service = runtime.devices, user = subscription.userId, id, administration] { return service.find(user, id, administration); }));
                 if (scope.stop_requested() || subscription.closed()) {
                     break;
                 }
@@ -82,41 +84,66 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
     } catch (const std::exception&) {
     }
     subscription.close();
-    context.websocket().abort();
+    context.get_websocket().abort();
 }
 ruvia::task<void> watchStatus(ruvia::context& context, StatusSubscription& subscription, ruvia::task_scope& scope, bool& awaitingPong) {
-    while (co_await ruvia::sleep_for(context.execution(), std::chrono::seconds(15), scope.stop_token()) == ruvia::timer_sleep_result::elapsed) {
+    while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(15), scope.get_stop_token()) == ruvia::timer_sleep_result::elapsed) {
         if (awaitingPong || !subscription.enqueue("h")) {
             subscription.close();
-            context.websocket().abort();
+            context.get_websocket().abort();
             break;
         }
     }
 }
 } // namespace
-ruvia::task<void> StatusController::events(ruvia::context& context) const {
-    auto subscription = (*context.connection_state<std::shared_ptr<ServerRuntime>>()).status.subscribe(context.execution(), context.request_state<UserIdentity>().id);
+ruvia::task<void> StatusController::events(ruvia::context& context) {
+    auto subscription = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).status.subscribe(context.worker(), context.request_state<UserIdentity>().id);
     if (!subscription) {
-        co_await context.websocket().close({.code_ = 1008, .reason_ = "Status subscription limit"});
+        co_await context.get_websocket().close({.code_ = 1008, .reason_ = "Status subscription limit"});
         co_return;
     }
-    co_await ruvia::with_task_scope(context.execution(), [&](ruvia::task_scope& scope) -> ruvia::task<void> {
+    {
+        const auto scopeWorker = context.worker();
+        ruvia::task_scope scope(scopeWorker);
+        bool scopeJoined = false;
+        std::exception_ptr scopeFailure;
         bool awaitingPong = false;
-        scope.spawn(writeStatus(context, *subscription, scope, awaitingPong));
-        scope.spawn(watchStatus(context, *subscription, scope, awaitingPong));
         try {
-            while (const auto message = co_await context.websocket().read()) {
-                if (message->binary() || message->payload() != "{\"type\":\"pong\"}" || !awaitingPong) {
-                    break;
+            scope.spawn(writeStatus(context, *subscription, scope, awaitingPong));
+            scope.spawn(watchStatus(context, *subscription, scope, awaitingPong));
+            try {
+                while (const auto message = co_await context.get_websocket().read()) {
+                    if (message->binary() || message->payload() != "{\"type\":\"pong\"}" || !awaitingPong) {
+                        break;
+                    }
+                    awaitingPong = false;
                 }
-                awaitingPong = false;
+            } catch (const std::exception&) {
             }
-        } catch (const std::exception&) {
+            subscription->close();
+            context.get_websocket().abort();
+            scope.request_stop();
+            scopeJoined = true;
+            co_await scope.join();
+
+        } catch (...) {
+            scopeFailure = std::current_exception();
+            subscription->close();
+            context.get_websocket().abort();
         }
-        subscription->close();
-        context.websocket().abort();
-        scope.request_stop();
-        co_await scope.join();
-    });
+        if (!scopeJoined) {
+            scope.request_stop();
+            try {
+                co_await scope.join();
+            } catch (...) {
+                if (!scopeFailure) {
+                    scopeFailure = std::current_exception();
+                }
+            }
+        }
+        if (scopeFailure) {
+            std::rethrow_exception(scopeFailure);
+        }
+    }
 }
 } // namespace ultraterimal::server

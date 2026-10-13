@@ -5,7 +5,7 @@
 #include <memory>
 #include <string_view>
 
-#include <ruvia/web/application.h>
+#include <ruvia/web/app.h>
 #include <ruvia/web/controller.h>
 #include <spdlog/spdlog.h>
 
@@ -57,21 +57,20 @@ int main(int argc, char** argv) {
         if (!config.webRoot.empty()) {
             app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind_type::only, .extensions_ = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi", "gz"}}}, .precompress_gzip_ = true});
         }
-        // Shared business state is confined to this single I/O thread.
+        // Shared business state is confined to one application Worker.
         app.listen({.address_ = config.address, .http_ = config.port})
-            .server({.io_thread_count_ = 1, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install, .idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::seconds(10), .write_timeout_ = std::chrono::seconds(10), .max_connections_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
-            .http_client({.alias_ = "telegram", .config_ = {.host_ = "api.telegram.org", .connection_count_ = 2, .max_buffered_requests_ = 32, .request_timeout_ = std::chrono::seconds(10), .max_response_bytes_ = 65536}})
-            .blocking_pool({.thread_count_ = 4, .queue_capacity_ = 64})
-            .rate_limit({.rule_ = {.max_requests_ = 300, .window_ = std::chrono::minutes(1)}})
-            .use_service_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
-            .use_connection_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
+            .server({.worker_count_ = 1, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install, .idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::seconds(10), .write_timeout_ = std::chrono::seconds(10), .max_connections_per_worker_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
+            .get_http_client({.alias_ = "telegram", .config_ = {.host_ = "api.telegram.org", .connection_count_ = 2, .max_buffered_requests_ = 32, .request_timeout_ = std::chrono::seconds(10), .max_response_bytes_ = 65536}})
+            .get_blocking_pool({.thread_count_ = 4, .queue_capacity_ = 64})
+            .get_rate_limit({.rule_ = {.max_requests_ = 300, .window_ = std::chrono::minutes(1)}})
+            .use_worker_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
             .on_error([](ruvia::context& context, ruvia::http_error_info error) -> ruvia::task<ruvia::http_response> {
                 spdlog::warn("http_request_failed status={} code={}", error.status().value(), error.code());
                 co_return context.error({.status_ = error.status(), .code_ = "request_failed", .message_ = "Request failed"});
             })
             .on_start([gateway, native] {
                 gateway->start();
-                native->start(ruvia::app().service());
+                native->start(ruvia::app().workers().at(0));
                 spdlog::info("Gateway listening with HTTP behind reverse proxy");
             })
             .on_stop([gateway, native] { native->stop(); gateway->stop(); })

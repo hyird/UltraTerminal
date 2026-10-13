@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "quic.transport.h"
 #include "tls.transport.h"
@@ -17,7 +17,7 @@ enum class NativeLink { kDisconnected,
 // closed; its owner must reauthenticate and rebuild the desktop baseline.
 class NativeTransport {
   public:
-    NativeTransport(ruvia::execution_handle loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes);
+    NativeTransport(ruvia::event_loop loop, const ConnectionConfig& config, std::size_t maximumMessageBytes = protocol::kMaximumMessageBytes);
     ~NativeTransport();
     NativeTransport(const NativeTransport&) = delete;
     NativeTransport& operator=(const NativeTransport&) = delete;

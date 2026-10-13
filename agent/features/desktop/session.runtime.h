@@ -7,7 +7,7 @@
 #include <string>
 #include <utility>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "features/connection/connection.config.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
@@ -64,7 +64,7 @@ struct DesktopSessionResult {
 class ConsoleSessionEvents;
 class DesktopSession {
   public:
-    DesktopSession(ruvia::execution_handle loop, ConnectionConfig config, wire::Envelope grant,
+    DesktopSession(ruvia::event_loop loop, ConnectionConfig config, wire::Envelope grant,
                    std::filesystem::path executable, std::uint32_t windowsSession, ConsoleSessionEvents* consoleEvents = nullptr);
     ~DesktopSession();
     DesktopSession(const DesktopSession&) = delete;

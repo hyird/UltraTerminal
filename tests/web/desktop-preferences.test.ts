@@ -36,21 +36,20 @@ function storageFixture() {
 const key = "ultraterimal.desktop.v1:user:device";
 const defaults = { scale: "fit", resolution: null };
 
-test("desktop preferences ignore every legacy quality while preserving scale and resolution", () => {
+test("desktop preferences persist scale and resolution for each user and device", () => {
   const storage = storageFixture();
   try {
-    for (const quality of ["auto", "balanced", "smooth", "sharp", null, {}]) {
+    for (const scale of ["native", "fit"]) {
       storage.entries.set(
         key,
         JSON.stringify({
-          scale: "native",
-          quality,
+          scale,
           resolution: { width: 1920, height: 1080 },
         }),
       );
       const preferences = loadDesktopPreferences("user", "device");
       expect(preferences).toEqual({
-        scale: "native",
+        scale,
         resolution: { width: 1920, height: 1080 },
       });
       saveDesktopPreferences("user", "device", preferences);
@@ -58,13 +57,6 @@ test("desktop preferences ignore every legacy quality while preserving scale and
         preferences,
       );
     }
-    // The writer only persists supported fields, even with a legacy object.
-    const legacy = {
-      ...loadDesktopPreferences("user", "device"),
-      quality: "smooth",
-    };
-    saveDesktopPreferences("user", "device", legacy);
-    expect(storage.entries.get(key)).not.toContain("quality");
     expect(loadDesktopPreferences("other-user", "device")).toEqual(defaults);
     expect(loadDesktopPreferences("user", "other-device")).toEqual(defaults);
   } finally {
@@ -82,11 +74,9 @@ test("desktop preferences tolerate invalid or unavailable storage and still vali
       "42",
       JSON.stringify({
         scale: "invalid",
-        quality: "smooth",
         resolution: { width: 1919, height: 1080 },
       }),
       JSON.stringify({
-        quality: "sharp",
         resolution: { width: 8192, height: 2160 },
       }),
     ]) {

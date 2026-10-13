@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <memory>
 
-#include <ruvia/core/execution_handle.h>
+#include <ruvia/core/event_loop.h>
 
 #include "send_queue.runtime.h"
 #include "ultraterimal/protocol/message.protocol.h"
@@ -16,7 +16,7 @@ class DesktopWorkerChannel;
 // worker replacement. Destroy only after run() and all worker bridges finish.
 class DesktopRelay {
   public:
-    DesktopRelay(ruvia::execution_handle loop, DesktopTransport& transport);
+    DesktopRelay(ruvia::event_loop loop, DesktopTransport& transport);
     ~DesktopRelay();
     asio::awaitable<void> run();
     std::shared_ptr<DesktopWorkerChannel> attach();

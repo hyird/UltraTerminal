@@ -421,9 +421,6 @@ export class DesktopSession {
           ...(this.optimizationV2 && this.browserTiming
             ? { browserTiming: this.browserTiming }
             : {}),
-          // Keep the sharp target under pressure; queue/timing feedback still
-          // lets the Agent adapt frame admission without lowering quality.
-          preference: wire.QualityFeedback.Preference.SHARP,
         },
       });
   }
@@ -1236,8 +1233,12 @@ export class DesktopSession {
     let height = this.overlay.height / ratio;
     if (this.scaleMode === "fit" && viewport && width && height) {
       if (!viewport.clientWidth || !viewport.clientHeight) return;
-      width = viewport.clientWidth;
-      height = viewport.clientHeight;
+      const scale = Math.min(
+        viewport.clientWidth / width,
+        viewport.clientHeight / height,
+      );
+      width *= scale;
+      height *= scale;
     }
     stage.style.width = `${width}px`;
     stage.style.height = `${height}px`;

@@ -332,7 +332,7 @@ void verifyAlgorithms() {
     require(cost.prediction() >= milliseconds(8));
     cost.begin(now + seconds(3), microseconds(200));
     require(!cost.admit(now + seconds(3), milliseconds(20)));
-    // Identical SMOOTH 8Mbps/60fps inputs: 8333us is a compute deadline,
+    // Identical 8Mbps/60fps inputs: 8333us is a compute deadline,
     // not a compute+network allowance. No sleep/probe is needed for cheap work.
     DesktopOptionalProbe sharedProbe{now};
     DesktopRegionCost domains(&sharedProbe), detailDomains(&sharedProbe);

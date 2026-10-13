@@ -1,8 +1,9 @@
 #include <chrono>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 
-#include <ruvia/core/io_runtime.h>
+#include <ruvia/core/event_loop_pool.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 
@@ -29,7 +30,7 @@ ruvia::task<void> replyLogin(ultraterimal::server::ControlConnection& connection
         }
     }
 }
-ruvia::task<void> replyRestartLate(ultraterimal::server::ControlConnection& connection, ruvia::execution_handle worker, bool& accepted) {
+ruvia::task<void> replyRestartLate(ultraterimal::server::ControlConnection& connection, ruvia::worker_handle worker, bool& accepted) {
     auto bytes = co_await connection.receive({});
     if (!bytes) {
         throw std::runtime_error("Missing restart request for timeout test");
@@ -53,7 +54,7 @@ void require(bool value) {
         throw std::runtime_error("Control queue invariant failed");
     }
 }
-ruvia::task<void> exercise(ruvia::execution_handle worker) {
+ruvia::task<void> exercise(ruvia::worker_handle worker) {
     using namespace ultraterimal;
     server::ControlConnection connection(worker);
     wire::Envelope heartbeat;
@@ -118,57 +119,126 @@ ruvia::task<void> exercise(ruvia::execution_handle worker) {
     require(!connection.windowsRestartReply(unknownRestart));
     restart.set_operation_id(std::string(64, 'c'));
     bool lateAccepted = false;
-    co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& lateReplies) -> ruvia::task<void> {
-        // enqueue is synchronous; an arbitrarily late ACK remains independently routable.
-        require(connection.enqueueRestart(restart));
-        lateReplies.spawn(replyRestartLate(connection, worker, lateAccepted));
-        co_await lateReplies.join();
-        require(lateAccepted);
-        for (int i = 0; i < 32; ++i) {
-            require(connection.enqueue(heartbeat));
+    {
+        const auto lateRepliesWorker = worker;
+        ruvia::task_scope lateReplies(lateRepliesWorker);
+        bool lateRepliesJoined = false;
+        std::exception_ptr lateRepliesFailure;
+        try {
+            // enqueue is synchronous; an arbitrarily late ACK remains independently routable.
+            require(connection.enqueueRestart(restart));
+            lateReplies.spawn(replyRestartLate(connection, worker, lateAccepted));
+            lateRepliesJoined = true;
+            co_await lateReplies.join();
+            require(lateAccepted);
+            for (int i = 0; i < 32; ++i) {
+                require(connection.enqueue(heartbeat));
+            }
+            restart.set_operation_id(std::string(64, 'd'));
+            require(!connection.enqueueRestart(restart)); // A full queue is a definite local rejection.
+            unknownRestart.set_operation_id(restart.operation_id());
+            require(!connection.windowsRestartReply(unknownRestart));
+            for (int i = 0; i < 32; ++i) {
+                require((co_await connection.receive({})).has_value());
+            }
+            require(!(co_await connection.windowsLogin(login))); // Old Agent capability.
+            connection.capabilities.set_windows_login_settings(true);
+            require(!(co_await connection.windowsLogin(login))); // No reply: bounded timeout.
+            auto expired = protocol::decodeMessage(*(co_await connection.receive({})));
+            require(expired && expired->has_windows_login_request());
+            wire::WindowsLoginResult late;
+            late.set_request_id(expired->windows_login_request().request_id());
+            require(connection.windowsLoginReply(late));
+            late.set_request_id(late.request_id() + 1);
+            require(!connection.windowsLoginReply(late)); // Unsolicited future correlation.
+            {
+                const auto repliesWorker = worker;
+                ruvia::task_scope replies(repliesWorker);
+                bool repliesJoined = false;
+                std::exception_ptr repliesFailure;
+                try {
+                    replies.spawn(replyLogin(connection, false));
+                    auto settings = co_await connection.windowsLogin(login);
+                    require(settings && settings->success());
+                    repliesJoined = true;
+                    co_await replies.join();
+                    {
+                        const auto disconnectReplyWorker = worker;
+                        ruvia::task_scope disconnectReply(disconnectReplyWorker);
+                        bool disconnectReplyJoined = false;
+                        std::exception_ptr disconnectReplyFailure;
+                        try {
+                            disconnectReply.spawn(replyLogin(connection, true));
+                            settings = co_await connection.windowsLogin(login);
+                            require(settings && !settings->success()); // Disconnect wakes pending request.
+                            disconnectReplyJoined = true;
+                            co_await disconnectReply.join();
+                            stop.request_stop();
+                            require(!(co_await connection.receive(stop.token())));
+                            connection.close();
+                            require(!connection.enqueue(heartbeat));
+                            require(!(co_await connection.receive({})));
+
+                        } catch (...) {
+                            disconnectReplyFailure = std::current_exception();
+                        }
+                        if (!disconnectReplyJoined) {
+                            disconnectReply.request_stop();
+                            try {
+                                co_await disconnectReply.join();
+                            } catch (...) {
+                                if (!disconnectReplyFailure) {
+                                    disconnectReplyFailure = std::current_exception();
+                                }
+                            }
+                        }
+                        if (disconnectReplyFailure) {
+                            std::rethrow_exception(disconnectReplyFailure);
+                        }
+                    }
+
+                } catch (...) {
+                    repliesFailure = std::current_exception();
+                }
+                if (!repliesJoined) {
+                    replies.request_stop();
+                    try {
+                        co_await replies.join();
+                    } catch (...) {
+                        if (!repliesFailure) {
+                            repliesFailure = std::current_exception();
+                        }
+                    }
+                }
+                if (repliesFailure) {
+                    std::rethrow_exception(repliesFailure);
+                }
+            }
+
+        } catch (...) {
+            lateRepliesFailure = std::current_exception();
         }
-        restart.set_operation_id(std::string(64, 'd'));
-        require(!connection.enqueueRestart(restart)); // A full queue is a definite local rejection.
-        unknownRestart.set_operation_id(restart.operation_id());
-        require(!connection.windowsRestartReply(unknownRestart));
-        for (int i = 0; i < 32; ++i) {
-            require((co_await connection.receive({})).has_value());
+        if (!lateRepliesJoined) {
+            lateReplies.request_stop();
+            try {
+                co_await lateReplies.join();
+            } catch (...) {
+                if (!lateRepliesFailure) {
+                    lateRepliesFailure = std::current_exception();
+                }
+            }
         }
-        require(!(co_await connection.windowsLogin(login))); // Old Agent capability.
-        connection.capabilities.set_windows_login_settings(true);
-        require(!(co_await connection.windowsLogin(login))); // No reply: bounded timeout.
-        auto expired = protocol::decodeMessage(*(co_await connection.receive({})));
-        require(expired && expired->has_windows_login_request());
-        wire::WindowsLoginResult late;
-        late.set_request_id(expired->windows_login_request().request_id());
-        require(connection.windowsLoginReply(late));
-        late.set_request_id(late.request_id() + 1);
-        require(!connection.windowsLoginReply(late)); // Unsolicited future correlation.
-        co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& replies) -> ruvia::task<void> {
-            replies.spawn(replyLogin(connection, false));
-            auto settings = co_await connection.windowsLogin(login);
-            require(settings && settings->success());
-            co_await replies.join();
-            co_await ruvia::with_task_scope(worker, [&](ruvia::task_scope& disconnectReply) -> ruvia::task<void> {
-                disconnectReply.spawn(replyLogin(connection, true));
-                settings = co_await connection.windowsLogin(login);
-                require(settings && !settings->success()); // Disconnect wakes pending request.
-                co_await disconnectReply.join();
-                stop.request_stop();
-                require(!(co_await connection.receive(stop.token())));
-                connection.close();
-                require(!connection.enqueue(heartbeat));
-                require(!(co_await connection.receive({})));
-            });
-        });
-    });
+        if (lateRepliesFailure) {
+            std::rethrow_exception(lateRepliesFailure);
+        }
+    }
 }
 } // namespace
 int main() {
     try {
-        ruvia::io_runtime pool({.thread_count_ = 1});
+        ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
-        auto task = pool.control().start(exercise(pool.control()));
+        auto task = pool.loop(0).start(exercise(pool.loop(0).handle()));
         task.get();
         pool.join();
         std::cout << "Control readiness, queue count/bytes, FIFO sequencing, cancellation and close passed\n";
