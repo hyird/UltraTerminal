@@ -46,6 +46,7 @@ export function loadDesktopPreferences(
   } catch {
     // Invalid or unavailable browser storage must not prevent a connection.
   }
+  saveDesktopPreferences(userId, deviceId, defaults);
   return defaults;
 }
 

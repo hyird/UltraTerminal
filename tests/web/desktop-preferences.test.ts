@@ -44,6 +44,7 @@ test("desktop preferences persist scale and resolution for each user and device"
         key,
         JSON.stringify({
           scale,
+          unsupported: true,
           resolution: { width: 1920, height: 1080 },
         }),
       );
@@ -52,6 +53,9 @@ test("desktop preferences persist scale and resolution for each user and device"
         scale,
         resolution: { width: 1920, height: 1080 },
       });
+      expect(JSON.parse(storage.entries.get(key) ?? "null")).toEqual(
+        preferences,
+      );
       saveDesktopPreferences("user", "device", preferences);
       expect(JSON.parse(storage.entries.get(key) ?? "null")).toEqual(
         preferences,
