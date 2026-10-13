@@ -33,6 +33,7 @@
 #include <ruvia/core/execution_domain.h>
 #include <wrl/client.h>
 
+#include "features/desktop/frame_flow.runtime.h"
 #include "features/desktop/optimization.runtime.h"
 #include "features/desktop/region_budget.types.h"
 #include "features/desktop/software_video.transport.h"
@@ -1278,7 +1279,9 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
                 warmReferences += patch.png().empty();
             }
         }
-        ready = fps == 30 && bitrate == 24000000;
+        // Cheap regions raise the cadence to the adaptive ceiling; measure the
+        // tiny budget only after that rate is steady.
+        ready = fps == agent::DesktopFrameFlow::kMaximumFramesPerSecond && bitrate == 24000000;
         if (!ready) {
             ++fixture::version;
         }
@@ -1297,7 +1300,7 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         std::cerr << "tiny_codec_numeric call=" << sample.call << " sleepUs=" << sample.sleepUs << " codecUs=" << sample.codecUs << " wallUs=" << sample.wallUs
                   << " bytes=" << sample.bytes << " fps=" << sample.fps << " bitrate=" << sample.bitrate << " refresh=" << sample.refresh << '\n';
     }
-    require(ready, "Existing rate controller did not establish fixed sharp 24Mbps/30fps");
+    require(ready, "Existing rate controller did not establish fixed sharp 24Mbps at the steady FPS ceiling");
     fixture::tinyFreshPalette = true; // Two new cheap WIC colors plus known reliable slots.
     unsigned regions = 0, definitions = 0, references = 0;
     std::vector<Clock::time_point> regionTimes;
@@ -1325,13 +1328,13 @@ asio::awaitable<void> tinyKnownCost(agent::DesktopVideoRuntime& video) {
         if (!update->region) {
             continue;
         }
-        if (update->region->target_bitrate() != 24000000 || update->region->target_frames_per_second() != 30) {
+        if (update->region->target_bitrate() != 24000000 || update->region->target_frames_per_second() != agent::DesktopFrameFlow::kMaximumFramesPerSecond) {
             if (const auto snapshot = video.diagnostics().lastAdmission) {
                 admissionNumeric(*snapshot);
             }
             std::cerr << "tiny rate bitrate=" << update->region->target_bitrate() << " fps=" << update->region->target_frames_per_second() << '\n';
         }
-        require(update->region->target_bitrate() == 24000000 && update->region->target_frames_per_second() == 30, "Tiny fixture changed fixed sharp 24Mbps/30fps conditions");
+        require(update->region->target_bitrate() == 24000000 && update->region->target_frames_per_second() == agent::DesktopFrameFlow::kMaximumFramesPerSecond, "Tiny fixture changed fixed sharp 24Mbps steady-ceiling conditions");
         require(update->region->ByteSizeLong() + 512 <= 8333, "Tiny region exceeded its independent byte budget");
         require(update->region->patches_size() == 1, "Tiny CPU update did not remain one patch");
         const auto& patch = update->region->patches(0);

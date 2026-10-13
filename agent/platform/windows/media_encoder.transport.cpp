@@ -1,5 +1,6 @@
 #include "media_encoder.transport.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -33,6 +34,11 @@ HRESULT codecValue(ICodecAPI& codec, const GUID& property, ULONG value) {
     setting.vt = VT_UI4;
     setting.ulVal = value;
     return codec.SetValue(&property, &setting);
+}
+// MF_MT_FRAME_RATE is fixed while streaming and the MFT budgets bytes per
+// nominal picture. Scale its mean so every actual picture keeps bitrate / FPS.
+ULONG pictureBitrate(std::uint32_t bitrate, std::uint32_t nominalFramesPerSecond, std::uint32_t framesPerSecond) {
+    return static_cast<ULONG>(std::clamp<std::uint64_t>(static_cast<std::uint64_t>(bitrate) * nominalFramesPerSecond / framesPerSecond, 64000, 100000000));
 }
 // MF owns callbacks until tracked input samples are released. No callback
 // touches the encoder or D3D context; only an independently owned atomic slot.
@@ -73,6 +79,7 @@ class SurfaceRelease final : public IMFAsyncCallback {
 struct MediaEncoder::State {
     MediaRuntime runtime;
     MediaEncoderConfig config;
+    std::uint32_t nominalFramesPerSecond = config.framesPerSecond;
     ComPtr<IMFActivate> activation;
     ComPtr<IMFTransform> transform;
     ComPtr<ICodecAPI> codec;
@@ -301,8 +308,9 @@ std::expected<void, HRESULT> MediaEncoder::setRate(std::uint32_t framesPerSecond
     if (state.failed || !framesPerSecond || framesPerSecond > 120 || bitrate < 64000 || bitrate > 100000000) {
         return std::unexpected(E_INVALIDARG);
     }
-    if (bitrate != state.config.bitrate) {
-        const auto result = codecValue(*state.codec.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate);
+    const auto mean = pictureBitrate(bitrate, state.nominalFramesPerSecond, framesPerSecond);
+    if (mean != pictureBitrate(state.config.bitrate, state.nominalFramesPerSecond, state.config.framesPerSecond)) {
+        const auto result = codecValue(*state.codec.Get(), CODECAPI_AVEncCommonMeanBitRate, mean);
         if (FAILED(result)) {
             state.failed = true;
             return std::unexpected(result);

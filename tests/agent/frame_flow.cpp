@@ -99,6 +99,17 @@ void smallRegionToSharpMotion() {
     require(link.videoTimes.size() >= 280, "Repeated small-region/sharp-video transitions remained stuck at 3-5 FPS");
 }
 void normalVbvAfterBurst() {
+    // V2 VBV pictures: one oversized changed picture is bounded by byte credit,
+    // not by seconds of reduced cadence while the +1 FPS probe revalidates.
+    DesktopFrameFlow vbv;
+    vbv.setFixedPictureCost(false);
+    vbv.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
+    require(vbv.rate().framesPerSecond >= 30 && vbv.byteWindow() == 800000, "A single VBV burst reduced cadence or escaped its credit cushion");
+    for (unsigned sample = 0; sample < 12; ++sample) {
+        const auto rate = vbv.rate();
+        vbv.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond), 1920 * 1080, 5ms);
+    }
+    require(vbv.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Healthy VBV motion did not reach the adaptive cadence ceiling");
     for (const auto overhead : {0u, 256u}) {
         DesktopFrameFlow flow;
         flow.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
@@ -108,12 +119,12 @@ void normalVbvAfterBurst() {
             const auto rate = flow.rate();
             flow.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond) + overhead, 1920 * 1080, 5ms);
             require(flow.rate().framesPerSecond <= rate.framesPerSecond + 1, "VBV cost revalidation jumped more than one FPS");
-            if (!firstRecovered && flow.rate().framesPerSecond == 30) {
+            if (!firstRecovered && flow.rate().framesPerSecond >= 30) {
                 firstRecovered = sample;
             }
         }
-        std::cout << "vbv_after_single_burst initial_fps=" << reduced << " frames=100 overhead_bytes=" << overhead << " ending_fps=" << flow.rate().framesPerSecond << " first_30fps_sample=" << firstRecovered << '\n';
-        require(reduced == 7 && flow.rate().framesPerSecond == 30 && firstRecovered, "A single non-key burst permanently locked normal VBV cadence without an artificial cheap frame");
+        std::cout << "fixed_cost_after_single_burst initial_fps=" << reduced << " frames=100 overhead_bytes=" << overhead << " ending_fps=" << flow.rate().framesPerSecond << " first_30fps_sample=" << firstRecovered << '\n';
+        require(reduced == 7 && flow.rate().framesPerSecond >= 30 && firstRecovered, "A single fixed-cost burst permanently locked cadence without an artificial cheap frame");
     }
     DesktopFrameFlow cpu;
     cpu.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 40ms);
@@ -136,7 +147,7 @@ void actualFrameCost() {
     for (unsigned sample = 0; sample < 12; ++sample) {
         flow.observeFrame(FrameType::kRegion, 1000, 128 * 64, 5ms);
     }
-    require(flow.rate().framesPerSecond == 30, "Historical sharp picture cost throttled cheap regions");
+    require(flow.rate().framesPerSecond >= 30, "Historical sharp picture cost throttled cheap regions");
     flow.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
     require(flow.rate().framesPerSecond == 7, "Region-to-sharp transition lost the real video payload floor");
     unsigned probes = 0;
@@ -172,7 +183,7 @@ void fixedSharpCapacityChange() {
     require(link.flow.rate().bitrate < 2000000 && link.flow.rate().framesPerSecond == 5, "Restoration hysteresis ignored renewed fixed-sharp congestion");
     Link distant;
     distant.run(12s, 10000000, 600ms, {.fixedBytes = 100000});
-    require(distant.videoTimes.size() > 300 && distant.flow.rate().bitrate == 24000000 && distant.flow.rate().framesPerSecond == 30, "High RTT alone throttled fixed sharp pictures");
+    require(distant.videoTimes.size() > 300 && distant.flow.rate().bitrate == 24000000 && distant.flow.rate().framesPerSecond >= 30, "High RTT alone throttled fixed sharp pictures");
 }
 void lowLoadBackgroundAndDecode() {
     for (const auto type : {FrameType::kRegion, FrameType::kVideo}) {
@@ -374,7 +385,7 @@ int main() {
             const auto rate = motion.rate();
             motion.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond), 1920 * 1080, 12ms);
         }
-        require(motion.rate().framesPerSecond == 30, "Rate-controlled motion reduced its own cadence on an uncongested path");
+        require(motion.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Rate-controlled motion did not reach the adaptive ceiling on an uncongested path");
         DesktopFrameFlow decoder;
         decoder.observeRoundTrip(20ms, now);
         for (std::uint64_t id = 1; id <= 12; ++id) {
@@ -389,13 +400,15 @@ int main() {
             idle.sent(1, id, now, 1000, FrameType::kVideo);
             require(idle.acknowledge(1, id, 1000, 0, now + 20ms), "Idle ACK rejected");
         }
-        require(idle.rate().framesPerSecond == 30 && idle.rate().bitrate == 24000000, "Static idle time was interpreted as narrow capacity");
+        require(idle.rate().framesPerSecond >= 30 && idle.rate().bitrate == 24000000, "Static idle time was interpreted as narrow capacity");
         Link fast;
         fast.run(12s, 10000000, 20ms);
-        require(fast.frame > 330 && fast.frame <= 360 && fast.flow.rate().framesPerSecond == 30, "Fast path failed to sustain the 30 FPS ceiling");
+        std::cout << "fast_12s frames=" << fast.frame << " fps=" << fast.flow.rate().framesPerSecond << '\n';
+        require(fast.frame > 660 && fast.frame <= 720 && fast.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Fast path failed to sustain the adaptive FPS ceiling");
         Link distant;
         distant.run(12s, 10000000, 600ms);
-        require(distant.frame > 300 && distant.frame <= 360 && distant.flow.rate().framesPerSecond == 30, "Stable high RTT caused unnecessary rate reduction");
+        std::cout << "distant_12s frames=" << distant.frame << " fps=" << distant.flow.rate().framesPerSecond << '\n';
+        require(distant.frame > 600 && distant.frame <= 720 && distant.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Stable high RTT caused unnecessary rate reduction");
         Link narrow;
         narrow.run(30s, 125000, 40ms);
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Narrow link failed to adapt both bitrate and capture cadence");
@@ -416,7 +429,7 @@ int main() {
         const auto reduced = narrow.flow.rate();
         narrow.run(25s, 10000000, 40ms);
         std::cout << "recovery_25s_bitrate=" << narrow.flow.rate().bitrate << " fps=" << narrow.flow.rate().framesPerSecond << '\n';
-        require(narrow.flow.rate().bitrate > reduced.bitrate * 8 && narrow.flow.rate().framesPerSecond == 30, "Capacity recovery failed to restore the 30 FPS ceiling");
+        require(narrow.flow.rate().bitrate > reduced.bitrate * 8 && narrow.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Capacity recovery failed to restore the adaptive FPS ceiling");
         narrow.run(30s, 125000, 40ms);
         require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Recovery ignored renewed congestion");
         DesktopFrameFlow stalled;

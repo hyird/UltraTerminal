@@ -102,7 +102,13 @@ struct VideoWorker {
     bool pixelsPending = false;
     bool readbackReady = false;
     bool capturedOnGpu = false;
-    std::chrono::steady_clock::time_point encodeAt{};
+    // Changed pictures follow encodeAt; unchanged repeats wait for repeatAt.
+    std::chrono::steady_clock::time_point encodeAt{}, repeatAt{};
+    void scheduleNextFrame(std::chrono::steady_clock::time_point started, std::uint32_t framesPerSecond, bool refresh, bool repeated) {
+        const auto slots = nextDesktopFrameSlots({encodeAt, repeatAt}, started, framesPerSecond, continuousFrames, refresh, repeated);
+        encodeAt = slots.content;
+        repeatAt = slots.repeated;
+    }
     std::chrono::steady_clock::time_point compareAt{};
     DesktopCursor cursor;
     CaptureRecovery recovery;
@@ -1140,7 +1146,8 @@ struct VideoWorker {
             if (!consumeReady) {
                 auto wait = std::chrono::milliseconds(readyToEncode || !allowEncode || readback ? 0 : 16);
                 if (continuousFrames && retained && allowEncode) {
-                    wait = std::min(wait, std::chrono::duration_cast<std::chrono::milliseconds>(std::max(encodeAt - now, VideoClock::duration::zero())));
+                    // New pixels still wake DXGI at once; a static source waits for its repeat slot.
+                    wait = std::min(wait, std::chrono::duration_cast<std::chrono::milliseconds>(std::max((pixelsPending ? encodeAt : repeatAt) - now, VideoClock::duration::zero())));
                 }
                 pixels = capture->nextFrame(wait, retained ? &retained->bgra : nullptr, &timing, retained.has_value() && fullPixelsValid, readPixels, !encoder || gpu || codecChanged);
             }
@@ -1183,7 +1190,7 @@ struct VideoWorker {
             }
             return std::nullopt;
         }
-        const bool repeatDue = continuousFrames && allowEncode && retained && VideoClock::now() >= encodeAt;
+        const bool repeatDue = continuousFrames && allowEncode && retained && VideoClock::now() >= repeatAt;
         const auto idle = std::chrono::steady_clock::now() - lastContentAt >= std::chrono::milliseconds(180);
         const bool detailDue = allowRefinement && contentFrameId && idle && (optimizationV2 ? detailBudget > 512 && (!refinementPlan.complete() || (readback && readback->purpose == ReadbackPurpose::kStatic)) : refinedFrame != contentFrameId);
         if (!pixels && ((!refresh && !pixelsPending && !detailDue && !repeatDue) || !retained)) {
@@ -1507,7 +1514,7 @@ struct VideoWorker {
                     lastEncodedTicks = lastPresentTicks;
                     lastEncodedAt = VideoClock::now();
                     lastContentAt = lastEncodedAt;
-                    encodeAt = nextDesktopFrameAt(encodeAt, cadenceStarted, rate.framesPerSecond, continuousFrames, false);
+                    scheduleNextFrame(cadenceStarted, rate.framesPerSecond, false, false);
                     damage.commit();
                     coalescedCaptures = 0;
                     pendingCpuMap.reset();
@@ -1604,7 +1611,7 @@ struct VideoWorker {
                 lastEncodedTicks = lastPresentTicks;
                 lastEncodedAt = std::chrono::steady_clock::now();
                 lastContentAt = lastEncodedAt;
-                encodeAt = nextDesktopFrameAt(encodeAt, cadenceStarted, rate.framesPerSecond, continuousFrames, false);
+                scheduleNextFrame(cadenceStarted, rate.framesPerSecond, false, false);
                 damage.commit();
                 return update;
             }
@@ -1643,8 +1650,8 @@ struct VideoWorker {
         }
         // Acquisition/readback belong to this frame's period. Starting the
         // clock after a slow Map would add another idle wait to every frame.
-        encodeAt = nextDesktopFrameAt(encodeAt, cadenceStarted, rate.framesPerSecond, continuousFrames, refresh || configurationPending);
         bool repeated = continuousFrames && contentFrameId && !pixelsPending && !refresh && !configurationPending;
+        scheduleNextFrame(cadenceStarted, rate.framesPerSecond, refresh || configurationPending, repeated);
         const auto encodeStarted = std::chrono::steady_clock::now();
         if (diagnostics.lastReadback && diagnostics.lastReadback->retirementReason != DesktopVideoFallbackReason::kNone && diagnostics.lastReadback->videoFallbackReason == DesktopVideoFallbackReason::kNone) {
             auto& trace = *diagnostics.lastReadback;
@@ -2096,6 +2103,8 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                               : result->frame.repeated()  ? (result->frame.key_frame() ? DesktopFrameFlow::FrameType::kRepeatedKeyFrame : DesktopFrameFlow::FrameType::kRepeatedVideo)
                               : result->frame.key_frame() ? DesktopFrameFlow::FrameType::kKeyFrame
                                                           : DesktopFrameFlow::FrameType::kVideo;
+            // The worker built this picture with sharp QP bounds only outside v2.
+            self->flow.setFixedPictureCost(!activeV2);
             self->flow.observeFrame(type, bytes, result->changedPixels, std::chrono::microseconds(result->region ? result->region->encode_microseconds() : result->frame.encode_microseconds()));
             self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), bytes, type);
             if (!result->frame.data().empty()) {

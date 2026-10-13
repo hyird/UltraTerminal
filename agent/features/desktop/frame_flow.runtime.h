@@ -28,7 +28,9 @@ class DesktopFrameFlow {
         std::uint32_t bitrate = kTargetVideoBitrate;
     };
     static constexpr std::size_t kMaximumInFlightFrames = 128;
-    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 30;
+    // Clarity budget, encode/decode cost, receiver credit and congestion still
+    // decide the actual cadence below this ceiling.
+    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
     static constexpr std::uint32_t kTargetVideoBitrate = 24000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
@@ -47,6 +49,17 @@ class DesktopFrameFlow {
         videoBudgetFrames_ = 0;
         updateFrameRate();
         return true;
+    }
+    // V2 encoders obey VBV: a burst only redistributes bytes and its real
+    // size is already bounded by byte credit. Only a quality-floor encoder
+    // (legacy sharp QP bounds) has a fixed picture cost that bounds cadence.
+    void setFixedPictureCost(bool fixed) {
+        if (fixed == fixedPictureCost_) {
+            return;
+        }
+        fixedPictureCost_ = fixed;
+        videoPacingBytes_ = 0;
+        videoBudgetFrames_ = 0;
     }
     void reset(std::uint64_t generation) {
         if (generation != generation_) {
@@ -110,14 +123,15 @@ class DesktopFrameFlow {
             // The observed wire picture includes metadata and modest VBV variation.
             // This tolerance validates a cost probe; it never enlarges credit.
             const auto budgetTolerance = std::max<std::uint64_t>(512, nominalBytes / 20);
-            // Only an observed overrun learns a video payload floor. Normal VBV
-            // pictures redistribute bytes as FPS changes; treating every picture
-            // as fixed cost would recursively throttle an otherwise healthy codec.
-            // A VBV picture at a throttled cadence can look as expensive as the
-            // old burst. Four budget-compliant changed pictures permit a bounded
-            // +1 FPS revalidation, not an unconditional floor reset. If the next
+            // Only a quality-floor encoder learns a payload floor, from any real
+            // overrun of its per-picture budget: those bytes do not shrink with
+            // cadence. VBV pictures (setFixedPictureCost(false)) redistribute
+            // bytes as FPS changes and never learn one. A throttled cadence can
+            // make a revalidated picture look as expensive as the old one. Four
+            // budget-compliant changed pictures permit a bounded +1 FPS
+            // revalidation, not an unconditional floor reset. If the next
             // picture exceeds that new budget, immediately restore its real cost.
-            if (sample > nominalBytes * 2 || (videoPacingBytes_ && sample * 4 >= videoPacingBytes_ * 3)) {
+            if (fixedPictureCost_ && (sample > nominalBytes + budgetTolerance || (videoPacingBytes_ && sample * 4 >= videoPacingBytes_ * 3))) {
                 if (sample > nominalBytes + budgetTolerance) {
                     videoPacingBytes_ = sample;
                     videoBudgetFrames_ = 0;
@@ -456,7 +470,7 @@ class DesktopFrameFlow {
     std::uint64_t deliveryBytesPerSecond_ = 0, videoFrameBytes_ = 0, encodeMicroseconds_ = 0, decodeMicroseconds_ = 0;
     std::optional<std::uint64_t> scenePixels_;
     std::uint64_t regionBytes_ = 0, videoPacingBytes_ = 0;
-    bool videoPacingActive_ = false;
+    bool videoPacingActive_ = false, fixedPictureCost_ = true;
     std::uint32_t videoBudgetFrames_ = 0;
     std::deque<Pending> pending_;
     std::size_t pendingBytes_ = 0;
