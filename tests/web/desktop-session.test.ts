@@ -477,6 +477,54 @@ test("DesktopSession v2 refinement does not block new video and emits an indepen
   }
 });
 
+test("DesktopSession a late static patch cannot restore old content after repeats and a reliable region", async () => {
+  const h = harness();
+  try {
+    await h.activate(true);
+    h.refine(2, 1);
+    await until(() => h.counts().active === 1);
+    h.video.push({
+      generation: 2,
+      frameId: 2,
+      baseFrameId: 1,
+      videoFrame: {
+        timestampMicroseconds: 2,
+        repeated: true,
+        data: new Uint8Array([4, 5]),
+      },
+    });
+    await until(() => h.decoders[1].chunks.length === 2);
+    h.decoders[1].output();
+    h.video.push({
+      generation: 2,
+      frameId: 3,
+      baseFrameId: 2,
+      desktopRegionUpdate: {
+        patches: [
+          { destination: { x: 128, width: 128, height: 64 }, png: png() },
+        ],
+      },
+    });
+    await until(() => h.counts().active === 2);
+    h.release();
+    await until(() => h.counts().closed === 2);
+    expect(h.draws).toEqual(["video", "video", "png"]); // Only the reliable new content is drawn.
+    expect(
+      h.control.sent.find((m) => m.desktopRefinementAck)?.desktopRefinementAck
+        ?.status,
+    ).toBe(wire.DesktopRefinementAck.Status.SUPERSEDED);
+    expect(
+      h.control.sent
+        .filter((m) => m.qualityFeedback)
+        .at(-1)
+        ?.qualityFeedback?.displayedFrame.toString(),
+    ).toBe("3");
+    expect(h.endings).toHaveLength(0);
+  } finally {
+    await h.dispose();
+  }
+});
+
 test("DesktopSession applied ACK and duration presence preserve the old video decode metric", async () => {
   const h = harness();
   try {

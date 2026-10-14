@@ -463,6 +463,10 @@ DesktopSession::RefinementAckResult DesktopSession::refinementAck(const wire::En
     if (outstandingRefinement_ && outstandingRefinement_->key == key) {
         // Cleanup releases the exact lease even after a config/frame change or
         // timeout. Forward once; never synthesize a video QualityFeedback ACK.
+        diagnostics_.refinementApplied += message.desktop_refinement_ack().status() == wire::DesktopRefinementAck::APPLIED;
+        diagnostics_.refinementSuperseded += message.desktop_refinement_ack().status() == wire::DesktopRefinementAck::SUPERSEDED;
+        diagnostics_.refinementAcknowledgement.observePresent(static_cast<std::uint32_t>(std::clamp<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - outstandingRefinement_->sent).count(), 0, 60000000)));
         completeRefinement();
         return RefinementAckResult::kForward;
     }
@@ -551,9 +555,11 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
                  encoding.p95Microseconds, encoding.p99Microseconds, encoding.maximumMicroseconds, diagnostics_.latestKeyFrameEncodeMicroseconds,
                  diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate);
     const auto& raf = diagnostics_.visibleFrames;
-    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} raf_fps_milli={} raf_min_fps_milli={} raf_max_fps_milli={} raf_max_p95_us={} raf_max_p99_us={} raf_max_long_gaps={} report_age_ms={} background={} gpu_encoding={} refinement_messages={} refinement_bytes={}",
+    const auto refinementAck = diagnostics_.refinementAcknowledgement.summary();
+    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} raf_fps_milli={} raf_min_fps_milli={} raf_max_fps_milli={} raf_max_p95_us={} raf_max_p99_us={} raf_max_long_gaps={} report_age_ms={} background={} gpu_encoding={} refinement_messages={} refinement_bytes={} refinement_applied={} refinement_superseded={} refinement_ack_samples={} refinement_ack_p99_us={} refinement_ack_max_us={}",
                  identity_.sessionId, identity_.deviceId, raf.reports, raf.latestSamples, raf.latestP95Microseconds, raf.latestP99Microseconds, raf.latestLongGaps,
                  raf.latestFpsMilli, raf.minimumFpsMilli, raf.maximumFpsMilli, raf.maximumP95Microseconds, raf.maximumP99Microseconds, raf.maximumLongGaps,
-                 rafAge, diagnostics_.latestBackground, diagnostics_.latestGpuEncoding, diagnostics_.refinementMessages, diagnostics_.refinementBytes);
+                 rafAge, diagnostics_.latestBackground, diagnostics_.latestGpuEncoding, diagnostics_.refinementMessages, diagnostics_.refinementBytes,
+                 diagnostics_.refinementApplied, diagnostics_.refinementSuperseded, refinementAck.samples, refinementAck.p99Microseconds, refinementAck.maximumMicroseconds);
 }
 } // namespace ultraterimal::server

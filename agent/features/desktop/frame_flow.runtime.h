@@ -106,12 +106,19 @@ class DesktopFrameFlow {
             videoBudgetFrames_ = 0;
             return; // Codec startup and refresh bursts do not describe steady frame cost.
         }
+        if (repeatedFrame(type)) {
+            videoBudgetFrames_ = 0;
+            return; // Delivery aliases cannot erase the next changed picture's clarity/cost budget.
+        }
         if (elapsed.count() > 0) {
             encodeMicroseconds_ = encodeMicroseconds_ ? (encodeMicroseconds_ * 7 + static_cast<std::uint64_t>(elapsed.count())) / 8 : static_cast<std::uint64_t>(elapsed.count());
         }
         const auto pixels = std::min(changedPixels, static_cast<std::uint64_t>(width_) * height_);
-        scenePixels_ = repeatedFrame(type) ? 0 : scenePixels_ ? (*scenePixels_ * 3 + pixels) / 4
-                                                              : pixels;
+        // Video replaces the complete lossy reference picture, even when only
+        // a small dirty rectangle changed. Lossless regions can use their ROI.
+        scenePixels_ = type == FrameType::kVideo ? static_cast<std::uint64_t>(width_) * height_
+                       : scenePixels_            ? (*scenePixels_ * 3 + pixels) / 4
+                                                 : pixels;
         // Ordinary changed pictures size the existing two-picture credit cushion,
         // even when sharp's quality floor exceeds VBV. Keyframes, repeats and
         // static snapshots must not inflate or dilute this steady-frame estimate.
@@ -337,10 +344,10 @@ class DesktopFrameFlow {
         if (!decodedKeyFrame) {
             decodeMicroseconds_ = decodeMicroseconds_ ? (decodeMicroseconds_ * 7 + decodeMicroseconds) / 8 : decodeMicroseconds;
         }
-        // Sparse updates can be delayed by the receiver or local scheduling
-        // without exhausting link capacity. Credit still bounds those delays;
-        // require the estimator's minimum byte flight before reducing bitrate.
-        const bool networkPressure = ordinaryFlightBytes >= minimumCapacityBytes && transit > pathDelay() + std::chrono::milliseconds(50);
+        // Display/compositor jitter adds ACK delay without saturating the path.
+        // Require an ordinary byte-saturated flight before reducing bitrate;
+        // frame/byte credit and frame age still bound unsaturated delayed work.
+        const bool networkPressure = ordinaryDelivery && byteSaturated && transit > pathDelay() + std::chrono::milliseconds(50);
         const bool decoderPressure = queueDepth > 2 || decodeMicroseconds_ > 25000;
         const bool congested = networkPressure || decoderPressure;
         congestionSamples_ = congested ? std::min(3u, congestionSamples_ + 1) : 0;

@@ -109,6 +109,38 @@ void lowLoadJitter() {
     require(link.peakBytes < 16384 && link.peakFrames <= DesktopFrameFlow::kMaximumInFlightFrames,
             "Sparse jitter fixture exceeded its bounded low-load byte flight");
 }
+void unsaturatedVideoJitter() {
+    Link link;
+    link.flow.setFixedPictureCost(false);
+    link.run(5s, 10000000, 100ms, {.fixedBytes = 5000, .changedPixels = 128 * 64});
+    for (unsigned cycle = 0; cycle < 12; ++cycle) {
+        link.run(1s, 10000000, 100ms, {.fixedBytes = 5000, .changedPixels = 128 * 64, .delayedFrames = 3, .feedbackDelay = 120ms});
+    }
+    std::cout << "unsaturated_video_jitter minimum_bitrate=" << link.minimumBitrate << " fps=" << link.flow.rate().framesPerSecond << '\n';
+    require(link.minimumBitrate == DesktopFrameFlow::kTargetVideoBitrate, "Unsaturated video display jitter collapsed the clarity budget");
+}
+void narrowVideoClarity() {
+    Link link;
+    link.flow.setFixedPictureCost(false);
+    link.run(30s, 125000, 40ms, {.changedPixels = 128 * 64});
+    const auto clarityCeiling = [&] {
+        return std::clamp(link.flow.rate().bitrate * 60ull / 8000000, 5ull, 60ull);
+    };
+    std::cout << "narrow_partial_video bitrate=" << link.flow.rate().bitrate << " fps=" << link.flow.rate().framesPerSecond << '\n';
+    require(link.flow.rate().bitrate < 2000000 && link.flow.rate().framesPerSecond <= clarityCeiling(), "Partial video damage bypassed the full-picture clarity budget");
+    for (unsigned sample = 0; sample < 24; ++sample) {
+        link.flow.observeFrame(FrameType::kRepeatedVideo, 100, 0, 5ms);
+    }
+    require(link.flow.rate().framesPerSecond <= clarityCeiling(), "Repeated video erased the clarity budget for the next changed picture");
+    for (unsigned sample = 0; sample < 24; ++sample) {
+        link.flow.observeFrame(FrameType::kRegion, 100, 128 * 64, 5ms);
+    }
+    require(link.flow.rate().framesPerSecond > clarityCeiling(), "Lossless small regions inherited a full-picture video budget");
+    link.flow.observeFrame(FrameType::kVideo, 1000, 128 * 64, 5ms);
+    require(link.flow.rate().framesPerSecond <= clarityCeiling(), "Region-to-video transition retained the lossless region cadence");
+    link.run(25s, 10000000, 40ms, {.changedPixels = 128 * 64});
+    require(link.flow.rate().bitrate > 16000000 && link.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Clarity protection prevented healthy video capacity recovery");
+}
 void normalVbvAfterBurst() {
     // V2 VBV pictures: one oversized changed picture is bounded by byte credit,
     // not by seconds of reduced cadence while the +1 FPS probe revalidates.
@@ -227,6 +259,8 @@ void lowLoadBackgroundAndDecode() {
 } // namespace
 int main() {
     try {
+        unsaturatedVideoJitter();
+        narrowVideoClarity();
         normalVbvAfterBurst();
         smallRegionToSharpMotion();
         lowLoadJitter();

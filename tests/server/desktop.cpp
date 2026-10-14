@@ -362,6 +362,9 @@ ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_handle worker) {
             require(delivered && delivered->bytes() == *protocol::encodeMessage(ack)); // Old generation routed unchanged, once.
             delivered.reset();
             require(session.diagnostics().forwardedMessages == beforeCleanup + 1);
+            require(session.diagnostics().refinementApplied == (status == wire::DesktopRefinementAck::APPLIED ? 1u : 0u) &&
+                    session.diagnostics().refinementSuperseded == (status == wire::DesktopRefinementAck::SUPERSEDED ? 1u : 0u) &&
+                    session.diagnostics().refinementAcknowledgement.summary().samples == 1);
             require(session.diagnostics().feedbackMessages == 0 && session.diagnostics().videoGeneration == 3 && session.diagnostics().latestVideoFrame == 1);
             auto detail = refinement(10, 1, contract == 2 ? 1 : 0);
             detail.set_generation(3);
@@ -371,6 +374,7 @@ ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_handle worker) {
             ack.set_sequence(4);
             require(co_await session.forward(endpoints[0], ack));
             require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == beforeDuplicate);
+            require(session.diagnostics().refinementAcknowledgement.summary().samples == 1); // Duplicate cleanup cannot inflate application/age diagnostics.
             require(co_await session.forward(endpoints[3], video(11, 2, 3)));
             require(bool(co_await endpoints[2]->receive({})));
             if (contract == 2) {

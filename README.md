@@ -34,7 +34,7 @@ ctest --preset windows-agent-release
 
 Agent 输出到 `build/windows-agent/agent/Release/agent.exe`。
 
-Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_agent.ps1` 要求源码已提交且工作区无已跟踪修改，记录对应项目/Ruvia/vcpkg 修订及依赖的 SPDX 源码信息。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。2026-10-01 已发布含桌面采集、编码节拍及光标优化的 Agent **1.0.22**：公开的 `/windows-agent.json` 指向 `/assets/ultraterimal-agent-1.0.22.msi`，旧 1.0.21 包保留以供回滚；CI MSI、提取后的程序版本和下载哈希已核对。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
+Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_agent.ps1` 要求源码已提交且工作区无已跟踪修改，记录对应项目/Ruvia/vcpkg 修订及依赖的 SPDX 源码信息。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。2026-10-14 的 Agent **1.0.39** 修复未饱和显示确认抖动引发的误降码率，并为全屏有损视频保留按分辨率计算的清晰度预算；重复帧不再清空预算，无损小区域更新保持按实际成本调速。公开的 `/windows-agent.json` 指向 `/assets/ultraterimal-agent-1.0.39.msi`，旧 1.0.38 包保留以供回滚；MSI、实际安装版本和下载哈希按部署流程核对。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
 
 ```powershell
 ./agent/platform/windows/package_agent.ps1 `
