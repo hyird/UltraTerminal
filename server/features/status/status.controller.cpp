@@ -21,12 +21,12 @@ ruvia::task<void> send(ruvia::context& context, boost::json::object event) {
     if (bytes.size() > 1024 * 1024) {
         throw std::runtime_error("Device snapshot exceeds limit");
     }
-    co_await context.get_websocket().text(bytes);
+    co_await context.websocket().text(bytes);
 }
 ruvia::task<void> sendAccount(ruvia::context& context, const UserIdentity& user) {
     auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
-    const auto telegram = (co_await context.run_blocking([service = runtime.telegram, user] { return service.state(user.id); }));
-    const auto approvals = (co_await context.run_blocking([service = runtime.telegram, user] { return service.approvals(user); }));
+    const auto telegram = ((co_await context.run_blocking([service = runtime.telegram, user] { return service.state(user.id); })).take_value());
+    const auto approvals = ((co_await context.run_blocking([service = runtime.telegram, user] { return service.approvals(user); })).take_value());
     boost::json::array items;
     for (const auto& a : approvals) {
         items.push_back(boost::json::object{{"id", a.id}, {"device_id", a.deviceId}, {"state", a.state}, {"write_control", a.writeControl}, {"expires_at", a.expiresAt}});
@@ -41,7 +41,7 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
         if (administration && context.request_state<UserIdentity>().role != "admin") {
             throw std::runtime_error("Administrator required");
         }
-        const auto devices = (co_await context.run_blocking([service = runtime.devices, user = subscription.userId, administration] { return service.list(user, administration); }));
+        const auto devices = ((co_await context.run_blocking([service = runtime.devices, user = subscription.userId, administration] { return service.list(user, administration); })).take_value());
         std::set<std::string> visible;
         boost::json::array snapshot;
         for (const auto& device : devices) {
@@ -51,11 +51,11 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
         co_await send(context, {{"type", "snapshot"}, {"devices", std::move(snapshot)}});
         co_await sendAccount(context, context.request_state<UserIdentity>());
         while (!scope.stop_requested()) {
-            const auto event = co_await subscription.receive(scope.get_stop_token());
+            const auto event = co_await subscription.receive(scope.token());
             if (!event || scope.stop_requested()) {
                 break;
             }
-            const auto user = (co_await context.run_blocking([service = runtime.identities, token] { return service.authenticate(token); }));
+            const auto user = ((co_await context.run_blocking([service = runtime.identities, token] { return service.authenticate(token); })).take_value());
             if (!user || user->id != subscription.userId || (administration && user->role != "admin") || subscription.closed()) {
                 break;
             }
@@ -66,7 +66,7 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
                 co_await sendAccount(context, *user);
             } else if (event->starts_with("d:")) {
                 const auto id = event->substr(2);
-                const auto device = (co_await context.run_blocking([service = runtime.devices, user = subscription.userId, id, administration] { return service.find(user, id, administration); }));
+                const auto device = ((co_await context.run_blocking([service = runtime.devices, user = subscription.userId, id, administration] { return service.find(user, id, administration); })).take_value());
                 if (scope.stop_requested() || subscription.closed()) {
                     break;
                 }
@@ -84,13 +84,13 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
     } catch (const std::exception&) {
     }
     subscription.close();
-    context.get_websocket().abort();
+    context.websocket().abort();
 }
 ruvia::task<void> watchStatus(ruvia::context& context, StatusSubscription& subscription, ruvia::task_scope& scope, bool& awaitingPong) {
-    while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(15), scope.get_stop_token()) == ruvia::timer_sleep_result::elapsed) {
+    while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(15), scope.token()) == ruvia::timer_sleep_result::elapsed) {
         if (awaitingPong || !subscription.enqueue("h")) {
             subscription.close();
-            context.get_websocket().abort();
+            context.websocket().abort();
             break;
         }
     }
@@ -99,7 +99,7 @@ ruvia::task<void> watchStatus(ruvia::context& context, StatusSubscription& subsc
 ruvia::task<void> StatusController::events(ruvia::context& context) {
     auto subscription = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).status.subscribe(context.worker(), context.request_state<UserIdentity>().id);
     if (!subscription) {
-        co_await context.get_websocket().close({.code_ = 1008, .reason_ = "Status subscription limit"});
+        co_await context.websocket().close({.code_ = ruvia::websocket_close_code::from_value(1008), .reason_ = "Status subscription limit"});
         co_return;
     }
     {
@@ -112,7 +112,7 @@ ruvia::task<void> StatusController::events(ruvia::context& context) {
             scope.spawn(writeStatus(context, *subscription, scope, awaitingPong));
             scope.spawn(watchStatus(context, *subscription, scope, awaitingPong));
             try {
-                while (const auto message = co_await context.get_websocket().read()) {
+                while (const auto message = co_await context.websocket().read()) {
                     if (message->binary() || message->payload() != "{\"type\":\"pong\"}" || !awaitingPong) {
                         break;
                     }
@@ -121,7 +121,7 @@ ruvia::task<void> StatusController::events(ruvia::context& context) {
             } catch (const std::exception&) {
             }
             subscription->close();
-            context.get_websocket().abort();
+            context.websocket().abort();
             scope.request_stop();
             scopeJoined = true;
             co_await scope.join();
@@ -129,7 +129,7 @@ ruvia::task<void> StatusController::events(ruvia::context& context) {
         } catch (...) {
             scopeFailure = std::current_exception();
             subscription->close();
-            context.get_websocket().abort();
+            context.websocket().abort();
         }
         if (!scopeJoined) {
             scope.request_stop();

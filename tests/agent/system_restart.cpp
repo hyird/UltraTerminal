@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <windows.h>
+
 #include <aclapi.h>
 #include <sddl.h>
 
@@ -24,17 +25,28 @@ class FakePlatform final : public SystemRestartPlatform {
     int persisted = 0;
     int invoked = 0;
     bool isSessionZeroLocalSystem() noexcept override { return eligible; }
-    bool persistOperation(std::string_view) override { ++persisted; return !alreadyReserved; }
-    std::uint32_t initiatePlannedRestart() noexcept override { ++invoked; return error; }
+    bool persistOperation(std::string_view) override {
+        ++persisted;
+        return !alreadyReserved;
+    }
+    std::uint32_t initiatePlannedRestart() noexcept override {
+        ++invoked;
+        return error;
+    }
 };
-void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void require(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
 class RegistryFixture {
   public:
     RegistryFixture() {
         path_ = L"Software\\UltraterimalTest\\" + std::to_wstring(GetCurrentProcessId()) + L"-" +
                 std::to_wstring(GetTickCount64());
         require(RegCreateKeyExW(HKEY_CURRENT_USER, path_.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE,
-                                KEY_ALL_ACCESS, nullptr, &key_, nullptr) == ERROR_SUCCESS, "Could not create registry fixture");
+                                KEY_ALL_ACCESS, nullptr, &key_, nullptr) == ERROR_SUCCESS,
+                "Could not create registry fixture");
         HANDLE token = nullptr;
         require(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) != FALSE, "Could not open process token");
         DWORD bytes = 0;
@@ -57,12 +69,15 @@ class RegistryFixture {
         BOOL defaulted = FALSE;
         const bool hasDacl = GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) != FALSE && present;
         const DWORD status = hasDacl ? SetSecurityInfo(key_, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                                                      nullptr, nullptr, dacl, nullptr) : ERROR_INVALID_SECURITY_DESCR;
+                                                       nullptr, nullptr, dacl, nullptr)
+                                     : ERROR_INVALID_SECURITY_DESCR;
         LocalFree(descriptor);
         require(status == ERROR_SUCCESS, "Could not protect registry fixture ACL");
     }
     ~RegistryFixture() {
-        if (key_) RegCloseKey(key_);
+        if (key_) {
+            RegCloseKey(key_);
+        }
         RegDeleteTreeW(HKEY_CURRENT_USER, path_.c_str());
         RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\UltraterimalTest");
     }
@@ -71,6 +86,7 @@ class RegistryFixture {
     const std::wstring& path() const { return path_; }
     const std::wstring& trustedSid() const { return trustedSid_; }
     HKEY key() const { return key_; }
+
   private:
     std::wstring path_;
     std::wstring trustedSid_;
@@ -110,8 +126,11 @@ void testUntrustedWritableAclRejected() {
     require(aclError == ERROR_SUCCESS, "Could not install low-trust ACL fixture");
     RegistryRestartOperationStore store(HKEY_CURRENT_USER, fixture.path(), {fixture.trustedSid(), L"S-1-5-18", L"S-1-5-32-544"});
     bool denied = false;
-    try { store.persistOperation(std::string(64, '9')); }
-    catch (const std::system_error& error) { denied = error.code().value() == ERROR_ACCESS_DENIED; }
+    try {
+        store.persistOperation(std::string(64, '9'));
+    } catch (const std::system_error& error) {
+        denied = error.code().value() == ERROR_ACCESS_DENIED;
+    }
     require(denied, "Writable untrusted ACL was not rejected");
 }
 wire::WindowsRestartRequest request() {
@@ -121,7 +140,7 @@ wire::WindowsRestartRequest request() {
     value.set_expires_at_unix_seconds(1300);
     return value;
 }
-}
+} // namespace
 int main() {
     try {
         testRegistryPersistence();

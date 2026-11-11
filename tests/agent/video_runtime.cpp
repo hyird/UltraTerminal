@@ -11,8 +11,9 @@
 
 #include <windows.h>
 
-#include <ruvia/core/asio_task.h>
-#include <ruvia/core/event_loop_attachment.h>
+#include <ruvia/core/async.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 #include <wels/codec_api.h>
 
 #include "features/desktop/video.runtime.h"
@@ -103,7 +104,7 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
               << " returnedSnapshots=" << diagnostics.returnedSnapshots << " encodedFrames=" << diagnostics.encodedFrames << " encodeCalls=" << diagnostics.videoEncodeCalls
               << " published=" << diagnostics.publishedVideoFrames << " rejectedPrivateFrames=" << diagnostics.rejectedPrivateVideoFrames << " rejectedJobs=" << diagnostics.rejectedPrivateJobs
               << " frame=" << first->frameId << " generation=" << first->generation << " jobRevision=" << diagnostics.lastJobRevision << " ownerRevision=" << diagnostics.ownerRevision
-              << " lastAcquired=" << diagnostics.lastJobAcquired << " consumedReady=" << diagnostics.lastJobConsumedReady
+              << " lastAcquired=" << diagnostics.lastJobAcquired
               << " acquireEpoch=" << diagnostics.lastAcquireEpoch << " acquireSerial=" << diagnostics.lastAcquireSerial << " acquirePresent=" << diagnostics.lastAcquirePresentTicks
               << " outputPresent=" << first->sourcePresentTicks << '\n';
     // DXGI may return an initial image without a new present timestamp. It is
@@ -118,25 +119,12 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     require(diagnostics.lastJobRevision == diagnostics.ownerRevision, "First baseline used a rejected job revision");
     require(diagnostics.pixelCaptureGaps <= diagnostics.pixelUpdates && diagnostics.pixelCaptureGapsGe45ms <= diagnostics.pixelCaptureGaps,
             "Pixel-capture interval diagnostics exceed the actual updates");
-    require(diagnostics.timerResolution.requested == optimization, "Timer request escaped the v2 foreground gate");
-    if (optimization) {
-        require(diagnostics.timerResolution.capabilitiesResult.has_value(), "Timer capability result was not recorded");
-        require(!diagnostics.timerResolution.active || diagnostics.timerResolution.beginResult == 0, "Active timer lacked successful begin");
-        std::cout << "Timer requested period_ms=" << diagnostics.timerResolution.periodMilliseconds << " caps_result=" << *diagnostics.timerResolution.capabilitiesResult
-                  << " begin_result=" << diagnostics.timerResolution.beginResult.value_or(UINT32_MAX) << " active=" << diagnostics.timerResolution.active << " (request, not wake guarantee)\n";
-    }
     require(first->cursor.has_value(), "Missing initial cursor snapshot");
     require(first->configuration->desktop_optimization_contract() == 2 && first->frame.has_stage_timing() == optimization, "Support declaration or exact optimization gate mismatch");
     if (optimization) {
         const auto& stages = first->frame.stage_timing();
         require(stages.has_worker_queue_microseconds() && stages.has_acquire_wait_microseconds() && stages.has_source_age_microseconds() == (first->sourcePresentTicks != 0) && stages.has_pacing_credit_wait_microseconds() && stages.has_video_encode_microseconds(), "Actual first frame omitted executed stages");
         require(!stages.has_png_encode_microseconds(), "Video-only path invented PNG duration");
-        if (first->frame.gpu_encoding()) {
-            require(diagnostics.comparison.baselineCommits + diagnostics.comparison.baselineFailures >= 1 && stages.has_prepare_cpu_microseconds(), "Actual GPU VIDEO did not account explicit optional baseline preparation");
-            require(!diagnostics.comparison.baselineCommits || diagnostics.comparison.baselineGpuBytes >= static_cast<std::uint64_t>(first->configuration->width()) * first->configuration->height() * 4, "Actual GPU baseline omitted full queued copy bytes");
-        }
-        std::cerr << "baseline_numeric queued=" << diagnostics.comparison.baselineCommits << " unavailable_busy=" << diagnostics.comparison.baselineFailures
-                  << " cpu_us=" << diagnostics.comparison.baselineCpuMicroseconds << " gpu_copy_bytes=" << diagnostics.comparison.baselineGpuBytes << " gpu_execution_us=unknown\n";
     }
     require(ticks > 0, "Capture/encoding blocked the Ruvia event loop");
     const auto configuration = *first->configuration;
@@ -255,7 +243,6 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
         const auto hidden = co_await video.next(true);
         require(!hidden || hidden->frame.data().empty(), "Background desktop kept encoding video");
     }
-    require(!video.diagnostics().timerResolution.requested && !video.diagnostics().timerResolution.active, "Background retained a worker timer request");
     // Returning to a static desktop uses the same displayed-frame ACK.
     asio::steady_timer foreground(pulse.get_executor());
     foreground.expires_after(std::chrono::milliseconds(20));
@@ -266,10 +253,9 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
         }
     });
     const auto visible = co_await video.next();
-    require(visible && visible->frameId == resumed->frameId + 1 && visible->generation == resumed->generation,
-            "Foreground desktop did not resume its existing video baseline");
+    require(visible && visible->configuration && visible->frame.key_frame() && visible->frameId == 1 && visible->generation > resumed->generation,
+            "Foreground desktop did not rebuild its video baseline");
     decode(*visible, visible->configuration.value_or(resumedConfiguration));
-    require(video.diagnostics().timerResolution.requested == optimization, "Foreground timer request did not match active v2");
 
     require(!(co_await video.resize(0, 1080)), "Invalid display size accepted");
     require(!(co_await video.resize(17, 16)), "Odd display size accepted");
@@ -366,7 +352,6 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     }
     require(std::chrono::steady_clock::now() < stopDeadline, "Capture cancellation exceeded its completion deadline");
     require(!(co_await video.next(true)), "Stopped video runtime restarted capture");
-    require(!video.diagnostics().timerResolution.requested && !video.diagnostics().timerResolution.active, "Cancel/stop leaked an active timer request");
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -385,8 +370,9 @@ int main(int argc, char** argv) {
         DisplayRestore displayRestore(changeResolution);
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
         asio::io_context io;
-        auto attachment = ruvia::attach_event_loop(io);
-        agent::DesktopVideoRuntime video(attachment.loop(), 0, optimization ? 2 : 0);
+        ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        agent::DesktopVideoRuntime video(attachment.loop(), blockingPool, 0, optimization ? 2 : 0);
         asio::steady_timer pulse(io);
         unsigned ticks = 0;
         std::function<void(std::error_code)> tick;

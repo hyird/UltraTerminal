@@ -32,7 +32,7 @@ bool reportDesktopFailure(std::string_view stage, std::string_view message, std:
     copy(sessionId, sessionText);
     std::array<const char*, 4> strings{context.data(), stageText.data(), detail.data(), sessionText.data()};
     const bool reported = ReportEventA(source, EVENTLOG_ERROR_TYPE, 0, 1001, nullptr,
-                                     static_cast<WORD>(strings.size()), 0, strings.data(), nullptr) != FALSE;
+                                       static_cast<WORD>(strings.size()), 0, strings.data(), nullptr) != FALSE;
     DeregisterEventSource(source);
     return reported;
 }

@@ -7,8 +7,9 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/core/asio_task.h>
-#include <ruvia/core/event_loop_attachment.h>
+#include <ruvia/core/async.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "config/command_line.config.h"
 #include "config/version.config.h"
@@ -68,11 +69,12 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kDesktop: {
             DesktopParent parent(options->windowsSession, options->parentProcess);
             asio::io_context io;
-            auto attachment = ruvia::attach_event_loop(io);
+            ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
             auto pipe = NamedPipeTransport::connect(io.get_executor(), options->pipeName, options->parentProcess);
             std::exception_ptr failure;
             std::uint32_t exitCode = 1;
-            asio::co_spawn(attachment.loop().executor(), runDesktopWorker(attachment.loop(), *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
+            asio::co_spawn(attachment.loop().executor(), runDesktopWorker(attachment.loop(), blockingPool, *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
                 failure = error;
                 exitCode = result;
                 pipe->cancel();
@@ -90,7 +92,8 @@ int wmain(int argc, wchar_t** argv) {
             std::cin.read(input.data(), static_cast<std::streamsize>(input.size()));
             input.resize(static_cast<std::size_t>(std::cin.gcount()));
             asio::io_context io;
-            auto attachment = ruvia::attach_event_loop(io);
+            ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
             ConnectionConfig result;
             std::exception_ptr failure;
             asio::co_spawn(attachment.loop().executor(), enrollDevice(attachment.loop(), config, std::move(input)), [&](std::exception_ptr error, ConnectionConfig value) {
@@ -108,7 +111,8 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kConnectionCheck: {
             const auto config = loadConnectionConfig(options->configPath);
             asio::io_context io;
-            auto attachment = ruvia::attach_event_loop(io);
+            ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
             ControlCheck result;
             std::exception_ptr failure;
             asio::co_spawn(attachment.loop().executor(), checkControlConnection(attachment.loop(), config), [&](std::exception_ptr error, ControlCheck value) {
@@ -126,7 +130,8 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kConnect: {
             const auto config = loadConnectionConfig(options->configPath);
             asio::io_context io;
-            auto attachment = ruvia::attach_event_loop(io);
+            ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
             ControlRuntime runtime(attachment.loop(), config, agentExecutablePath());
             asio::signal_set signals(io, SIGINT, SIGTERM);
             signals.async_wait([&](std::error_code error, int) {
@@ -167,7 +172,8 @@ int wmain(int argc, wchar_t** argv) {
             dispatchService([](std::stop_token stop, ConsoleSessionEvents& consoleEvents) {
                 const auto config = loadConnectionConfig(serviceConfigPath());
                 asio::io_context io;
-                auto attachment = ruvia::attach_event_loop(io);
+                ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+                auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
                 ControlRuntime runtime(attachment.loop(), config, agentExecutablePath(), &consoleEvents);
                 std::stop_callback cancellation(stop, [&] { runtime.stop(); });
                 std::exception_ptr failure;

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include <ruvia/core/channel.h>
+#include <ruvia/core/task.h>
 
 #include "desktop_diagnostics.types.h"
 #include "modules/sessions/session.types.h"

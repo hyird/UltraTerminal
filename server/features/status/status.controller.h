@@ -1,4 +1,5 @@
 #pragma once
+#include <ruvia/core/task.h>
 #include <ruvia/web/controller.h>
 
 #include "middleware/authentication.h"

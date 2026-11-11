@@ -102,6 +102,13 @@ class DesktopContinuity {
             if (message.generation() <= generationOffset_ || message.generation() > generation_) {
                 return false;
             }
+            auto& input = *message.mutable_input_event();
+            if (input.freshness_nonce()) {
+                if (input.freshness_nonce() <= probeOffset_ || input.freshness_nonce() > probe_) {
+                    return false;
+                }
+                input.set_freshness_nonce(input.freshness_nonce() - probeOffset_);
+            }
             message.set_generation(message.generation() - generationOffset_);
         }
         return true;

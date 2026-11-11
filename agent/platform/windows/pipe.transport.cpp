@@ -9,15 +9,16 @@
 #include <asio/windows/overlapped_ptr.hpp>
 #include <asio/windows/stream_handle.hpp>
 #include <asio/write.hpp>
-#include <bcrypt.h>
 #include <chrono>
-#include <sddl.h>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include <windows.h>
+
+#include <bcrypt.h>
+#include <sddl.h>
 
 #include "handle.types.h"
 

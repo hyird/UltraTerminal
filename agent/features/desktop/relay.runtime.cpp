@@ -2,11 +2,10 @@
 
 #include <asio/experimental/awaitable_operators.hpp>
 #include <exception>
-#include <optional>
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/asio_task.h>
+#include <ruvia/core/async.h>
 
 #include "continuity.protocol.h"
 #include "desktop.transport.h"
@@ -27,16 +26,6 @@ struct DesktopRelay::State {
     DesktopSendQueue control, video;
     DesktopContinuity continuity;
     DesktopPipelineBuffer pipeline;
-    struct RefinementLease {
-        std::uint64_t generation, frame, batch;
-        bool matches(const wire::Envelope& message) const {
-            return message.generation() == generation && message.frame_id() == frame && message.desktop_refinement_ack().batch_id() == batch;
-        }
-    };
-    // Browser PNG cleanup belongs to the native connection, not a worker or
-    // generation. Never clear on detach/configuration/timeout: a new worker's
-    // empty Flow does not mean the Browser released the old worker's resources.
-    std::optional<RefinementLease> refinementLease;
     bool pipelineEnabled = false;
     std::shared_ptr<DesktopWorkerChannel> worker;
     std::exception_ptr failure;
@@ -119,15 +108,6 @@ struct DesktopRelay::State {
                     stop();
                     co_return;
                 }
-                if (message.has_desktop_refinement_ack()) {
-                    // Consume wire credit before the worker/continuity filter,
-                    // even in the detach/reap gap. Duplicates cannot release a
-                    // different tuple or reach a replacement worker's Flow.
-                    if (!refinementLease || !refinementLease->matches(message)) {
-                        continue;
-                    }
-                    refinementLease.reset();
-                }
                 // Capture this worker before suspending on its bounded queue.
                 // Replacement closes that queue, never replays it into a new one.
                 auto target = worker;
@@ -179,33 +159,8 @@ void DesktopWorkerChannel::cancel() {
 bool DesktopWorkerChannel::cancelled() const { return state_->cancelled; }
 asio::awaitable<void> DesktopWorkerChannel::sendVideo(wire::Envelope message, std::uint32_t allowedOptimizationContract) {
     auto& relay = state_->relay;
-    const auto localGeneration = message.generation();
     if (state_->cancelled || !relay.continuity.outgoing(message)) {
         throw std::runtime_error("Desktop video relay stopped or exhausted its namespace");
-    }
-    if (message.has_video_refinement() && message.video_refinement().batch_id()) {
-        const DesktopRelay::State::RefinementLease tuple{message.generation(), message.frame_id(), message.video_refinement().batch_id()};
-        // Admission and lease reservation are atomic on this owner loop. Only
-        // independent v2 PNG batches may be refused (no cache/slot dependency).
-        // Queue-full refusal also avoids reserving credit for a suspended send
-        // that could resume after worker replacement. Legacy/reliable traffic
-        // continues to use the existing bounded FIFO backpressure below.
-        if (!relay.refinementLease && relay.video.trySend(std::move(message), relay.pipelineEnabled, allowedOptimizationContract)) {
-            relay.refinementLease = tuple;
-            co_return;
-        }
-        wire::Envelope refused;
-        refused.set_generation(localGeneration);
-        refused.set_frame_id(tuple.frame);
-        refused.mutable_desktop_refinement_ack()->set_batch_id(tuple.batch);
-        refused.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::SUPERSEDED);
-        // Same queue and sole IPC writer as Browser input. A full queue applies
-        // bounded backpressure; detach closes it and wakes this producer. This
-        // is local refusal of an unsent tuple, never fabricated Browser cleanup.
-        if (!(co_await ruvia::as_awaitable(state_->input.send(std::move(refused))))) {
-            throw std::runtime_error("Desktop refinement refusal queue detached");
-        }
-        co_return;
     }
     if (message.has_video_config()) {
         relay.pipelineEnabled = relay.transport.serverOptimizationContract() == 2 && allowedOptimizationContract == 2 && message.video_config().desktop_optimization_contract() == 2;

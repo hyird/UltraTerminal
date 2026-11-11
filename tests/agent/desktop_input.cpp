@@ -11,8 +11,9 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/core/asio_task.h>
-#include <ruvia/core/event_loop_attachment.h>
+#include <ruvia/core/async.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "config/command_line.config.h"
 #include "platform/windows/capture.transport.h"
@@ -80,7 +81,8 @@ asio::awaitable<void> parent(ruvia::event_loop loop, std::filesystem::path execu
 int wmain(int argc, wchar_t** argv) {
     try {
         asio::io_context io;
-        auto attachment = ruvia::attach_event_loop(io);
+        ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
         std::vector<std::wstring_view> arguments;
         for (int i = 1; i < argc; ++i) {
             arguments.emplace_back(argv[i]);

@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/asio_task.h>
+#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
 
 #include "bridge.runtime.h"
@@ -34,7 +34,6 @@ bool validSession(std::uint32_t session) { return session && session != 0xffffff
 } // namespace
 struct DesktopSession::State : std::enable_shared_from_this<State> {
     ruvia::event_loop loop;
-    ruvia::blocking_pool systemPool{{.thread_count_ = 1, .queue_capacity_ = 2}};
     DesktopTransport remote;
     DesktopRelay relay;
     asio::steady_timer grace, transition;
@@ -66,7 +65,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
             console = std::make_unique<ConsoleSessionSubscription>(owner.executor(), *events);
         }
     }
-    ~State() { systemPool.join(); }
+
     void detachWorker() {
         relay.detach();
         if (login) {
@@ -180,7 +179,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     }
     asio::awaitable<void> bridge(std::shared_ptr<DesktopWorkerChannel> channel) {
         try {
-            auto terminal = co_await bridgeDesktop(loop, systemPool, *channel, *resources.pipe, session, binding.session(), 0, writeControl, desktopInputContract);
+            auto terminal = co_await bridgeDesktop(loop, *channel, *resources.pipe, session, binding.session(), 0, writeControl, desktopInputContract);
             if (!ended) {
                 result.terminal = std::move(terminal);
             }
@@ -235,7 +234,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                 bridgeFailure = {};
                 const char* stage = "worker_launch";
                 try {
-                    auto launch = ruvia::run_blocking(systemPool, loop.handle(),
+                    auto launch = ruvia::run_blocking(loop.handle(),
                                                       [executor = loop.executor(), selected = binding.session(), path = executable] {
                                                           DesktopIdentity user(selected);
                                                           Resources resources;
@@ -243,7 +242,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                                                           resources.child = std::make_unique<DesktopProcess>(executor, user, path, resources.pipe->name());
                                                           return resources;
                                                       });
-                    resources = (co_await ruvia::as_awaitable(std::move(launch)));
+                    resources = ((co_await ruvia::as_awaitable(std::move(launch))).take_value());
                     result.processId = resources.child->id();
                     if (ended || binding.changed(currentDesktopSession())) {
                         throw std::runtime_error("Console changed during worker launch");
@@ -255,7 +254,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                     }
                     stage = "login_broker";
                     if (writeControl) {
-                        login = WindowsLoginBroker::create(loop, systemPool, loginCredential, binding.session());
+                        login = WindowsLoginBroker::create(loop, loginCredential, binding.session());
                     }
                     stage = "session_bridge";
                     auto channel = relay.attach();

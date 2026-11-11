@@ -1,4 +1,5 @@
 #pragma once
+#include <ruvia/core/task.h>
 #include <ruvia/web/controller.h>
 
 #include "config/server.runtime.h"
@@ -18,7 +19,7 @@ class BrowserOrigin final {
 class UserAuthentication final {
   public:
     ruvia::task<void> handle(ruvia::context& context, ruvia::next& next) {
-        const auto user = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).identities, token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""))] { return service.authenticate(token); }));
+        const auto user = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).identities, token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""))] { return service.authenticate(token); })).take_value());
         if (!user) {
             (void)co_await context.req().text();
             context.respond(context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Authentication required"}));

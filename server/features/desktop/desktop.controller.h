@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 
+#include <ruvia/core/task.h>
 #include <ruvia/web/controller.h>
 
 #include "middleware/authentication.h"
@@ -10,8 +11,8 @@ class DesktopController final {
   public:
     RUVIA_CONTROLLER_GROUP("/api/desktop")
     RUVIA_ROUTES_BEGIN(DesktopController)
-    RUVIA_GET_WS_OPTIONS("/control", control, socketOptions(), BrowserOrigin, UserAuthentication);
-    RUVIA_GET_WS_OPTIONS("/video", video, socketOptions(), BrowserOrigin, UserAuthentication);
+    RUVIA_GET_WS("/control", control, socketOptions(), BrowserOrigin, UserAuthentication);
+    RUVIA_GET_WS("/video", video, socketOptions(), BrowserOrigin, UserAuthentication);
     RUVIA_ROUTES_END
 
   private:

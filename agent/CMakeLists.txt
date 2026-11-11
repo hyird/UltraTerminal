@@ -57,14 +57,7 @@ set_target_properties(x264::x264 PROPERTIES
     MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
     MAP_IMPORTED_CONFIG_MINSIZEREL Release
     INTERFACE_INCLUDE_DIRECTORIES "${X264_INCLUDE_DIR}")
-# Pure detail planning/cost/classification can be verified without rebuilding
-# the platform or in-flight generated protocol contracts.
-add_library(ultraterimal-desktop-detail STATIC features/desktop/refinement.runtime.cpp)
-target_compile_features(ultraterimal-desktop-detail PUBLIC cxx_std_23)
-target_include_directories(ultraterimal-desktop-detail PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_options(ultraterimal-desktop-detail PUBLIC /W4 /WX /permissive- /utf-8 /EHsc)
-# Both archives reuse these objects; video.runtime.cpp belongs only to the
-# explicitly selected production or test-only Runtime compilation below.
+# Platform and feature objects share the Agent target configuration.
 add_library(ultraterimal-agent-core-objects OBJECT
     config/command_line.config.cpp
     features/connection/connection.config.cpp
@@ -80,10 +73,6 @@ add_library(ultraterimal-agent-core-objects OBJECT
     features/desktop/video_color.protocol.cpp
     features/desktop/video_color_avx2.protocol.cpp
     features/desktop/desktop.transport.cpp
-    features/desktop/refinement.transport.cpp
-    features/desktop/tile_cache.transport.cpp
-    features/desktop/damage.protocol.cpp
-    platform/windows/image_encoder.transport.cpp
     features/desktop/worker.runtime.cpp
     features/desktop/bridge.runtime.cpp
     features/desktop/relay.runtime.cpp
@@ -99,10 +88,8 @@ add_library(ultraterimal-agent-core-objects OBJECT
     platform/windows/login_install.transport.cpp
     platform/windows/capability.transport.cpp
     platform/windows/capture.transport.cpp
-    platform/windows/capture_regions.protocol.cpp
-    platform/windows/texture_regions.transport.cpp
+    platform/windows/capture_pixels.protocol.cpp
     platform/windows/cursor.transport.cpp
-    platform/windows/timer.transport.cpp
     platform/windows/deadline_timer.transport.cpp
     platform/windows/pipe.transport.cpp
     platform/windows/desktop_process.transport.cpp
@@ -118,17 +105,12 @@ add_library(ultraterimal-agent-core-objects OBJECT
 # Only this out-of-line kernel may contain AVX2 instructions. Keep startup,
 # feature detection and the SSE2 fallback at the baseline x64 instruction set.
 set_source_files_properties(features/desktop/video_color_avx2.protocol.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
-add_library(ultraterimal-agent-core STATIC features/desktop/video.runtime.cpp)
+add_library(ultraterimal-agent-core STATIC
+    features/desktop/video.runtime.cpp
+    features/desktop/video_worker.runtime.cpp)
 target_link_libraries(ultraterimal-agent-core PRIVATE ultraterimal-agent-core-objects)
 set(agent_core_targets ultraterimal-agent-core-objects ultraterimal-agent-core)
-if(BUILD_TESTING)
-    # Compile the real Runtime with a TU-private completion boundary. Never link
-    # this archive together with production core or export the fixture macro.
-    add_library(ultraterimal-agent-aux-owner-fixture STATIC features/desktop/video.runtime.cpp)
-    target_compile_definitions(ultraterimal-agent-aux-owner-fixture PRIVATE ULTRATERIMAL_DESKTOP_JOB_RETURN_FIXTURE)
-    target_link_libraries(ultraterimal-agent-aux-owner-fixture PRIVATE ultraterimal-agent-core-objects)
-    list(APPEND agent_core_targets ultraterimal-agent-aux-owner-fixture)
-endif()
+
 foreach(agent_core_target IN LISTS agent_core_targets)
     target_compile_features(${agent_core_target} PUBLIC cxx_std_23)
     set_target_properties(${agent_core_target} PROPERTIES
@@ -137,7 +119,7 @@ foreach(agent_core_target IN LISTS agent_core_targets)
     target_include_directories(${agent_core_target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(${agent_core_target} PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
     target_compile_options(${agent_core_target} PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc)
-    target_link_libraries(${agent_core_target} PRIVATE ultraterimal-desktop-detail ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 winmm crypt32 bcrypt ole32 windowscodecs mfuuid strmiids msi x264::x264 OpenH264::OpenH264 de265 dav1d::dav1d
+    target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi x264::x264 OpenH264::OpenH264 de265 dav1d::dav1d
         PUBLIC ultraterimal::protocol ruvia::core Boost::json OpenSSL::SSL OpenSSL::Crypto)
 endforeach()
 add_executable(ultraterimal-agent main.cpp)

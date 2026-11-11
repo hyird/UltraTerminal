@@ -1,0 +1,105 @@
+name: Setup LLVM musl build
+description: Install the resolved toolchain and restore dependency and compiler caches.
+
+inputs:
+  toolchain-release:
+    description: clang-cross release resolved for this workflow run.
+    required: true
+  toolchain-sha256:
+    description: Official SHA256 of the toolchain archive.
+    required: true
+  vcpkg-commit:
+    description: Commit pinned by the project manifest.
+    required: true
+
+outputs:
+  compiler-cache-hit:
+    description: Whether the exact compiler cache was restored.
+    value: ${{ steps.ccache.outputs.cache-hit }}
+  compiler-cache-key:
+    description: Compiler cache key for this revision.
+    value: ${{ steps.ccache.outputs.cache-primary-key }}
+  vcpkg-cache-hit:
+    description: Whether the exact dependency cache was restored.
+    value: ${{ steps.vcpkg.outputs.cache-hit }}
+  vcpkg-cache-key:
+    description: Dependency cache key for this toolchain and manifest.
+    value: ${{ steps.vcpkg.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install host build tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y bison flex nasm pkg-config autoconf automake libtool
+        echo "VCPKG_MAX_CONCURRENCY=$(nproc)" >> "$GITHUB_ENV"
+
+    - uses: jdx/mise-action@v5.2.7
+      with:
+        install: false
+        cache: false
+
+    - name: Restore LLVM musl toolchain
+      uses: actions/cache@v6.1.0
+      with:
+        path: ~/.local/share/mise/installs
+        key: mise-tools-v1-${{ runner.os }}-${{ runner.arch }}-clang-cross-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}
+
+    - name: Install build tools and verified toolchain
+      shell: bash
+      env:
+        MISE_GITHUB_TOKEN: ${{ github.token }}
+        TOOLCHAIN_RELEASE: ${{ inputs.toolchain-release }}
+        TOOLCHAIN_SHA256: ${{ inputs.toolchain-sha256 }}
+      run: |
+        set -euo pipefail
+        [[ "$TOOLCHAIN_RELEASE" =~ ^[A-Za-z0-9._-]+$ ]]
+        [[ "$TOOLCHAIN_SHA256" =~ ^[[:xdigit:]]{64}$ ]]
+        mise use --global cmake@latest ninja@latest ccache@latest \
+          "github:cross-tools/clang-cross[asset_pattern=x86_64-unknown-linux-musl.tar.xz,strip_components=0,bin_path=x86_64-unknown-linux-musl/bin,checksum=sha256:$TOOLCHAIN_SHA256]@$TOOLCHAIN_RELEASE"
+        root="$(mise where github:cross-tools/clang-cross)/x86_64-unknown-linux-musl"
+        {
+          echo "ULTRATERIMAL_MUSL_ROOT=$root"
+          echo "CC=$root/bin/x86_64-unknown-linux-musl-clang"
+          echo "CXX=$root/bin/x86_64-unknown-linux-musl-clang++"
+          echo "CCACHE_EXTRAFILES=$root/bin/clang"
+        } >> "$GITHUB_ENV"
+        {
+          echo "$HOME/.local/share/mise/shims"
+          echo "$root/bin"
+        } >> "$GITHUB_PATH"
+
+    - name: Restore compiler cache
+      id: ccache
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ hashFiles('.github/actions/setup-build/action.yml', 'cmake/**') }}-${{ github.sha }}
+        restore-keys: |
+          ccache-v1-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ hashFiles('.github/actions/setup-build/action.yml', 'cmake/**') }}-
+
+    - name: Restore vcpkg binary cache
+      id: vcpkg
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+        key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json', 'cmake/**', 'ports/**') }}
+        restore-keys: |
+          vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ inputs.vcpkg-commit }}-
+
+    - name: Bootstrap pinned vcpkg
+      shell: bash
+      env:
+        VCPKG_COMMIT: ${{ inputs.vcpkg-commit }}
+      run: |
+        set -euo pipefail
+        [[ "$VCPKG_COMMIT" =~ ^[[:xdigit:]]{40}$ ]]
+        mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+        git init "$VCPKG_ROOT"
+        git -C "$VCPKG_ROOT" remote add origin https://github.com/microsoft/vcpkg.git
+        git -C "$VCPKG_ROOT" fetch --depth 1 origin "$VCPKG_COMMIT"
+        git -C "$VCPKG_ROOT" checkout --detach FETCH_HEAD
+        env -u CC -u CXX bash "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics

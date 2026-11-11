@@ -4,6 +4,7 @@
 #include <exception>
 #include <optional>
 
+#include <ruvia/core/task.h>
 #include <ruvia/core/task_scope.h>
 #include <ruvia/core/timer.h>
 
@@ -35,7 +36,7 @@ template <typename Connection>
 ruvia::task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::task_scope& scope) {
     try {
         while (!scope.stop_requested()) {
-            auto delivery = co_await state.endpoint->receive(scope.get_stop_token());
+            auto delivery = co_await state.endpoint->receive(scope.token());
             if (scope.stop_requested()) {
                 break;
             }
@@ -76,7 +77,7 @@ ruvia::task<void> watchChannel(Context& context, Connection& socket, ChannelStat
     auto nextAuthorization = Clock::now();
     auto nextHealth = Clock::now() + std::chrono::seconds(30);
     try {
-        while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1), scope.get_stop_token()) == ruvia::timer_sleep_result::elapsed) {
+        while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(1), scope.token()) == ruvia::timer_sleep_result::elapsed) {
             if ((!state.session || !state.session->ready()) && Clock::now() >= state.deadline) {
                 if (state.session) {
                     state.session->close(DesktopCloseReason::kSetupTimeout, state.origin());
@@ -93,9 +94,9 @@ ruvia::task<void> watchChannel(Context& context, Connection& socket, ChannelStat
                 nextHealth = Clock::now() + std::chrono::seconds(30);
             }
             if (state.owner && Clock::now() >= nextAuthorization) {
-                const bool authorized = (co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, id = state.authorization->sessionId] { return service.authorized(id); }));
+                const bool authorized = ((co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, id = state.authorization->sessionId] { return service.authorized(id); })).take_value());
                 if (!authorized) {
-                    (co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kPermissionRevoked); }));
+                    ((co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kPermissionRevoked); })).take_value());
                     state.session->close(DesktopCloseReason::kPermissionRevoked, state.origin());
                     socket.abort();
                     co_return;
@@ -123,13 +124,13 @@ ruvia::task<void> exchangeChannel(Context& context, Connection& socket, protocol
         co_return;
     }
     if (source == protocol::ChannelSource::kBrowser) {
-        state.authorization = (co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, user = context.template request_state<UserIdentity>(), message = *open] {
-            return service.consumeBrowser(user, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
-        }));
+        state.authorization = ((co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, user = context.template request_state<UserIdentity>(), message = *open] {
+                                   return service.consumeBrowser(user, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
+                               })).take_value());
     } else {
-        state.authorization = (co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, device = context.template request_state<DeviceIdentity>(), message = *open] {
-            return service.consumeAgent(device, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
-        }));
+        state.authorization = ((co_await context.run_blocking([service = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).sessions, device = context.template request_state<DeviceIdentity>(), message = *open] {
+                                   return service.consumeAgent(device, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
+                               })).take_value());
     }
     open->Clear(); // The live runtime does not retain bearer tickets.
     if (!state.authorization || scope.stop_requested()) {
@@ -166,7 +167,7 @@ ruvia::task<void> exchangeChannel(Context& context, Connection& socket, protocol
             state.session->close(DesktopCloseReason::kMalformedMessage, state.origin());
             break;
         }
-        if (!(co_await state.session->forward(state.endpoint, *message, scope.get_stop_token()))) {
+        if (!(co_await state.session->forward(state.endpoint, *message, scope.token()))) {
             break;
         }
     }
@@ -200,7 +201,7 @@ ruvia::task<void> channel(Context& context, Connection& socket, protocol::Channe
             if (state.authorization) {
                 auto& runtime = (*context.template worker_state<std::shared_ptr<ServerRuntime>>());
                 try {
-                    (co_await context.run_blocking([service = runtime.sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kFailure); }));
+                    ((co_await context.run_blocking([service = runtime.sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kFailure); })).take_value());
                 } catch (const std::exception&) {
                     // A later permission check, reconnect or gateway recovery closes the persisted session.
                 }

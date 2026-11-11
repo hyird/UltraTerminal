@@ -16,9 +16,9 @@ class NamedPipeTransport;
 // startup timeout. The caller retains the child process and joins it afterwards.
 // This operation cancels only the worker channel and IPC on exit. The relay
 // owns native I/O independently. No credentials or tickets cross the pipe.
-// The session owns systemPool; await this operation before destroying the pool.
+// The process owns the Worker-bound blocking pool through session shutdown.
 // Returns a local terminal message for the control-channel owner to report.
-asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::event_loop loop, ruvia::blocking_pool& systemPool, DesktopWorkerChannel& remote,
+asio::awaitable<wire::Envelope> bridgeDesktop(ruvia::event_loop loop, DesktopWorkerChannel& remote,
                                               NamedPipeTransport& pipe, std::string sessionId, std::uint32_t windowsSession,
                                               std::uint32_t displayIndex, bool writeControl, std::uint32_t desktopInputContract);
 } // namespace ultraterimal::agent

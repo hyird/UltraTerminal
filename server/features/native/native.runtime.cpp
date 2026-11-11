@@ -14,7 +14,7 @@
 #include <map>
 #include <type_traits>
 
-#include <ruvia/core/asio_task.h>
+#include <ruvia/core/async.h>
 #include <ruvia/core/event_loop_pool.h>
 #include <spdlog/spdlog.h>
 
@@ -29,6 +29,11 @@
 
 namespace ultraterimal::server {
 namespace {
+// Bridge the public channel awaiter into the native Asio operation owner.
+template <typename T>
+ruvia::task<ruvia::worker_wait_result<T>> receiveNative(ruvia::channel_receiver<T>& receiver) {
+    co_return co_await receiver.receive();
+}
 class NativeContext {
   public:
     NativeContext(ruvia::web_worker_context& context, DeviceIdentity device, std::shared_ptr<NativeChannel> channel)
@@ -72,7 +77,7 @@ ruvia::task<void> serveNative(ruvia::web_worker_context& context, std::shared_pt
         wire::NativeAccepted response;
         response.set_protocol_version(protocol::kVersion);
         if (purpose == wire::NativeConnect::ENROLLMENT) {
-            auto registration = (co_await context.run_blocking([service = runtime.devices, code = request->enrollment_code(), name = request->device_name()] { return service.registerDevice(code, name); }));
+            auto registration = ((co_await context.run_blocking([service = runtime.devices, code = request->enrollment_code(), name = request->device_name()] { return service.registerDevice(code, name); })).take_value());
             request->Clear();
             if (registration) {
                 response.set_accepted(true);
@@ -81,7 +86,7 @@ ruvia::task<void> serveNative(ruvia::web_worker_context& context, std::shared_pt
             }
             co_await channel->binary(response.SerializeAsString());
         } else {
-            auto device = (co_await context.run_blocking([service = runtime.devices, credential = request->credential()] { return service.authenticate(credential); }));
+            auto device = ((co_await context.run_blocking([service = runtime.devices, credential = request->credential()] { return service.authenticate(credential); })).take_value());
             request->Clear();
             if (device) {
                 channel->authorizeNetwork(purpose == wire::NativeConnect::CONTROL ? protocol::kMaximumControlBytes : protocol::kMaximumMessageBytes);
@@ -173,7 +178,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
                 if (!channel->incoming->first.send(NativeMessage(std::move(payload))).accepted()) {
                     throw std::runtime_error("Native receive queue closed");
                 }
-                const auto credit = co_await ruvia::as_awaitable(channel->readCredit.second.receive());
+                const auto credit = co_await ruvia::as_awaitable(receiveNative(channel->readCredit.second));
                 if (!credit.has_value()) {
                     break;
                 }
@@ -190,7 +195,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
     asio::awaitable<void> write() {
         try {
             while (!stopped) {
-                auto result = co_await ruvia::as_awaitable(channel->outgoing.second.receive());
+                auto result = co_await ruvia::as_awaitable(receiveNative(channel->outgoing.second));
                 if (!result.has_value()) {
                     break;
                 }
@@ -227,7 +232,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
             if (!posted.accepted()) {
                 throw std::runtime_error("Native business worker unavailable");
             }
-            const auto initialized = co_await ruvia::as_awaitable(self->channel->initialized.second.receive());
+            const auto initialized = co_await ruvia::as_awaitable(receiveNative(self->channel->initialized.second));
             if (!initialized.has_value() || self->stopped) {
                 self->stop();
                 co_await self->stream->close();

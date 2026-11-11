@@ -9,8 +9,9 @@
 #include <stdexcept>
 
 #include <openssl/evp.h>
-#include <ruvia/core/asio_task.h>
-#include <ruvia/core/event_loop_attachment.h>
+#include <ruvia/core/async.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "features/connection/connection.transport.h"
 #include "platform/windows/credential.transport.h"
@@ -74,7 +75,8 @@ int runAgentUpdate() {
     WindowsAgentUpdate update;
     try {
         asio::io_context io;
-        auto attachment = ruvia::attach_event_loop(io);
+        ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
         std::exception_ptr failure;
         asio::co_spawn(attachment.loop().executor(), download(attachment.loop(), update.root(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.stop(); });
         attachment.run();

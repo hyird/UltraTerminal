@@ -18,15 +18,10 @@ int main() {
         std::optional<CapturedFrame> pixels;
         CaptureTiming timing;
         for (unsigned attempt = 0; attempt < 20 && !pixels; ++attempt) {
-            pixels = capture.nextFrame(std::chrono::milliseconds(50), nullptr, &timing, false, false, true);
+            pixels = capture.nextFrame(std::chrono::milliseconds(50), nullptr, &timing, false, true);
         }
         if (!pixels || !pixels->bgra.empty() || timing.mapMilliseconds || !capture.texture()) {
             throw std::runtime_error("GPU capture mapped CPU pixels");
-        }
-        capture.rememberTexture();
-        const auto changedTiles = capture.changedTextureTiles();
-        if (changedTiles && std::ranges::any_of(*changedTiles, [](std::uint32_t changed) { return changed != 0; })) {
-            throw std::runtime_error("GPU comparison changed an unchanged encoding surface");
         }
         VideoEncoder encoder({pixels->width, pixels->height, 16000000, 60, false}, capture.device());
         if (!encoder.gpu()) {

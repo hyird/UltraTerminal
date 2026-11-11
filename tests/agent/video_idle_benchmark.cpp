@@ -7,8 +7,9 @@
 
 #include <windows.h>
 
-#include <ruvia/core/asio_task.h>
-#include <ruvia/core/event_loop_attachment.h>
+#include <ruvia/core/async.h>
+#include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "features/desktop/video.runtime.h"
 
@@ -57,8 +58,9 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video) {
 int main() {
     try {
         asio::io_context io;
-        auto attachment = ruvia::attach_event_loop(io);
-        ultraterimal::agent::DesktopVideoRuntime video(attachment.loop(), 0);
+        ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
+        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        ultraterimal::agent::DesktopVideoRuntime video(attachment.loop(), blockingPool, 0);
         std::exception_ptr failure;
         asio::co_spawn(attachment.loop().executor(), measure(video), [&](std::exception_ptr error) {
             failure = error;

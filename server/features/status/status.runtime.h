@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <ruvia/core/channel.h>
+#include <ruvia/core/task.h>
 
 namespace ultraterimal::server {
 // Worker-owned invalidations. Only identifiers are queued; the writer rereads

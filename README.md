@@ -6,11 +6,13 @@
 
 GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行以下检查：
 
-- Windows Agent：Windows Server 2022 / MSVC、`windows-agent-release` Preset、静态链接构建、功能单元测试和 MSI 打包。
-- Linux Server：Ubuntu 24.04 / Clang 19 + GCC 14 标准库、`linux-server-release` Preset、网关与协议构建及功能单元测试。
-- Web：Bun 1.4.2、锁文件安装、格式检查、发送队列功能单测、TypeScript 检查与生产构建。HeroUI Pro 安装通过仓库 Secret `HEROUI_AUTH_TOKEN` 使用专用 CI/CD Token。
+- Windows Agent 使用 Windows Server 2025 / MSVC、`windows-agent-release` Preset、静态 CRT、Release LTO、功能单元测试和 MSI 打包。
+- Linux Server 使用 Ubuntu 24.04 托管 Runner，按 Ruvia 的 LLVM/musl 方式构建全静态网关。每次运行统一解析 clang-cross 发布版本并校验官方 SHA256，使用 `linux-server-release` Preset、Release LTO 和功能单元测试。
+- Web 使用 Bun 1.4.4、锁文件安装、格式检查、功能单测、TypeScript 检查与生产构建。HeroUI Pro 安装通过仓库 Secret `HEROUI_AUTH_TOKEN` 使用专用 CI/CD Token。
 
-vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`，并在配置后立即保存 vcpkg 二进制缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA，在项目构建阶段编译，不使用 overlay port。成功构建保存 Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。MSI 使用 Windows Runner 自带 Git for Windows 的 CA 集合；仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址，未设置时为 `localhost`，部署前应按目标环境生成清单。可在仓库 Actions 页下载对应提交的产物。
+vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`。工具链、vcpkg 二进制和 Linux ccache 分开缓存，依赖配置成功后保存完整依赖缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA。成功构建保存 Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。Linux 发布包包含同一提交的 Server、单文件前端、修订信息和 SHA256SUMS，部署使用通过 CI 的完整产物。MSI 使用 Git for Windows 的 CA 集合，仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址。可在仓库 Actions 页下载对应提交的产物。
+
+Ruvia 固定到 [c5af9d8d7c238b95676b4b6b9e977fee6915469f](https://github.com/hyird/Ruvia/commit/c5af9d8d7c238b95676b4b6b9e977fee6915469f)，vcpkg 基线为 `5cad485d1ddb649c8fa1022bf0b3908555e6e6ba`。使用新版公开的 `async.h`、Worker 绑定阻塞池与显式卸载结果，以及 Web `client()`、`blocking_pool()`、`rate_limit()` 配置。Ruvia HTTP/2、HTTP/3 在本项目显式关闭；浏览器 HTTPS/WSS 仍由外部边缘终止，Agent 原生 QUIC 不受这两个 Web 功能开关影响。 前端使用 Bun 1.4.4，依赖升级至当前 registry 的 latest 版本并提交 `bun.lock`；安装继续使用 `bun install --frozen-lockfile`。源码 Agent 版本为 1.0.41；该版本尚未声明线上发布。
 
 托管 Runner 不承担真实 DXGI、锁屏、UAC、输入注入等 `interactive-desktop` 测试，也不替代 Windows + MariaDB 联调、MSI 安装与部署验收；这些仍按下文在专用测试机执行。CI 只验证和保存构建产物，不自动部署生产环境。
 
@@ -34,7 +36,7 @@ ctest --preset windows-agent-release
 
 Agent 输出到 `build/windows-agent/agent/Release/agent.exe`。
 
-Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_agent.ps1` 要求源码已提交且工作区无已跟踪修改，记录对应项目/Ruvia/vcpkg 修订及依赖的 SPDX 源码信息。构建脚本校验 WiX 压缩包 SHA256，并输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 Product Id；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。2026-10-14 的 Agent **1.0.39** 修复未饱和显示确认抖动引发的误降码率，并为全屏有损视频保留按分辨率计算的清晰度预算；重复帧不再清空预算，无损小区域更新保持按实际成本调速。公开的 `/windows-agent.json` 指向 `/assets/ultraterimal-agent-1.0.39.msi`，旧 1.0.38 包保留以供回滚；MSI、实际安装版本和下载哈希按部署流程核对。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
+Windows MSI 使用固定版本的 WiX 7.0.1 构建，打包静态链接的 Agent、登录组件、CA 集合、注册脚本及许可说明。`package_agent.ps1` 要求源码已提交且工作区无已跟踪修改，记录对应项目/Ruvia/vcpkg 修订及依赖的 SPDX 源码信息。构建脚本通过 NuGet 安装固定版本 WiX，构建机需要 .NET SDK 8 或更高兼容版本；仅构建工具使用 .NET，目标机安装及 Agent 运行不依赖 .NET。WiX 7 的 OSMF EULA 已由项目所有者确认接受，CI 通过 `-acceptEula wix7` 显式传入；适用的维护费要求见 [WiX 官方条款](https://docs.firegiant.com/wix/osmf/)。脚本输出 MSI 和带有 MSI 校验值及原生接入地址的 `windows-agent.json`。每次发布新 MSI 时更新 `agent.wxs` 的版本与 ProductCode；MSI 发布到 Web 的 `assets/`，清单发布到 Web 根目录。2026-10-14 的 Agent **1.0.39** 修复未饱和显示确认抖动引发的误降码率，并为全屏有损视频保留按分辨率计算的清晰度预算；重复帧不再清空预算，无损小区域更新保持按实际成本调速。公开的 `/windows-agent.json` 指向 `/assets/ultraterimal-agent-1.0.39.msi`，旧 1.0.38 包保留以供回滚；MSI、实际安装版本和下载哈希按部署流程核对。`/install.ps1` 由网关内置路由返回，源码在 `server/modules/devices/install.ps1`，CMake 将它编译进程序；修改后重新构建网关，无需单独发布脚本文件。
 
 ```powershell
 ./agent/platform/windows/package_agent.ps1 `
@@ -49,7 +51,7 @@ Windows MSI 使用固定版本的 WiX 3.14.1 构建，打包静态链接的 Agen
 
 MSI 发布到 Web `assets/`，不生成独立源码包；`windows-agent.json` 的 `source` 为对应提交的公开仓库链接，`source_commit` 为完整提交 SHA。安装目录 `source_info.txt` 记录项目、Ruvia、vcpkg 修订和依赖 SPDX 来源及校验值。保持已分发版本的对应源码与依赖可获取。
 
-网关可使用 `windows-server-release`，或在本机 WSL 的 Linux 文件系统内构建：
+网关可使用 `windows-server-release`，或在 Linux 环境中安装 clang-cross、CMake、Ninja 和 vcpkg 后构建。`ULTRATERIMAL_MUSL_ROOT` 指向已校验的 `x86_64-unknown-linux-musl` 工具链根目录，CI 装配见 `.github/actions/setup-build/action.yml`。
 
 ```sh
 cmake --preset linux-server-release
@@ -57,7 +59,7 @@ cmake --build --preset linux-server-release -j4
 ctest --preset linux-server-release
 ```
 
-Linux 网关输出到 `build/linux-server/server/gateway`。部署机器的 glibc 与 C++ 标准库需兼容构建环境；数据库可使用MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
+Linux 全静态网关输出到 `build/linux-server/server/gateway`。CI 校验 ELF 不包含动态加载器入口。数据库使用 MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
 
 ### 前端构建
 
@@ -178,50 +180,18 @@ Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='Ultrate
 
 ## 验证
 
-CI 只运行 CTest 中标记为 `unit` 的功能单元测试，不启动 Python、数据库、真实网络对端或浏览器集成测试。Python 测试脚本及其专属测试程序已移除。
+CI 运行 CTest 中标记为 unit 的功能单元测试。
 
 ```powershell
 ctest --preset windows-agent-release -L unit --no-tests=error
 ctest --preset linux-server-release -L unit --no-tests=error
 ```
 
-真实桌面、锁屏、UAC、输入注入、服务安装和公网弱网行为在专用设备人工验收。现有原生桌面探针仅用于本地诊断，不在 CI 中运行；旧浏览器回归工具随前端移除，新前端完成后需重新建立端到端验收。
-单显示器测试机可显式运行 `build/windows-agent/tests/agent/Release/agent-video-runtime-tests.exe --resize`：连续切换六次真实分辨率，在同一协议通道校验尺寸、递增画面基准和独立关键帧解码，再在模式切换后验证关闭响应。测试正常退出或抛出异常时恢复原分辨率（强制终止进程不保证恢复）；不在 CI 中执行。本机单显示器手动测试已在无活动桌面 Worker 时完成 1920×1080 ↔ 1920×1200 六次切换、同通道独立解码及退出后原分辨率核对；这不是浏览器实际模式切换验收。
+本机真实桌面测试覆盖整帧采集、GPU/软件编码、首帧独立解码、基准重建、背压、前后台切换与桌面进程 IPC。单显示器可显式运行 agent-video-runtime-tests --resize，验证重复分辨率切换并在正常退出时恢复原模式。真实服务安装、登录/锁屏/UAC、媒体组件缺失、公网弱网及物理呈现延迟由专用测试环境验收。
 
-Agent 1.0.15 起，网关 `agent_log event=DESKTOP_FAILED` 同时记录 `fault_stage`、`fault_code`、`windows_session`、`worker_pid`。例如 `CAPTURE_ENCODE / DISPLAY_UNAVAILABLE` 表示目标桌面没有可采集输出，`WORKER_READY_WAIT / STARTUP_TIMEOUT` 表示工作进程未在启动期限内产生首帧。结合 `device_id`、`session_id` 和 `runtime_id/event_sequence` 关联，不再把后续管道关闭作为采集根因；旧 Agent 无详情时显示 `none`。详情只含固定枚举与数字，不上传本机异常原文。先升级网关再升级 Agent；无需数据库迁移或前端升级。
+agent-hardware-video-probe 动态枚举 Media Foundation 编码器，agent-software-video-benchmark 测量软件编码和像素转换，agent-video-idle-benchmark 检查后台编码与 CPU 占用。诊断产物写入 build/，阶段耗时和软件显示确认用于定位对应环节。
 
-诊断、测试输出与截图仅写入 `build/`。编译、协议测试及浏览器模拟测试均不能替代真实 Windows 服务、登录界面、锁屏和 UAC 桌面验证。
-
-`agent-hardware-video-probe` 动态加载系统 Media Foundation，枚举 NV12 输入的 H.264/H.265 硬件编码器并尝试创建实例，输出启动、枚举和创建的 HRESULT。缺少媒体组件时报告不可用；该探测不加入 Agent 启动依赖。H.264 还会协商 NV12 输入、通过异步事件仅送入一张 1280×720 测试帧，不追加下一帧也不排空编码器，再由 OpenH264 独立解码并检查尺寸和亮度/色度采样点。使用 H.264 Baseline 避免 B 帧重排，记录首次送帧到独立解码耗时；此项不是稳态编码吞吐测试。异步事件通过带超时的事件等待接收，不轮询；单候选等待输出最长 5 秒，并单独验证空闲超时与关闭后的拒绝路径。`h264_frame_checks` 记录此项结果；`agent_hardware_path_implemented: false` 表示该诊断尚未接入 Agent，不能作为平台能力声明或完整硬编验收依据。
-
-`agent-software-video-benchmark --detail-live-rate` 对 1080p 窗口移动和滚动使用初始清晰模式的 24 Mbps 目标；`--detail` 对比 8 Mbps 下的均衡/清晰模式。`--motion-stress` 用名义 30 FPS 的高变化 8×8 纹理对比 Smooth 8 Mbps 与 Sharp 8/24 Mbps：本机编码 P95 约 8.6/10.1/10.3 ms、按 30 FPS 推算的实际载荷约 8.2/51.1/51.1 Mbps；Sharp 的文字清晰度 QP 限制在该纹理下降低目标码率也不能压缩输出，现有有界背压虽防积压却不能保证弱网有效帧率。这是极端合成纹理、非实际视频或弱网体验，详见 `build/encoding-measurement/motion-stress-report.md`。报告包含目标码率和模式。所有结果均是合成基准，不等于线上帧率。`agent-cursor-tests --benchmark` 测量同一 128×128 彩色指针连续 10000 次仅移动时的转换耗时；不包含采集、IPC、网络或浏览器呈现。
-
-`agent-software-video-benchmark` 输出 720p、1080p、2560×1600 合成窗口移动与滚动场景的 JSON 行报告，记录预热后 180 帧的编码平均/P95/P99 耗时、CPU 时间、字节量、吞吐与亮度 PSNR，每帧由同一个解码器立即按序解码校验。运行 `build/windows-agent/tests/agent/Release/agent-software-video-benchmark.exe`，输出重定向至 `build/`。`--capture-pipeline` 在本机交互桌面绘制小块变化并验证采集像素，分开报告绘制开始至 DXGI `LastPresentTime`、DXGI 呈现至采集函数返回，以及编码耗时；后者的采集区间仍包含线程调度、`AcquireNextFrame` 等待与 GPU 读回，不能直接当成复制成本。该诊断需要测试窗口未被其他窗口遮挡的交互桌面；失败时只输出采集次数、像素帧数与测试窗口可见性等元数据，不记录画面内容。它受显示刷新率和系统负载影响，不是远端输入到显示延迟，也不保证目标帧率。`--capture-pipeline-full` 在同一测试窗口强制全帧 CPU 复制以做离线交替对照；`--capture-pipeline-verify` 在局部复制后额外对同帧全帧 staging 像素逐字节比较，不用于性能 A/B。`--capture-readback` 无须测试窗口，连续建立 20 个 DXGI Duplication 实例并分别测量首帧等待、复制命令提交、映射等待与逐行复制；当输出已在系统内存时，正常路径直接用 DXGI `MapDesktopSurface`，否则仍用 DXGI 纹理与 staging readback。`--capture-readback-staging` 仅用于离线对照强制 staging，不是 Agent 部署开关；`--capture-readback-verify` 对同一已获取帧分别运行两条 DXGI 读回路径，逐字节比较本地像素，只输出一致帧数，不记录画面。`--capture-readback-live-verify` 在现有桌面连续运行 30 秒，对实际变化帧做同帧比较并输出采集、直接映射及后续 staging 校验的分段耗时；它不会创建测试窗口，但每帧额外执行旧 staging 路径，所以其帧数和 CPU 消耗不能用作正常远控的 FPS/资源占用。校验路径总在直接映射之后运行，两条路径的耗时不能直接用作独立运行时的 A/B 性能结论。Agent 连续采集同一桌面且保有上一张完整图像时，利用 DXGI 脏矩形与移动矩形的**目标区域**只复制变化像素；首帧、几何变化、无效/过大的元数据、超过 1024 个矩形或变化面积达到半屏时仍全帧复制。编码器仍读取完整图像并通过 H.264 帧间压缩传输，**不是**只发送变化矩形；`--capture-readback-live-verify` 可逐帧与全帧 staging 读回对照，报告 `partial_frames`、矩形数量及实际复制像素。首帧诊断排除设备和 Duplication 创建耗时，仍不能代表动态桌面的稳态 FPS。默认合成场景只衡量软件颜色转换与编码，不包含采集、网络和浏览器显示延迟，也不代表远端实测帧率；合成场景的亮度 PSNR 不替代文字、色彩和真实应用画质验收。
-
-`agent-software-video-benchmark --capture-scroll-verify` 对测试窗口进行 180 次 Win32 滚动，逐帧检查新像素并与同帧全帧 staging 读回比较，输出驱动实际返回的脏/移动矩形计数；驱动只报告脏矩形时，此项不等于已验证真实移动矩形。`--capture-scroll-staging-verify` 强制使用 staging 读回，在同一次映射中比较局部复制与全帧复制；仅用于验证降级路径，不是 Agent 部署开关。
-
-`agent-video-cadence-benchmark [--paint-hz=30|40|60] [--paint-size=512|960] [--seconds=60] [--scroll|--motion]` 在独立窗口线程按指定频率绘制纯色变化区域，`--scroll` 改为滚动窗口并更新条带，`--motion` 改为循环绘制预生成的高变化纹理；测试窗口默认 64×64，可选 512×512 或 960×960，需由交互显示器完整容纳，使用真实 DXGI/编码 Worker 和本地模拟显示确认测量默认 10 秒（可选 60 秒）编码输出的有效 FPS 与帧间隔 P95/P99（固定原 Sharp 策略，健康目标 32 Mbps，仍自适应码率/FPS；不再接受 `--quality`。V2 主视频保持 VBV 与 PNG 精修策略，不新增每帧清晰保证），并报告实际采集分辨率、编码后端、DXGI 调用/像素更新/采集返回间隔超过 45 ms 的次数、截止点前待编码次数、已编码帧对应的源呈现间隔、开始编码间隔及 DXGI 呈现至 Agent 发布的画面年龄，以及进程 CPU 与内存；它不经网关、网络或浏览器，也不测输入到显示延迟。受控 40 Hz、512×512/960×960 滚动与 Sharp 软件编码在本机短时分别输出约 29.4/29.2 FPS，960×960 持续 60 秒约 29.38 FPS。同机 960×960 高变化纹理/Sharp 60 秒约 29.31 编码 FPS、23.27 Mbps（窗口只占约 44% 屏幕，立即确认、无浏览器），详见 `build/fps-regression/cadence/motion-report.md`；只确认 DXGI→Agent 编码链路调度，画面仍须在实际浏览器会话校验。其结果仅用于排查采集/编码节拍，不能宣称远控端到端帧率；CPU 统计需结合逐帧编码耗时核对，不把受环境影响的单轮读数当作资源收益。`agent-video-idle-benchmark` 在本机首帧后报告后台状态；两次独立 10 秒运行均为 0 编码帧、GetProcessTimes CPU 增量 0 ms，这只验证本机隐藏会话暂停，不是 Server/浏览器空闲资源验收。
-
-Agent 1.0.11 起，BGRA → I420/NV12 在 CPU 支持 AVX2 且操作系统启用 XMM/YMM 状态时自动使用独立的 AVX2 内核，否则保留 SSE2 路径；不提高整个程序的最低指令集要求。AVX2 同时计算两行的亮度和色度，复用输入加载，矩阵、范围、2×2 平均与舍入规则不变。单元测试分别强制两条路径，覆盖全部 24 位 RGB、混合颜色、非对齐/带填充行、向量尾部和保护页边界，并对最高支持像素规模的随机画面逐字节比较。`agent-software-video-benchmark --conversion-sse2` / `--conversion-avx2` 可在同一构建中复测，报告包含实际后端；不支持 AVX2 的机器明确拒绝强制 AVX2 测试。`--conversion` 使用自动选择。这只优化颜色转换，不改变编码线程数、码率或画质参数，转换加速比例不等于整帧编码或端到端加速比例。
-
-Agent 1.0.10 起，每个成功的视频帧携带颜色转换与编码的实际墙钟耗时，不含采集、调度等待、网络和浏览器解码；硬编失败后的软件重编码耗时也计入。Agent 1.0.20 起，视频帧还携带实际应用到该帧的目标 FPS/码率快照。网关每 30 秒的 `desktop_session_health` 与结束摘要记录 `video_width`、`video_height`、`encoder`、`encode_samples`、`mean_encode_us`、`p95_encode_us`、`p99_encode_us`、`max_encode_us`、`last_keyframe_encode_us`、`target_fps`、`target_bps`。分位数采用当前视频配置下最近最多 1024 个已转发且具有计时的视频帧，配置/分辨率/编码基准变化时清空；目标 FPS/码率记录最近已转发视频帧的值，同样随配置/代次重置。静态桌面没有新帧时保留最近样本，不代表过去 30 秒的平均值。老 Agent 没有计时的帧不计入样本，`encode_samples=0`、`encoder=unknown` 表示不可用；旧 Agent 未携带目标字段时 `target_fps=0`、`target_bps=0` 表示未知，而非零目标。统计固定内存、不逐帧写日志，不记录画面或输入内容。
-
-Agent 1.0.21 桌面编码健康目标为 30 FPS（1.0.20 为 60 FPS）；小字合成画面的离线对照显示 4 Mbps 已可辨但有损伤、8 Mbps 更稳，因此以 **1080p60 8 Mbps** 作为保守清晰度预算候选（不是所有画面都可读的保证，也不是必须超发的硬码率下限）。预算按像素面积和 FPS 计算：1080p 每帧基准为 8 Mbps ÷ 60，例如 2560×1080@60 约 10.67 Mbps；预算计算限制在编码器接受的 64 kbps 至 100 Mbps 范围内，64 kbps 是编码器合法下限，不代表该码率下文字可读。Sharp/Balanced/Smooth 的健康目标分别为 24/16/8 Mbps，均不低于当前几何对应的 30 FPS 预算。1.0.19 的策略曾将估算可用吞吐推导为目标 FPS；若估算受应用输出限制，可能持续降至 10 FPS。1.0.20 网络拥塞只降低目标码率到当前 FPS 的每帧预算，不从吞吐或单帧延迟推断目标 FPS；低于预算的链路由有界显示确认、字节窗口及帧龄准入自然限制实际输出，继续只保留最新未编码采集，不积压无界数据、不丢弃已编码依赖帧、不自动降分辨率。连续解码过载仍可每次降 3 FPS（至少间隔 2 秒），短暂解码抖动不改目标 FPS；恢复需连续 5 秒显示反馈健康，且先补足所需码率，再每次升 3 FPS（至少间隔 5 秒），避免帧率来回跳变。实际输出 VBR，Sharp 的 QP 约束可使实际码率超过 target，队列/在途上限仍是安全边界。线上旧日志不含逐帧目标帧率/码率，也不足以唯一归因此次实测帧率回退；此修复针对已确认策略风险，不保证链路任意时都能满 30 FPS。本机 40 Hz 受控画面发现 DXGI `Map` 等待与单 Worker 重复采集会让已变化像素在严格截止点前被多等一轮；在像素已更新且未受背压时允许最多提前 15 ms 编码，并把下一帧锚定到原截止点，避免长期超出目标 FPS。相同测试桌面的两轮严格截止点基线为 20.6–20.8 FPS；15 ms 容差在 40 Hz 的 64×64 区域两轮输出约 29.6–29.7 FPS，DXGI 呈现至 Agent 发布的画面年龄 P50/P95 仍约 19/34 ms。1920×1080 桌面的 960×960 纯色区域以 40 Hz 更新并持续 60 秒时，10/15 ms 容差分别测得约 28.58/29.53 编码 FPS，源年龄 P50/P95 分别约 22/36 ms 与 21/35 ms；帧间隔 P95 均约 48 ms；即使绘制频率提高到 60 Hz，该长尾仍在，不能仅归因于 40/30 Hz 抽样错位或宣称长尾停顿已消除。该数字未包括原生网络、Server、浏览器解码/显示和输入到显示延迟，不能宣称远控最终画面已达 29 FPS。离线 Chrome 的 1080p Canvas2D `drawImage(VideoFrame)` 同步调用在此 VirtIO 测试机上中位约 6 ms，但不含合成、不能外推；测试 `desynchronized` 上下文未稳定改善画面观察帧或绘制成本，因此未改变生产 Canvas2D 绘制方式。旧版工作台的 FPS 取自 WebCodecs 回调中 `drawImage` 的提交次数，而 ACK 在提交后立即发出；它不保证每张画布更新都被浏览器绘制周期观察到或实际合成。2026-10-01 发布的前端仅将页面 FPS 改为 rAF 中观察到的不同画布帧数，**保留即时 ACK**（等待 rAF 再 ACK 的试验增加了约 5 ms 离线反馈 P95，已撤销）；30/60 Hz 离线 Chrome 中页面 FPS 与独立 rAF 计数接近、反馈顺序和代次/后台恢复检查通过。rAF 仍发生在合成前，不能宣称实际物理显示 FPS。本机 HeroUI Pro CLI 未登录，无法在本机完成授权生产构建；仓库 CI 使用正规授权依赖构建 `fd8e278d63ca5bc7dd5d316095ea078ea64b351d` 并通过三项工作，2026-10-01 先更新了 Server 的 Web 单文件页面，随后按独立提交 `bf467835db17a910a40f6bb837c67fdef7964747` 发布新版 1.0.22 Agent MSI 和安装清单，Gateway 程序未改。公开 HTTPS 页面哈希与前述 CI 构建一致，实际未登录页面已在 Chrome 检查；尚未以授权远控会话验收输入到显示延迟或物理帧率。独立离线 Chrome 30 Hz 基准的 900/900 张均被 rAF 采样，而 60 Hz 的 900/900 次提交有多轮仅 720–889 个不同帧编号被 rAF 采样；可见 Chrome 窗口下的 60 Hz 三轮也只有 853–873/900 个不同帧编号被 rAF 观察，30 Hz 两轮则为 899–900/900。rAF 在合成前执行，这些数据不能代表物理呈现；headless 相位、调度和当时夹具在浏览器主线程逐帧执行的发送端 Base64/Protobuf 编码都会影响该旧读数，也不能据此推断线上显示 FPS。补测同为 Sharp 24 Mbps 的离线 H.264 易压缩/高变化纹理：旧夹具在浏览器主线程定时发送时额外执行 Base64/Protobuf 发送端编码，导致高变化 60 Hz 测得的模拟投递→画布 ACK P95 虚高（约 47–184 ms），**不能当作浏览器解码瓶颈**。在计时前预先准备网络消息、定时阶段仅投递 ArrayBuffer 后，两种画面 30 Hz 均为 900/900、headless 60 Hz 均约 899/900 个编号被 rAF 观察；同路径的**可见 Chrome** 60 Hz 为 898/899，投递→ACK P95 约 8.5/11.4 ms、解码队列峰值均为 1。高变化 headless 投递→ACK P95 约 10 ms，易压缩约 8 ms，`drawImage` P95 仍约 6–7 ms。60 Hz 只是离线压力重放，不经 Agent/Server/网络，rAF 又早于合成；详见 `build/quality-floor/browser-perf/motion-report.md`，不能外推输入到实际显示或据此直接放开生产 30 FPS 上限。`server.desktop` 单元测试通过模拟缓慢的视频接收方，确认 30 条每帧 256 KiB、带关键帧/增量帧标记的合成视频消息按序交付、转发等待有界且无消息丢失；视频队列已积压超过 1 MiB 且转发因背压暂停时，独立控制通道仍可收发，释放后共享字节预算归零（放大载荷后连续 10 次通过）。测试载荷不是可解码 H.264，不验证真实链路下的输入延迟、浏览器播放、弱网或 TCP 降级。
-
-桌面固定使用清晰编码策略，健康链路目标为 32 Mbps；画质偏好及其协议枚举已删除，ACK/QoS 和精修声明仍处理。小区域、重复图像与静止空闲的低输出负载不能当作链路容量上限；普通帧的字节在途量覆盖当前目标码率的路径 BDP 且 ACK 连续时，才允许吞吐样本向下修正容量估计。更高实际交付速率可及时替换旧的窄链路估计，持续排队及解码压力仍触发降速，健康两秒后按现有有限恢复目标探测。超过名义预算两倍的非关键变化视频学习真实载荷成本并限制后续编码节拍；连续四张合预算变化帧（5% 或至少 512 字节的元数据/VBV 容差）在编解码/接收端/拥塞约束许可下只试升 1 FPS，下一帧超出新预算及容差立即恢复实测成本，避免正常 VBV 在低 FPS 码率重新分配后自锁。正常 VBV 帧不永久按旧固定载荷计算 FPS，关键帧、重复和静态图像不污染普通帧成本。实际字节参与现有两张普通帧的信用余量，不改变硬上限，也不丢弃已编码依赖帧。帧窗口仍为 RTT/显示基线 × 当前自适应 FPS 加两帧，取客户端容量与 128 帧上限的最小值；旧客户端缺省容量 16。字节窗口仍为带宽时延预算与两张普通帧均值的较大值，限制 16 KiB–4 MiB；帧龄超过路径基线加 150 ms 仍停止编码，输入通道保持隔离。这是策略缺口修复，不证明公网瓶颈位置或端到端持续动态 30 FPS。
-
-Agent 1.0.37 将内容变化帧的自适应上限提高到 60 FPS，仍由 1080p60 8 Mbps 清晰度预算（按变化面积折算）、24 Mbps 目标码率、编码/解码耗时、接收额度与拥塞共同决定实际目标；连续模式的重复图像节拍保持不超过 30 FPS，空闲编码与链路开销不随内容帧率加倍。V2 编码器遵守 VBV，单帧突发不再学习载荷下限压低后续节拍，其字节仍受两帧信用余量、字节窗口和帧龄保护约束；带清晰量化下限的 legacy 编码器在实际帧超过名义单帧预算（含 5% 容差）时即学习固定载荷并按 1.0.36 规则试升。Media Foundation 硬编在流式期间不能改变 `MF_MT_FRAME_RATE`，按创建时帧率分配每帧字节；Agent 改为按实际/名义帧率缩放 `CODECAPI_AVEncCommonMeanBitRate`（限制 64 kbps–100 Mbps），与 x264 的每帧预算折算一致，提高帧率不再放大实际码率。
-
-本机 2560×1600、硬件 GPU 编码、立即确认的 `agent-video-cadence-benchmark --optimization=v2 --continuous` 每轮 10 秒，不经网络、网关和浏览器，不代表端到端输入到显示延迟：
-
-| 场景 | 版本 | 有效 FPS | 帧间隔 P95 | ≥66 ms 间隔 | 实际码率 |
-| --- | --- | --- | --- | --- | --- |
-| `--motion --paint-hz=60 --paint-size=960`，3 轮 | 1.0.36 | 20.5–20.8 | 79–83 ms | 58–61 | 16.2–16.9 Mbps |
-| 同上 | 1.0.37 | 60.0 | 18.7–19.0 ms | 0 | 23.7–23.9 Mbps |
-| `--static --detail --full-desktop`（全部为重复图像） | 1.0.36 | 30.0 | 37.6 ms | — | 24.1 Mbps |
-| 同上 | 1.0.37 | 30.0 | 36.4 ms | — | 11.6 Mbps |
-
-静止重复图像在 MF 硬编上仍按目标码率填充（1.0.37 为 60 FPS 预算下每帧约 48 KB），x264 的线上实测约 17 KB/帧；降低重复图像码率需逐厂商验证 MF 码率控制模式，本版本未改动。
+Agent 1.0.41 的生产画面统一使用整帧视频。PNG 区域更新、瓦片缓存、GPU 差分、区域读回调度及专属验证程序已删除，浏览器声明关闭相关能力。协议和网关保留旧消息以支持 1.0.40 及更早版本的滚动升级，退出条件见 DESIGN.md。此版本需要完成部署后的实际版本与服务核验。
 
 ### 设备管理
 

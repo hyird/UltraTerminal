@@ -15,7 +15,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/asio_task.h>
+#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
 #include <ruvia/core/timer.h>
 
@@ -101,7 +101,6 @@ asio::awaitable<ControlCheck> checkControlConnection(ruvia::event_loop loop, con
 }
 struct ControlRuntime::State : std::enable_shared_from_this<State> {
     ruvia::event_loop loop;
-    ruvia::blocking_pool settingsPool{{.thread_count_ = 1, .queue_capacity_ = 1}};
     ruvia::stop_source stopSource;
     asio::any_io_executor executor;
     ConnectionConfig config;
@@ -125,7 +124,6 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     bool updating = false;
     bool started = false, stopping = false, ended = false, heartbeatPending = false;
     unsigned heartbeatSeconds = 0;
-    ~State() { settingsPool.join(); }
 
     State(ruvia::event_loop owner, ConnectionConfig settings, std::filesystem::path executable, ConsoleSessionEvents* events)
         : loop(owner), executor(owner.executor()), config(std::move(settings)), writeReady(executor), heartbeatTimer(executor), deadline(executor), backoff(executor),
@@ -191,6 +189,9 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         outbound.push_back(std::move(bytes));
         writeReady.cancel();
     }
+    ruvia::task<void> waitForStop(const ruvia::worker_handle& worker) {
+        (void)co_await ruvia::sleep_for(worker, std::chrono::hours(24), stopSource.token());
+    }
     asio::awaitable<void> writeLoop() {
         try {
             while (!ended) {
@@ -215,7 +216,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         while (!ended) {
             // The durable update result is a recovery record, not a local log.
             try {
-                const auto result = (co_await ruvia::as_awaitable(ruvia::run_blocking(settingsPool, loop.handle(), [root = desktopExecutable.parent_path()] { return takeAgentUpdateResult(root); })));
+                const auto result = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop.handle(), [root = desktopExecutable.parent_path()] { return takeAgentUpdateResult(root); }))).take_value());
                 if (result) {
                     updating = false;
                     log(*result == 0 || *result == 3010 ? wire::AgentLog::UPDATE_COMPLETED : wire::AgentLog::UPDATE_FAILED, {}, *result);
@@ -268,7 +269,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     if (!updating) {
                         bool launched = false;
                         try {
-                            launched = (co_await ruvia::as_awaitable(ruvia::run_blocking(settingsPool, loop.handle(), [path = desktopExecutable, update = message->agent_update()] { return launchAgentUpdate(path, update); })));
+                            launched = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop.handle(), [path = desktopExecutable, update = message->agent_update()] { return launchAgentUpdate(path, update); }))).take_value());
                         } catch (const std::exception&) {
                         }
                         updating = launched;
@@ -280,11 +281,11 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     }
                     logPending = false;
                 } else if (message->has_windows_login_request()) {
-                    auto operation = ruvia::run_blocking(settingsPool, loop.handle(),
+                    auto operation = ruvia::run_blocking(loop.handle(),
                                                          [path = config.credentialFile.parent_path() / "windows_login.credential", request = std::move(*message->mutable_windows_login_request())]() mutable {
                                                              return windowsLoginSettings(path, std::move(request));
                                                          });
-                    auto result = (co_await ruvia::as_awaitable(std::move(operation)));
+                    auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
                     if (!ended) {
                         wire::Envelope response;
                         *response.mutable_windows_login_result() = std::move(result);
@@ -294,7 +295,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     if (!message->session_id().empty() || !message->channel_id().empty()) {
                         throw std::runtime_error("Restart request is not permitted on a session channel");
                     }
-                    auto operation = ruvia::run_blocking(settingsPool, loop.handle(),
+                    auto operation = ruvia::run_blocking(loop.handle(),
                                                          [deviceId = config.deviceId,
                                                           request = std::move(*message->mutable_windows_restart_request())]() mutable {
                                                              const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
@@ -302,7 +303,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                                                                                                              .count());
                                                              return handleWindowsRestart(deviceId, request, nativeSystemRestartPlatform(), now);
                                                          });
-                    auto result = (co_await ruvia::as_awaitable(std::move(operation)));
+                    auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
                     if (!ended) {
                         wire::Envelope response;
                         *response.mutable_windows_restart_result() = std::move(result);
@@ -477,7 +478,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     asio::awaitable<void> watchStop() {
         auto worker = loop.handle();
         while (!stopSource.stop_requested()) {
-            (void)co_await ruvia::as_awaitable(ruvia::sleep_for(worker, std::chrono::hours(24), stopSource.token()));
+            (void)co_await ruvia::as_awaitable(waitForStop(worker));
         }
         stop();
     }

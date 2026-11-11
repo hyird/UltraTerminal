@@ -14,7 +14,7 @@ namespace ultraterimal::agent {
 // run() belong to the session's event loop; join run() before destroying its pool.
 class WindowsLoginBroker {
   public:
-    static std::unique_ptr<WindowsLoginBroker> create(ruvia::event_loop loop, ruvia::blocking_pool& pool,
+    static std::unique_ptr<WindowsLoginBroker> create(ruvia::event_loop loop,
                                                       std::filesystem::path credentialFile, std::uint32_t session) noexcept;
     ~WindowsLoginBroker();
     asio::awaitable<void> run();

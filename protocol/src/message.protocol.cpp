@@ -7,6 +7,7 @@
 
 #include "ultraterimal/protocol/desktop.protocol.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
+#include "ultraterimal/protocol/desktop_session.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 
 namespace ultraterimal::protocol {
@@ -304,6 +305,11 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         }
         break;
     case wire::Envelope::kVideoConfig:
+        if ((m.video_config().has_session_capabilities() && !validDesktopSessionCapabilities(m.video_config().session_capabilities())) ||
+            (m.video_config().session_version() && (!m.video_config().has_session_capabilities() || m.video_config().session_version() < m.video_config().session_capabilities().minimum_version() || m.video_config().session_version() > m.video_config().session_capabilities().maximum_version())) ||
+            (m.video_config().session_features() && (!m.video_config().session_version() || (m.video_config().session_features() & ~m.video_config().session_capabilities().features())))) {
+            return invalid();
+        }
         if (m.video_config().display_modes_size() > 128 || (m.video_config().continuous_frames() && m.video_config().desktop_optimization_contract() != 2)) {
             return invalid();
         }
@@ -433,6 +439,9 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     }
     case wire::Envelope::kDesktopVideoCapabilities: {
         const auto& capabilities = m.desktop_video_capabilities();
+        if (capabilities.has_session_capabilities() && !validDesktopSessionCapabilities(capabilities.session_capabilities())) {
+            return invalid();
+        }
         if (m.generation() || m.frame_id() || m.base_frame_id() || capabilities.codecs_size() > 3) {
             return invalid();
         }

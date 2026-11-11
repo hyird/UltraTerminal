@@ -8,6 +8,7 @@
 
 #include <ruvia/core/channel.h>
 #include <ruvia/core/one_shot.h>
+#include <ruvia/core/task.h>
 
 #include "ultraterimal/protocol/message.protocol.h"
 

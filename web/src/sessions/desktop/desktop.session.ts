@@ -7,13 +7,7 @@ import {
 import { DesktopInput } from "./input.session";
 import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
-import { DesktopTiles, desktopCopies } from "./tiles.session";
-import {
-  DesktopRefinements,
-  DesktopOptimizationContract,
-  desktopDuration,
-  type DesktopRefinementAdmission,
-} from "./refinement.session";
+import { DesktopVideoContract, desktopDuration } from "./desktop.protocol";
 import { desktopCodecFamily, detectDesktopCodecs } from "./codecs.session";
 import {
   DesktopVideoDecodeLease,
@@ -53,7 +47,6 @@ export class DesktopSession {
   private decoder: VideoDecoder | null = null;
   private generation = 0;
   private frame = 0;
-  private contentFrame = 0;
   private displayedContentFrame = 0;
   private readonly continuousReadiness = new Set<number>();
   private pending = new Map<
@@ -70,6 +63,9 @@ export class DesktopSession {
   >();
   private videoChannel: DesktopVideoReceiveChannel | null = null;
   private deadline: ReturnType<typeof setTimeout> | undefined;
+  private decodeDeadline: ReturnType<typeof setTimeout> | undefined;
+  private cancelDecoderProbe: (() => void) | undefined;
+  private readonly rejectedCodecs = new Set<ultraterimal.wire.VideoCodec>();
   private livenessDeadline: ReturnType<typeof setTimeout> | undefined;
   private cursorShape: ImageData | null = null;
   private hotspot = { x: 0, y: 0 };
@@ -83,14 +79,6 @@ export class DesktopSession {
   private observedFrame = 0;
   private readonly visibleFrameGaps = new DesktopVisibleFrameGaps();
   private renderReportAt = 0;
-  private refinementWait:
-    | {
-        frame: number;
-        reliable: boolean;
-        resolve: (ready: boolean) => void;
-        timer: ReturnType<typeof setTimeout>;
-      }
-    | undefined;
   private observationAnimation: number | undefined;
   private visible = true;
   private scaleMode: "native" | "fit" = "fit";
@@ -106,65 +94,18 @@ export class DesktopSession {
   private presentedCount = 0;
   private decodeTotal = 0;
   private codec = "";
-  private tiles = new DesktopTiles();
-  private readonly optimization = new DesktopOptimizationContract();
+  private readonly optimization = new DesktopVideoContract();
   private optimizationV2 = false;
-  private readonly refinementGenerations = new Map<
+  private readonly videoGenerations = new Map<
     number,
     {
-      v2: boolean;
-      width: number;
-      height: number;
       frame: number;
       content: number;
       continuous: boolean;
       timestamp: number;
-      admission: DesktopRefinementAdmission;
     }
   >();
-  private legacyRefinedFrame = 0;
   private browserTiming: ultraterimal.wire.IDesktopBrowserTiming | undefined;
-  private readonly refinements = new DesktopRefinements(
-    this.tiles,
-    () => ({
-      generation: this.generation,
-      frame: this.contentFrame,
-      displayedFrame: this.displayedContentFrame,
-      identity: this.decoder,
-      unavailable: this.stopped || !!this.videoChannel?.isReconfiguring,
-      background: document.hidden || !this.visible,
-    }),
-    (tiles) => {
-      for (const tile of tiles)
-        this.context.drawImage(tile.image, tile.x, tile.y);
-    },
-    (binding, applied) => {
-      const channel = this.channels.find(
-        (entry) => entry.purpose === 2 && entry.ready,
-      );
-      if (channel)
-        this.send(channel, {
-          generation: binding.generation,
-          frameId: binding.frame,
-          baseFrameId: 0,
-          desktopRefinementAck: {
-            batchId: wire.DesktopRefinementAck.fromObject({
-              batchId: binding.batch.toString(),
-            }).batchId,
-            status: applied
-              ? wire.DesktopRefinementAck.Status.APPLIED
-              : wire.DesktopRefinementAck.Status.SUPERSEDED,
-          },
-        });
-    },
-    (_binding, timing, bytes) => {
-      this.browserTiming = timing;
-      this.recordVideoBytes(bytes);
-      this.reportDisplay();
-    },
-    () => this.fail("桌面精修解码异常，会话已结束"),
-  );
-  private copyCanvas: OffscreenCanvas | undefined;
   private supportedCodecs: ultraterimal.wire.VideoCodec[] = [
     wire.VideoCodec.AVC,
   ];
@@ -186,7 +127,10 @@ export class DesktopSession {
     private bitrate: (bitsPerSecond: number) => void = () => {},
     private performanceSample: (sample: DesktopPerformance) => void = () => {},
   ) {
-    const context = canvas.getContext("2d", { alpha: false });
+    const context = canvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
     const cursorContext = overlay.getContext("2d");
     if (!context || !cursorContext || !globalThis.VideoDecoder)
       throw new Error(
@@ -208,7 +152,6 @@ export class DesktopSession {
         "visibilitychange",
         () => {
           this.visibleFrameGaps.clear();
-          if (document.hidden) this.refinements.baselineChanged();
           this.reportDisplay();
         },
         {
@@ -271,9 +214,7 @@ export class DesktopSession {
               () => {
                 if (
                   channel.purpose !== 3 ||
-                  this.refinementWait?.reliable ||
-                  (channel.receive.decodeWaiterCount === 0 &&
-                    !this.refinementWait)
+                  channel.receive.decodeWaiterCount === 0
                 )
                   return;
                 try {
@@ -286,12 +227,6 @@ export class DesktopSession {
                     candidateGeneration,
                     this.generation,
                   );
-                  this.refinements.retire();
-                  if (this.refinementWait) {
-                    clearTimeout(this.refinementWait.timer);
-                    this.refinementWait.resolve(false);
-                    this.refinementWait = undefined;
-                  }
                 } catch {
                   // The serialized receive path reports malformed messages.
                 }
@@ -309,7 +244,9 @@ export class DesktopSession {
       }
       void detectDesktopCodecs().then((codecs) => {
         if (this.stopped) return;
-        this.supportedCodecs = codecs;
+        this.supportedCodecs = codecs.filter(
+          (codec) => !this.rejectedCodecs.has(codec),
+        );
         this.reportCapabilities();
       });
     } catch (error) {
@@ -394,7 +331,6 @@ export class DesktopSession {
     this.visibleFrameGaps.clear();
     if (!visible) {
       this.input?.release();
-      this.refinements.baselineChanged();
     }
     this.reportDisplay();
   }
@@ -416,7 +352,7 @@ export class DesktopSession {
             (this.videoChannel?.budget.queuedMessageCount ?? 0),
           background: document.hidden || !this.visible,
           maximumPendingVideoFrames,
-          videoRefinement: true,
+          videoRefinement: false,
           ...(renderReport ? { visibleFrameTiming: renderReport } : {}),
           ...(this.optimizationV2 && this.browserTiming
             ? { browserTiming: this.browserTiming }
@@ -433,24 +369,26 @@ export class DesktopSession {
     this.send(channel, {
       desktopVideoCapabilities: {
         codecs: this.supportedCodecs,
-        regionUpdates: true,
-        tileCache: true,
+        regionUpdates: false,
+        tileCache: false,
         desktopOptimizationContract: contract,
         continuousFrames: contract === 2 && this.continuousReadiness.size === 2,
       },
     });
   }
-  private rejectCodec(codec: string): void {
+  private rejectCodec(codec: string, timedOut = false): void {
     const family = desktopCodecFamily(codec);
+    clearTimeout(this.decodeDeadline);
+    this.decodeDeadline = undefined;
     if (
       family === wire.VideoCodec.AVC ||
       family === wire.VideoCodec.VIDEO_CODEC_UNSPECIFIED
     ) {
-      this.fail("视频解码失败");
+      this.fail(timedOut ? "视频解码首帧超时" : "视频解码失败", timedOut);
       return;
     }
-    this.refinements.retire();
     this.rejectedGeneration = this.generation;
+    this.rejectedCodecs.add(family);
     this.supportedCodecs = this.supportedCodecs.filter(
       (entry) => entry !== family,
     );
@@ -522,7 +460,7 @@ export class DesktopSession {
         this.continuousReadiness.add(channel.purpose);
       else this.continuousReadiness.delete(channel.purpose);
       this.reportCapabilities();
-      if (!this.displayedFrame)
+      if (this.channels.every((entry) => entry.ready) && !this.generation)
         this.status("通道已配对，等待远端采集与视频首帧…");
       if (channel.purpose === 2) {
         this.reportCapabilities();
@@ -544,39 +482,7 @@ export class DesktopSession {
     const retired =
       generationId < this.generation ||
       channel.receive.isRetiredGeneration(generationId, this.generation);
-    const refinementGeneration = this.refinementGenerations.get(generationId);
-    if (
-      channel.purpose === 3 &&
-      message.body === "videoRefinement" &&
-      message.videoRefinement &&
-      (retired || generationId === this.rejectedGeneration)
-    ) {
-      // Only retained, actually negotiated generations may return v2 credit.
-      // Unknown/evicted bindings close the session rather than silently leave
-      // an unverifiable outstanding batch holding global credit indefinitely.
-      if (!refinementGeneration)
-        throw new Error("Unknown desktop refinement generation");
-      if (!refinementGeneration.v2) return;
-      if (!frameId || baseFrameId !== frameId)
-        throw new Error("Invalid desktop refinement cleanup baseline");
-      const refinement = wire.VideoRefinement.create(message.videoRefinement);
-      this.refinements.supersede(
-        {
-          generation: generationId,
-          frame: frameId,
-          batch: BigInt(refinement.batchId.toString()),
-          kind: refinement.kind,
-          receivedAt,
-        },
-        refinement.patches,
-        refinementGeneration.width,
-        refinementGeneration.height,
-        refinementGeneration.frame,
-        refinementGeneration.admission,
-        reservation,
-      );
-      return;
-    }
+    const videoGeneration = this.videoGenerations.get(generationId);
     if (channel.purpose === 2) {
       if (message.body === "desktopProbe" && message.desktopProbe) {
         const probe = wire.DesktopProbe.create(message.desktopProbe);
@@ -723,14 +629,10 @@ export class DesktopSession {
         }
       };
       discardRetiredInput();
-      const admission = this.refinements.beginGeneration(generationId);
       this.optimizationV2 = this.optimization.configure(
         video.desktopOptimizationContract,
       );
-      this.refinementGenerations.set(generationId, {
-        v2: this.optimizationV2,
-        width: video.width,
-        height: video.height,
+      this.videoGenerations.set(generationId, {
         frame: 0,
         content: 0,
         continuous:
@@ -738,16 +640,12 @@ export class DesktopSession {
           video.continuousFrames &&
           this.continuousReadiness.size === 2,
         timestamp: -1,
-        admission,
       });
-      // One context per possible queued barrier plus the current generation.
-      // Older evicted generations are not eligible for cleanup ACKs.
-      if (this.refinementGenerations.size > maximumVideoQueueMessages + 1) {
-        const oldest = this.refinementGenerations.keys().next().value;
-        if (oldest !== undefined) this.refinementGenerations.delete(oldest);
+      if (this.videoGenerations.size > maximumVideoQueueMessages + 1) {
+        const oldest = this.videoGenerations.keys().next().value;
+        if (oldest !== undefined) this.videoGenerations.delete(oldest);
       }
       this.browserTiming = undefined;
-      this.legacyRefinedFrame = 0;
       this.reportCapabilities();
       channel.receive.beginVideoGeneration(generationId);
       if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
@@ -757,8 +655,9 @@ export class DesktopSession {
       discardRetiredInput();
       this.input = null;
       this.decoder = null;
+      clearTimeout(this.decodeDeadline);
+      this.decodeDeadline = undefined;
       this.pending.clear();
-      this.tiles.clear();
       if (this.observationAnimation !== undefined)
         cancelAnimationFrame(this.observationAnimation);
       this.observationAnimation = undefined;
@@ -766,7 +665,7 @@ export class DesktopSession {
       this.displayedFrame = this.observedFrame = 0;
       this.visibleFrameGaps.clear();
       this.frame = 0;
-      this.contentFrame = this.displayedContentFrame = 0;
+      this.displayedContentFrame = 0;
       this.canvas.width = this.overlay.width = video.width;
       this.canvas.height = this.overlay.height = video.height;
       // Resizing a canvas clears it, including any previously drawn cursor.
@@ -784,9 +683,26 @@ export class DesktopSession {
       };
       if (video.description.length)
         configuration.description = new Uint8Array(video.description);
-      const supported = await VideoDecoder.isConfigSupported(
-        configuration,
-      ).catch(() => ({ supported: false }));
+      this.status("已收到视频配置，正在检查解码支持…");
+      let supportDeadline: ReturnType<typeof setTimeout> | undefined;
+      const supported = await Promise.race([
+        VideoDecoder.isConfigSupported(configuration).catch(() => ({
+          supported: false,
+        })),
+        new Promise<null>((resolve) => {
+          this.cancelDecoderProbe = () => resolve(null);
+          supportDeadline = setTimeout(() => resolve(null), 4000);
+        }),
+      ]).finally(() => {
+        clearTimeout(supportDeadline);
+        this.cancelDecoderProbe = undefined;
+      });
+      if (this.stopped) return;
+      if (!supported) {
+        channel.receive.completeVideoGeneration(generationId);
+        this.rejectCodec(video.codec, true);
+        return;
+      }
       if (!supported.supported) {
         channel.receive.completeVideoGeneration(generationId);
         this.rejectCodec(video.codec);
@@ -838,16 +754,10 @@ export class DesktopSession {
             const firstDisplay = !this.displayedFrame;
             this.displayedFrame = pending.id;
             this.displayedContentFrame = pending.content;
-            if (!pending.repeated) this.refinements.baselineChanged();
-            if (
-              this.refinementWait &&
-              pending.id >= this.refinementWait.frame
-            ) {
-              clearTimeout(this.refinementWait.timer);
-              this.refinementWait.resolve(true);
-              this.refinementWait = undefined;
-            }
+
             if (firstDisplay) {
+              clearTimeout(this.decodeDeadline);
+              this.decodeDeadline = undefined;
               this.completeStartup();
               this.bindInput();
               const state =
@@ -889,177 +799,6 @@ export class DesktopSession {
       channel.receive.completeVideoGeneration(generationId);
       return;
     }
-    if (
-      (message.body === "videoRefinement" && message.videoRefinement) ||
-      (message.body === "desktopRegionUpdate" && message.desktopRegionUpdate)
-    ) {
-      const region = message.desktopRegionUpdate;
-      const patches = region?.patches ?? message.videoRefinement?.patches ?? [];
-      const copies = desktopCopies(
-        region?.copies ?? [],
-        this.canvas.width,
-        this.canvas.height,
-      );
-      if (
-        generationId !== this.generation ||
-        !this.frame ||
-        !frameId ||
-        !this.decoder ||
-        (region
-          ? baseFrameId !== this.frame || frameId <= this.frame
-          : frameId !== this.contentFrame || baseFrameId !== frameId) ||
-        (!patches.length && !copies.length)
-      )
-        throw new Error("Invalid desktop update baseline");
-      if (!region && this.optimizationV2) {
-        const refinement = wire.VideoRefinement.create(
-          message.videoRefinement ?? {},
-        );
-        this.refinements.accept(
-          {
-            generation: generationId,
-            frame: frameId,
-            batch: BigInt(refinement.batchId.toString()),
-            kind: refinement.kind,
-            receivedAt,
-          },
-          patches,
-          this.canvas.width,
-          this.canvas.height,
-          reservation,
-        );
-        return;
-      }
-      if (!region) {
-        const refinement = wire.VideoRefinement.create(
-          message.videoRefinement ?? {},
-        );
-        if (
-          BigInt(refinement.batchId.toString()) !== 0n ||
-          refinement.kind !== 0 ||
-          this.legacyRefinedFrame === frameId
-        )
-          throw new Error(
-            "Desktop refinement contract is not active or baseline already refined",
-          );
-        this.legacyRefinedFrame = frameId;
-      }
-      if (region) this.refinements.retire();
-      const generation = this.generation;
-      const baseline = region ? baseFrameId : frameId;
-      let baselineWaitMicroseconds: number | undefined;
-      if (this.displayedFrame < baseline) {
-        const waitStarted = performance.now();
-        const ready = await new Promise<boolean>((resolve) => {
-          this.refinementWait = {
-            frame: baseline,
-            reliable: !!region,
-            resolve,
-            timer: setTimeout(() => {
-              this.refinementWait = undefined;
-              resolve(false);
-            }, videoDecodeSlotTimeoutMilliseconds),
-          };
-        });
-        if (
-          !ready &&
-          !this.stopped &&
-          (region || !channel.receive.isReconfiguring)
-        )
-          throw new Error("Desktop update baseline was not displayed");
-        baselineWaitMicroseconds = desktopDuration(
-          performance.now() - waitStarted,
-        );
-      }
-      if (this.stopped || (!region && channel.receive.isReconfiguring)) return;
-      const started = performance.now();
-      const batch = await this.tiles.prepare(
-        patches,
-        this.canvas.width,
-        this.canvas.height,
-      );
-      const pngDecodeMicroseconds = desktopDuration(
-        performance.now() - started,
-      );
-      try {
-        if (
-          this.stopped ||
-          generation !== this.generation ||
-          this.displayedFrame !== baseline ||
-          (!region && channel.receive.isReconfiguring)
-        )
-          return;
-        const submitStarted = performance.now();
-        if (copies.length) {
-          this.copyCanvas ??= new OffscreenCanvas(
-            this.canvas.width,
-            this.canvas.height,
-          );
-          if (
-            this.copyCanvas.width !== this.canvas.width ||
-            this.copyCanvas.height !== this.canvas.height
-          ) {
-            this.copyCanvas.width = this.canvas.width;
-            this.copyCanvas.height = this.canvas.height;
-          }
-          const snapshot = this.copyCanvas.getContext("2d", { alpha: false });
-          if (!snapshot) throw new Error("Desktop copy canvas unavailable");
-          snapshot.drawImage(this.canvas, 0, 0);
-          for (const copy of copies)
-            this.context.drawImage(
-              this.copyCanvas,
-              copy.sourceX,
-              copy.sourceY,
-              copy.width,
-              copy.height,
-              copy.x,
-              copy.y,
-              copy.width,
-              copy.height,
-            );
-        }
-        for (const tile of batch.tiles)
-          this.context.drawImage(tile.image, tile.x, tile.y);
-        batch.commit();
-        this.browserTiming = {
-          ...(patches.some((patch) => (patch.png?.length ?? 0) > 0)
-            ? {
-                receiveQueueMicroseconds: desktopDuration(started - receivedAt),
-                pngDecodeMicroseconds,
-              }
-            : {}),
-          ...(baselineWaitMicroseconds !== undefined
-            ? { baselineWaitMicroseconds }
-            : {}),
-          canvasSubmitMicroseconds: desktopDuration(
-            performance.now() - submitStarted,
-          ),
-        };
-        this.recordVideoBytes(
-          region ? reservation.remainingBytes : batch.bytes,
-        );
-        if (region) {
-          this.frame = this.displayedFrame = frameId;
-          this.contentFrame = this.displayedContentFrame = frameId;
-          if (refinementGeneration) {
-            refinementGeneration.frame = frameId;
-            refinementGeneration.content = frameId;
-          }
-          this.canvas.dataset.frame = String(frameId);
-          this.decodeMicroseconds = Math.min(
-            1000000,
-            Math.round((performance.now() - started) * 1000),
-          );
-          this.displayedCount++;
-          this.decodeTotal += this.decodeMicroseconds / 1000;
-          this.reportDisplay();
-          if (!document.hidden && this.visible) this.observeCanvasFrame();
-        }
-      } finally {
-        batch.dispose();
-      }
-      return;
-    }
     const image = message.videoFrame
       ? wire.VideoFrame.create(message.videoFrame)
       : null;
@@ -1067,29 +806,27 @@ export class DesktopSession {
     if (
       message.body !== "videoFrame" ||
       !image ||
-      !refinementGeneration ||
+      !videoGeneration ||
       (generationId !== this.generation &&
         !channel.receive.isRetiredGeneration(generationId, this.generation)) ||
       (!retired && !rejected && !this.decoder) ||
-      integer(frameId, 1) <= refinementGeneration.frame ||
+      integer(frameId, 1) <= videoGeneration.frame ||
       (image.repeated
-        ? !refinementGeneration.continuous ||
-          !refinementGeneration.content ||
-          baseFrameId !== refinementGeneration.content
+        ? !videoGeneration.continuous ||
+          !videoGeneration.content ||
+          baseFrameId !== videoGeneration.content
         : !!baseFrameId) ||
-      (!refinementGeneration.frame && !image.keyFrame) ||
-      integer(image.timestampMicroseconds) <= refinementGeneration.timestamp ||
+      (!videoGeneration.frame && !image.keyFrame) ||
+      integer(image.timestampMicroseconds) <= videoGeneration.timestamp ||
       !image.data.length
     )
       throw new Error("Invalid video frame");
     // Remember validated wire baselines even if slot admission is interrupted.
-    // A queued refinement can refer to that cancelled frame, not a fake tuple.
-    refinementGeneration.frame = frameId;
-    if (!image.repeated) refinementGeneration.content = frameId;
-    refinementGeneration.timestamp = integer(image.timestampMicroseconds);
+    videoGeneration.frame = frameId;
+    if (!image.repeated) videoGeneration.content = frameId;
+    videoGeneration.timestamp = integer(image.timestampMicroseconds);
     if (retired || rejected) return;
     if (!this.decoder) throw new Error("Desktop decoder unavailable");
-    if (!image.repeated) this.refinements.retire();
     const timestamp = integer(image.timestampMicroseconds);
     const decoder = this.decoder;
     const generation = this.generation;
@@ -1107,7 +844,6 @@ export class DesktopSession {
         decoder.state === "configured",
       (lease) => {
         this.frame = frameId;
-        this.contentFrame = refinementGeneration.content;
         const started = performance.now();
         // Chunk construction copies the payload; keep that cost out of the
         // decode-call -> output-entry stage but retain the legacy aggregate.
@@ -1119,7 +855,7 @@ export class DesktopSession {
         const decodeStarted = performance.now();
         this.pending.set(timestamp, {
           id: frameId,
-          content: refinementGeneration.content,
+          content: videoGeneration.content,
           repeated: image.repeated,
           started,
           decodeStarted,
@@ -1127,6 +863,18 @@ export class DesktopSession {
           lease,
         });
         decoder.decode(chunk);
+        if (!this.displayedFrame && this.decodeDeadline === undefined) {
+          this.decodeDeadline = setTimeout(() => {
+            this.decodeDeadline = undefined;
+            if (
+              !this.stopped &&
+              this.decoder === decoder &&
+              generation === this.generation &&
+              !this.displayedFrame
+            )
+              this.rejectCodec(this.codec, true);
+          }, 4000);
+        }
       },
     );
     if (submitted === "cancelled") {
@@ -1346,6 +1094,9 @@ export class DesktopSession {
     console.warn("Desktop session ended", {
       session: this.ticket.id,
       reason: message,
+      generation: this.generation,
+      codec: this.codec,
+      pendingDecodeFrames: this.pending.size,
       channels: this.channels.map((channel) => ({
         purpose: channel.purpose,
         ready: channel.ready,
@@ -1361,26 +1112,22 @@ export class DesktopSession {
       ? ""
       : !this.channels.every((channel) => channel.ready)
         ? "（通道配对阶段）"
-        : !this.decoder
+        : !this.generation
           ? "（远端首帧生成阶段）"
-          : "（首帧接收/解码阶段）";
+          : !this.decoder
+            ? "（解码能力检查阶段）"
+            : "（首帧接收/解码阶段）";
     this.stop();
     this.status(message + phase);
     this.ended(hadFrame, retryable);
   }
   stop(): void {
-    this.tiles.clear();
-    this.copyCanvas = undefined;
     if (this.stopped || this.stopping) return;
     this.stopping = true;
     this.stopped = true;
-    this.refinements.retire();
-    this.refinementGenerations.clear();
-    if (this.refinementWait) {
-      clearTimeout(this.refinementWait.timer);
-      this.refinementWait.resolve(false);
-      this.refinementWait = undefined;
-    }
+    this.cancelDecoderProbe?.();
+    this.videoGenerations.clear();
+
     for (const writer of this.writers.values()) writer.stop();
     this.writers.clear();
     this.input?.dispose();
@@ -1394,6 +1141,8 @@ export class DesktopSession {
     this.canvas.style.removeProperty("--desktop-cursor");
     clearTimeout(this.deadline);
     clearTimeout(this.livenessDeadline);
+    clearTimeout(this.decodeDeadline);
+    this.decodeDeadline = undefined;
     this.livenessDeadline = undefined;
     clearTimeout(this.resizeDeadline);
     clearTimeout(this.bitrateTimer);

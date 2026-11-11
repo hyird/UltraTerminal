@@ -4,8 +4,9 @@
 #include <string>
 
 #include <boost/json.hpp>
+#include <ruvia/core/task.h>
 #include <ruvia/web/context.h>
-#include <ruvia/web/http_client_handle.h>
+#include <ruvia/web/http_client.h>
 
 namespace ultraterimal::server {
 inline bool validBotToken(std::string_view token) {
@@ -20,8 +21,8 @@ inline ruvia::task<std::optional<boost::json::value>> telegramCall(ruvia::contex
     const auto bytes = boost::json::serialize(body);
     const std::array<ruvia::http_header_view, 1> headers{{{"Content-Type", "application/json"}}};
     try {
-        auto response = co_await context.get_http_client("telegram").send({.method_ = "POST", .target_ = target, .headers_ = headers, .content_ = ruvia::http_client_request_content_view::bytes(bytes)});
-        const auto result = co_await response.body().read_all(65536);
+        auto response = co_await context.client("telegram").request("POST", target).headers(headers).body(bytes).send();
+        const auto result = co_await response.bytes(65536);
         if (response.status() != ruvia::http_status::ok) {
             co_return std::nullopt;
         }

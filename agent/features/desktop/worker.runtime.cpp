@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "input_freshness.runtime.h"
 #include "optimization.runtime.h"
 #include "pipeline.runtime.h"
 #include "platform/windows/desktop_failure.error.h"
@@ -22,17 +23,17 @@
 #include "platform/windows/pipe.transport.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_ipc.protocol.h"
+#include "ultraterimal/protocol/desktop_session.protocol.h"
 #include "video.runtime.h"
-#include "worker_output.runtime.h"
 
 namespace ultraterimal::agent {
 namespace {
 class DesktopWorker {
   public:
-    DesktopWorker(ruvia::event_loop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
+    DesktopWorker(ruvia::event_loop loop, ruvia::blocking_pool& pool, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
         : pipe_(pipe),
           probeTimer_(loop.executor()),
-          video_(std::move(loop), start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract(), start.desktop_start().continuous_frames()),
+          video_(std::move(loop), pool, start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract(), start.desktop_start().continuous_frames()),
           incoming_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kService}),
           outgoing_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kDesktop}),
           session_(start.session_id()), writeControl_(start.desktop_start().write_control()),
@@ -121,13 +122,15 @@ class DesktopWorker {
                     wire::Envelope probe;
                     probe.set_channel_id("input");
                     probe.mutable_desktop_probe()->set_nonce(++probeNonce_);
+                    probe.mutable_desktop_probe()->set_reset_input(std::exchange(resetInputProbe_, false));
                     probe.mutable_desktop_probe()->set_accepted_response_nonce(lastAcceptedResponseNonce_);
                     const auto sentAt = std::chrono::steady_clock::now();
                     outstandingProbes_.push_back({probeNonce_, sentAt});
+                    inputFreshness_.issued(probeNonce_, sentAt);
                     if (outstandingProbes_.size() > 32) {
                         outstandingProbes_.pop_front();
                     }
-                    nextProbe_ = sentAt + std::chrono::seconds(2);
+                    nextProbe_ = sentAt + (inputFreshnessEnabled_ ? std::chrono::milliseconds(500) : std::chrono::milliseconds(2000));
                     co_await send(std::move(probe));
                 }
                 if (resize_) {
@@ -175,6 +178,13 @@ class DesktopWorker {
                     input_ = std::make_unique<DesktopInput>(update->desktopLeft, update->desktopTop,
                                                             update->configuration->width(), update->configuration->height());
                     inputGeneration_ = update->generation;
+                    inputFreshnessEnabled_ = update->configuration->session_version() == protocol::kDesktopSessionVersion && (update->configuration->session_features() & protocol::kDesktopInputFreshness);
+                    if (inputFreshnessEnabled_) {
+                        inputFreshness_.reset();
+                        inputFreshnessBlocked_ = true;
+                        resetInputProbe_ = true;
+                        nextProbe_ = std::chrono::steady_clock::now();
+                    }
                     rebindRequested_ = false;
                 }
                 stage = "video_ipc_write";
@@ -209,10 +219,15 @@ class DesktopWorker {
                     update->flowSample->set_input_apply_max_microseconds(std::exchange(inputApplyMaximum_, 0));
                     update->flowSample->set_input_events(std::exchange(appliedInputs_, 0));
                 }
-                co_await writeDesktopPixels(*update, [this, flow = std::move(update->flowSample)](wire::Envelope message) mutable {
-                    auto sample = message.has_video_frame() || message.has_desktop_region_update() ? std::exchange(flow, std::nullopt) : std::nullopt;
-                    return send(std::move(message), std::move(sample));
-                });
+                if (!update->frame.data().empty()) {
+                    wire::Envelope frame;
+                    frame.set_channel_id("video");
+                    frame.set_generation(update->generation);
+                    frame.set_frame_id(update->frameId);
+                    frame.set_base_frame_id(update->baseFrameId);
+                    *frame.mutable_video_frame() = std::move(update->frame);
+                    co_await send(std::move(frame), std::move(update->flowSample));
+                }
                 if (noVideoFrame) {
                     refresh_ = refresh_ || refresh;
                 }
@@ -273,8 +288,6 @@ class DesktopWorker {
                     lastAck_ = now;
                     video_.observeRoundTrip(std::chrono::duration_cast<std::chrono::microseconds>(now - sentAt));
                     lastAcceptedResponseNonce_ = std::max(lastAcceptedResponseNonce_, nonce);
-                } else if (message->has_desktop_refinement_ack()) {
-                    video_.refinementAck(*message); // Independent of input binding and frame ACKs.
                 } else if (message->has_input_event()) {
                     // Old coordinates can arrive while Windows changes the mode.
                     // Resume only after the new capture configuration binds input.
@@ -292,6 +305,20 @@ class DesktopWorker {
                     }
                     if (message->generation() != inputGeneration_) {
                         throw std::runtime_error("Desktop input belongs to an unknown generation");
+                    }
+                    if (inputFreshnessEnabled_ && message->input_event().kind() != wire::InputEvent::RELEASE_ALL) {
+                        if (!inputFreshness_.accepts(message->input_event().freshness_nonce(), std::chrono::steady_clock::now())) {
+                            if (!inputFreshnessBlocked_) {
+                                stage = "input_release";
+                                input_->releaseAll();
+                                inputFreshness_.reset();
+                                inputFreshnessBlocked_ = true;
+                                resetInputProbe_ = true;
+                                nextProbe_ = std::chrono::steady_clock::now();
+                            }
+                            continue;
+                        }
+                        inputFreshnessBlocked_ = false;
                     }
                     if (message->input_event().kind() == wire::InputEvent::SECURE_ATTENTION) {
                         stage = "input_release";
@@ -422,6 +449,8 @@ class DesktopWorker {
     DesktopOptimizationGate optimization_;
     const bool serverContinuousFrames_;
     bool pipelineEnabled_ = false;
+    DesktopInputFreshness inputFreshness_;
+    bool inputFreshnessEnabled_ = false, inputFreshnessBlocked_ = false, resetInputProbe_ = false;
     std::uint32_t inputApplyMaximum_ = 0, appliedInputs_ = 0;
     DesktopPipelineBuffer pipeline_;
     bool rebindRequested_ = false;
@@ -437,7 +466,7 @@ class DesktopWorker {
     bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false;
 };
 } // namespace
-asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::event_loop loop, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
+asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::event_loop loop, ruvia::blocking_pool& pool, NamedPipeTransport& pipe, std::uint32_t windowsSession) {
     asio::steady_timer deadline(loop.executor());
     deadline.expires_after(std::chrono::seconds(10));
     deadline.async_wait([&pipe](std::error_code error) { if (!error) { pipe.cancel(); } });
@@ -449,7 +478,7 @@ asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::event_loop loop, NamedPip
         if (!start || !start->has_desktop_start()) {
             throw DesktopFailure(wire::DesktopFault::PROTOCOL_REJECTED, "Desktop IPC requires a startup message");
         }
-        DesktopWorker worker(std::move(loop), pipe, windowsSession, *start);
+        DesktopWorker worker(std::move(loop), pool, pipe, windowsSession, *start);
         running = true;
         co_return co_await worker.run();
     } catch (const std::exception& error) {

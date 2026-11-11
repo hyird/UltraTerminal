@@ -142,7 +142,14 @@ message ChannelData { bytes data = 1; }
 message SessionClose { string reason = 1; }
 message SessionError { string code = 1; string message = 2; }
 message DisplayMode { uint32 width = 1; uint32 height = 2; }
-message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; uint32 desktop_optimization_contract = 7; bool continuous_frames = 8; }
+// Endpoint session evolution is independent of NativeConnect/Envelope versions.
+// Unknown feature bits are ignored; absent capability offers keep legacy behavior.
+message DesktopSessionCapabilities {
+  uint32 minimum_version = 1;
+  uint32 maximum_version = 2;
+  uint64 features = 3;
+}
+message VideoConfig { string codec = 1; uint32 width = 2; uint32 height = 3; bytes description = 4; repeated DisplayMode display_modes = 5; bool desktop_optimization = 6; uint32 desktop_optimization_contract = 7; bool continuous_frames = 8; DesktopSessionCapabilities session_capabilities = 9; uint32 session_version = 10; uint64 session_features = 11; }
 message DesktopResize { uint64 request_id = 1; uint32 width = 2; uint32 height = 3; }
 message DesktopResizeResult { uint64 request_id = 1; bool applied = 2; }
 // Service -> browser. Zero means dispatched, not confirmation of a UI transition.
@@ -248,7 +255,7 @@ message DiffBatch { repeated CopyRect copies = 1; repeated PatchRect patches = 2
 // releases only input pressed by this session.
 // For desktop_input_contract=2, all writable input (including RELEASE_ALL) carries
 // the video/input binding generation in the enclosing Envelope, stamped when queued.
-message InputEvent { enum Kind { UNSPECIFIED = 0; POINTER_MOVE = 1; BUTTON = 2; KEY = 3; WHEEL = 4; RELEASE_ALL = 5; SECURE_ATTENTION = 6; } Kind kind = 1; sint32 x = 2; sint32 y = 3; uint32 code = 4; bool pressed = 5; sint32 wheel_delta = 6; }
+message InputEvent { enum Kind { UNSPECIFIED = 0; POINTER_MOVE = 1; BUTTON = 2; KEY = 3; WHEEL = 4; RELEASE_ALL = 5; SECURE_ATTENTION = 6; } Kind kind = 1; sint32 x = 2; sint32 y = 3; uint32 code = 4; bool pressed = 5; sint32 wheel_delta = 6; uint32 freshness_nonce = 7; }
 // x/y locate the hotspot within the selected display. Draw at x-hotspot_x,
 // y-hotspot_y. Empty rgba retains the previous shape and its hotspot.
 message CursorUpdate { sint32 x = 1; sint32 y = 2; uint32 width = 3; uint32 height = 4; uint32 hotspot_x = 5; uint32 hotspot_y = 6; bytes rgba = 7; bool visible = 8; }
@@ -335,6 +342,7 @@ message DesktopVideoCapabilities {
   bool tile_cache = 3;
   uint32 desktop_optimization_contract = 4;
   bool continuous_frames = 5;
+  DesktopSessionCapabilities session_capabilities = 6;
 }
 message RequestRefresh {}
 // Agent issues monotonically increasing nonces on the input channel and retains

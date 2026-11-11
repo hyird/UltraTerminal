@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -13,7 +14,44 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VCPKG_ROOT: ${{ github.workspace }}/build/tools/vcpkg
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/build/vcpkg-cache
+
 jobs:
+  resolve_toolchain:
+    name: Resolve LLVM toolchain and dependency pins
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.resolve.outputs.release }}
+      sha256: ${{ steps.resolve.outputs.sha256 }}
+      vcpkg_commit: ${{ steps.resolve.outputs.vcpkg_commit }}
+      ruvia_commit: ${{ steps.resolve.outputs.ruvia_commit }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve toolchain release and verified checksum
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_json="$(gh api repos/cross-tools/clang-cross/releases/latest)"
+          release="$(jq -er '.tag_name' <<< "$release_json")"
+          [[ "$release" =~ ^[A-Za-z0-9._-]+$ ]]
+          asset=x86_64-unknown-linux-musl.tar.xz
+          jq -e --arg name "$asset" '.assets | any(.name == $name)' <<< "$release_json" > /dev/null
+          checksum="$(curl -fsSL "https://github.com/cross-tools/clang-cross/releases/download/$release/$asset.sha256")"
+          read -r sha256 _ <<< "$checksum"
+          [[ "$sha256" =~ ^[[:xdigit:]]{64}$ ]]
+          vcpkg_commit="$(jq -er '."builtin-baseline"' vcpkg.json)"
+          ruvia_commit="$(sed -nE 's/^    GIT_TAG ([0-9a-f]{40})\)/\1/p' CMakeLists.txt)"
+          [[ "$vcpkg_commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ruvia_commit" =~ ^[0-9a-f]{40}$ ]]
+          printf 'release=%s\nsha256=%s\nvcpkg_commit=%s\nruvia_commit=%s\n' \
+            "$release" "${sha256,,}" "$vcpkg_commit" "$ruvia_commit" >> "$GITHUB_OUTPUT"
+
   web:
     name: Web frontend
     runs-on: ubuntu-24.04
@@ -27,8 +65,8 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2.2.0
         with:
-          bun-version: 1.4.2
-      - name: Install licensed frontend dependencies
+          bun-version: 1.4.4
+      - name: Install licensed dependencies
         env:
           HEROUI_AUTH_TOKEN: ${{ secrets.HEROUI_AUTH_TOKEN }}
         run: bun install --frozen-lockfile
@@ -38,16 +76,115 @@ jobs:
         run: bun run test
       - name: Typecheck and build
         run: bun run build
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: web-${{ github.sha }}
-          path: build/web/
+          path: build/web/index.html
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux Server LLVM musl
+    needs: [resolve_toolchain, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      VCPKG_FORCE_SYSTEM_BINARIES: '1'
+      CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup LLVM musl build
+        id: setup
+        uses: ./.github/actions/setup-build
+        with:
+          toolchain-release: ${{ needs.resolve_toolchain.outputs.release }}
+          toolchain-sha256: ${{ needs.resolve_toolchain.outputs.sha256 }}
+          vcpkg-commit: ${{ needs.resolve_toolchain.outputs.vcpkg_commit }}
+      - name: Check C++ formatting
+        run: |
+          set -euo pipefail
+          clang-format --version
+          git ls-files -z '*.h' '*.cpp' | xargs -0 -n 80 clang-format --dry-run --Werror
+      - name: Configure Release
+        id: configure
+        run: |
+          cmake --preset linux-server-release \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Save vcpkg binary cache
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' && steps.setup.outputs.vcpkg-cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.setup.outputs.vcpkg-cache-key }}
+      - name: Build
+        run: |
+          ccache --zero-stats
+          cmake --build --preset linux-server-release --parallel "$(nproc)"
+          ccache --show-stats
+      - name: Functional unit tests
+        run: ctest --preset linux-server-release --no-tests=error -L unit --output-junit test-results.xml
+      - name: Save compiler cache
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.setup.outputs.compiler-cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.setup.outputs.compiler-cache-key }}
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: tests-linux-server-${{ github.sha }}
+          path: |
+            test-results.xml
+            build/linux-server/Testing/Temporary/LastTest.log
+            build/linux-server/vcpkg-manifest-install.log
+            build/linux-server/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+      - name: Download frontend from this revision
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: web-${{ github.sha }}
+          path: build/server-release/web
+      - name: Assemble static Server release
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          RUVIA_COMMIT: ${{ needs.resolve_toolchain.outputs.ruvia_commit }}
+          VCPKG_COMMIT: ${{ needs.resolve_toolchain.outputs.vcpkg_commit }}
+          TOOLCHAIN_RELEASE: ${{ needs.resolve_toolchain.outputs.release }}
+          TOOLCHAIN_SHA256: ${{ needs.resolve_toolchain.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          binary=build/linux-server/server/gateway
+          if readelf -l "$binary" | grep -q INTERP; then
+            echo 'Server executable requires a dynamic loader' >&2
+            exit 1
+          fi
+          install -Dm755 "$binary" build/server-release/bin/gateway
+          jq -n --arg commit "$SOURCE_COMMIT" --arg ruvia "$RUVIA_COMMIT" \
+            --arg vcpkg "$VCPKG_COMMIT" --arg toolchain "$TOOLCHAIN_RELEASE" \
+            --arg toolchain_sha256 "$TOOLCHAIN_SHA256" \
+            '{commit: $commit, ruvia: $ruvia, vcpkg: $vcpkg, toolchain: $toolchain, toolchain_sha256: $toolchain_sha256}' \
+            > build/server-release/release.json
+          (cd build/server-release && sha256sum bin/gateway web/index.html release.json > SHA256SUMS)
+          tar -czf build/linux-server.tar.gz -C build/server-release bin web release.json SHA256SUMS
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: linux-server-${{ github.sha }}
+          path: build/linux-server.tar.gz
           if-no-files-found: error
           retention-days: 14
 
   windows:
-    name: Windows Agent and MSI
-    runs-on: windows-2022
+    name: Windows Agent MSVC and MSI
+    needs: resolve_toolchain
+    runs-on: windows-2025
     timeout-minutes: 90
     defaults:
       run:
@@ -56,177 +193,90 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - name: Read pinned vcpkg revision
-        id: vcpkg
-        run: |
-          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
-          "revision=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
-      - uses: actions/checkout@v7.0.1
+      - uses: jdx/mise-action@v5.2.7
         with:
-          repository: microsoft/vcpkg
-          ref: ${{ steps.vcpkg.outputs.revision }}
-          path: build/tools/vcpkg
-          persist-credentials: false
-      - name: Configure dependency cache
-        id: cache-context
+          install: false
+          cache: false
+      - name: Install CMake
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: mise use --global cmake@latest
+      - name: Bootstrap pinned vcpkg
+        env:
+          VCPKG_COMMIT: ${{ needs.resolve_toolchain.outputs.vcpkg_commit }}
         run: |
-          $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
-          New-Item -ItemType Directory -Force $cache | Out-Null
-          "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
-          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
-          "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
-          if (!$env:ImageOS -or !$env:ImageVersion) { throw 'Runner image identity is missing' }
-          "image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
-      # Binary ABIs are checked by vcpkg. A new runner image needs a new
-      # immutable Actions key so rebuilt packages can actually be saved.
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          "VCPKG_MAX_CONCURRENCY=$([Environment]::ProcessorCount)" >> $env:GITHUB_ENV
+          "RUNNER_IMAGE=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_ENV
+          git init $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT remote add origin https://github.com/microsoft/vcpkg.git
+          git -C $env:VCPKG_ROOT fetch --depth 1 origin $env:VCPKG_COMMIT
+          git -C $env:VCPKG_ROOT checkout --detach FETCH_HEAD
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
       - name: Restore vcpkg binary cache
-        id: cache
+        id: vcpkg
         uses: actions/cache/restore@v6.1.0
         with:
-          path: build/vcpkg-cache
-          key: vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'ports/**', 'triplets/**') }}
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'ports/**') }}
           restore-keys: |
-            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-
-            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.vcpkg.outputs.revision }}-
-      - name: Bootstrap vcpkg
-        run: |
-          if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
-          else { & "$env:VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Configure
-        run: cmake --preset windows-agent-release
+            vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-
+      - name: Configure Release
+        id: configure
+        run: cmake --preset windows-agent-release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
       - name: Save vcpkg binary cache
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' && steps.vcpkg.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
-          path: build/vcpkg-cache
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.vcpkg.outputs.cache-primary-key }}
       - name: Build
-        run: cmake --build --preset windows-agent-release --parallel 4
+        run: cmake --build --preset windows-agent-release --parallel $([Environment]::ProcessorCount)
       - name: Functional unit tests
         run: ctest --preset windows-agent-release --no-tests=error -L unit --output-junit test-results.xml
       - name: Upload test reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: tests-windows-agent-${{ github.sha }}
           path: |
-            build/windows-agent/test-results.xml
             test-results.xml
-            build/windows-agent/vcpkg-manifest-install.log
             build/windows-agent/Testing/Temporary/LastTest.log
+            build/windows-agent/vcpkg-manifest-install.log
             build/windows-agent/CMakeFiles/CMakeConfigureLog.yaml
           retention-days: 7
+      - uses: actions/setup-dotnet@v6.1.0
+        with:
+          dotnet-version: 8.0.x
       - name: Package MSI
         env:
           GATEWAY_HOST: ${{ vars.ULTRATERIMAL_GATEWAY_HOST || 'localhost' }}
           GATEWAY_ADDRESS: ${{ vars.ULTRATERIMAL_GATEWAY_ADDRESS || 'localhost' }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $ca = Join-Path (Split-Path (Split-Path (git --exec-path))) 'etc/ssl/certs/ca-bundle.crt'
           if (-not (Test-Path -LiteralPath $ca)) { throw 'Git for Windows CA bundle is missing' }
           [xml]$wix = Get-Content agent/platform/windows/agent.wxs
-          $version = $wix.Wix.Product.Version
-          $deps = 'build/vcpkg_installed/x64-windows-static'
-          $ruvia = 'build/windows-agent/_deps/ruvia-src'
-          & agent/platform/windows/package_agent.ps1 -AgentExe build/windows-agent/agent/Release/agent.exe -LoginDll build/windows-agent/agent/Release/ultraterimal_login.dll -CaBundle $ca -DependencyRoot $deps -RuviaRoot $ruvia -Output "build/windows-installer/ultraterimal-agent-$version.msi" -GatewayHost $env:GATEWAY_HOST -GatewayAddress $env:GATEWAY_ADDRESS
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v7.0.1
+          $version = $wix.Wix.Package.Version
+          $packageArguments = @{
+            AgentExe = 'build/windows-agent/agent/Release/agent.exe'
+            LoginDll = 'build/windows-agent/agent/Release/ultraterimal_login.dll'
+            CaBundle = $ca
+            DependencyRoot = 'build/vcpkg_installed/x64-windows-static'
+            RuviaRoot = 'build/windows-agent/_deps/ruvia-src'
+            Output = "build/windows-installer/ultraterimal-agent-$version.msi"
+            GatewayHost = $env:GATEWAY_HOST
+            GatewayAddress = $env:GATEWAY_ADDRESS
+          }
+          & agent/platform/windows/package_agent.ps1 @packageArguments
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: windows-installer-${{ github.sha }}
           path: |
             build/windows-installer/*.msi
             build/windows-installer/*.json
-          if-no-files-found: error
-          retention-days: 14
-
-  linux:
-    name: Linux Server
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Read pinned vcpkg revision
-        id: vcpkg
-        run: |
-          $manifest = Get-Content vcpkg.json -Raw | ConvertFrom-Json
-          "revision=$($manifest.'builtin-baseline')" >> $env:GITHUB_OUTPUT
-      - uses: actions/checkout@v7.0.1
-        with:
-          repository: microsoft/vcpkg
-          ref: ${{ steps.vcpkg.outputs.revision }}
-          path: build/tools/vcpkg
-          persist-credentials: false
-      - name: Linux compiler and build tools
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tools-19 g++-14 nasm ninja-build pkg-config autoconf automake libtool
-          echo 'CC=clang-19' >> "$GITHUB_ENV"
-          echo 'CXX=clang++-19' >> "$GITHUB_ENV"
-      - name: Configure dependency cache
-        id: cache-context
-        run: |
-          $cache = Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-cache'
-          New-Item -ItemType Directory -Force $cache | Out-Null
-          "VCPKG_ROOT=$(Join-Path $env:GITHUB_WORKSPACE 'build/tools/vcpkg')" >> $env:GITHUB_ENV
-          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" >> $env:GITHUB_ENV
-          "VCPKG_MAX_CONCURRENCY=4" >> $env:GITHUB_ENV
-          if (!$env:ImageOS -or !$env:ImageVersion) { throw 'Runner image identity is missing' }
-          "image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
-      - name: Restore vcpkg binary cache
-        id: cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: build/vcpkg-cache
-          key: vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-x64-linux-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'ports/**', 'triplets/**') }}
-          restore-keys: |
-            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-x64-linux-${{ steps.vcpkg.outputs.revision }}-${{ steps.cache-context.outputs.image }}-
-            vcpkg-v2-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-x64-linux-${{ steps.vcpkg.outputs.revision }}-
-            vcpkg-ubuntu24-clang19-gcc14-
-      - name: Bootstrap vcpkg
-        run: |
-          if ($IsWindows) { & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics }
-          else { & "$env:VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Configure
-        run: cmake --preset linux-server-release
-      - name: Save vcpkg binary cache
-        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: build/vcpkg-cache
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-      - name: Build
-        run: cmake --build --preset linux-server-release --parallel 4
-      - name: Functional unit tests
-        run: ctest --preset linux-server-release --no-tests=error -L unit --output-junit test-results.xml
-      - name: Upload test reports
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: tests-linux-server-${{ github.sha }}
-          path: |
-            build/linux-server/test-results.xml
-            test-results.xml
-            build/linux-server/vcpkg-manifest-install.log
-            build/linux-server/Testing/Temporary/LastTest.log
-            build/linux-server/CMakeFiles/CMakeConfigureLog.yaml
-          retention-days: 7
-      - name: Archive Linux executable
-        if: runner.os == 'Linux'
-        shell: bash
-        run: tar -czf build/linux-server.tar.gz -C build/linux-server/server gateway
-      - name: Upload Linux Server
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: linux-server-${{ github.sha }}
-          path: build/linux-server.tar.gz
           if-no-files-found: error
           retention-days: 14

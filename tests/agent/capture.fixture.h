@@ -77,6 +77,14 @@ class TestSurface {
         DWORD cloaked = 0;
         return IsWindowVisible(window_) && SUCCEEDED(DwmGetWindowAttribute(window_, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && !cloaked;
     }
+    bool hasPaintedColor(COLORREF color) const {
+        const auto dc = GetDC(window_);
+        const auto value = dc ? GetPixel(dc, 16, 16) : CLR_INVALID;
+        if (dc) {
+            ReleaseDC(window_, dc);
+        }
+        return value == color;
+    }
     bool centerOnTop() const {
         POINT point{32, 32};
         return ClientToScreen(window_, &point) && GetAncestor(WindowFromPoint(point), GA_ROOT) == window_;

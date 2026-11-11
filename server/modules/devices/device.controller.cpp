@@ -19,15 +19,15 @@ ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& conte
         auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
         const auto user = context.request_state<UserIdentity>().id;
         stage = "ownership_query";
-        const auto allowed = (co_await context.run_blocking([service = runtime.devices, device, user] {
-            const auto devices = service.list(user);
-            return std::any_of(devices.begin(), devices.end(), [&](const auto& found) { return found.id == device && found.canManage; });
-        }));
+        const auto allowed = ((co_await context.run_blocking([service = runtime.devices, device, user] {
+                                  const auto devices = service.list(user);
+                                  return std::any_of(devices.begin(), devices.end(), [&](const auto& found) { return found.id == device && found.canManage; });
+                              })).take_value());
         if (!allowed) {
             co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can update its Agent"});
         }
         stage = "release_lookup";
-        const auto release = (co_await context.run_blocking([root = runtime.config.webRoot] { return agentRelease(root); }));
+        const auto release = ((co_await context.run_blocking([root = runtime.config.webRoot] { return agentRelease(root); })).take_value());
         if (!release) {
             co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
         }
@@ -49,7 +49,7 @@ ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& conte
             connection->updatePending = true;
             spdlog::info("agent_update_requested user_id={} device_id={} version={}", user, device, release->update.version());
         }
-        context.status(ruvia::http_status::accepted);
+        context.draft().status(ruvia::http_status::accepted);
         co_return jsonResponse(context, {{"status", "requested"}, {"version", release->update.version()}});
     } catch (const std::exception& error) {
         // Fixed phase and exception type identify failures without exposing
@@ -59,26 +59,26 @@ ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& conte
     }
 }
 ruvia::task<ruvia::http_response> DeviceInstallerController::script(ruvia::context& context) {
-    context.header("Cache-Control", "no-store");
-    context.header("X-Content-Type-Options", "nosniff");
+    context.policy().header("Cache-Control", "no-store");
+    context.policy().header("X-Content-Type-Options", "nosniff");
     co_return context.text(kWindowsInstallScript);
 }
 ruvia::task<ruvia::http_response> DeviceController::install(ruvia::context& context) {
-    context.header("Cache-Control", "no-store");
-    context.header("Referrer-Policy", "no-referrer");
-    context.header("X-Content-Type-Options", "nosniff");
+    context.policy().header("Cache-Control", "no-store");
+    context.policy().header("Referrer-Policy", "no-referrer");
+    context.policy().header("X-Content-Type-Options", "nosniff");
     const auto code = std::string(context.req().query("code").value_or(""));
     const auto repair = std::string(context.req().query("device").value_or(""));
     std::optional<std::string> device;
     if (!code.empty() && repair.empty()) {
-        device = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, code] { return service.enrollmentDevice(code); }));
+        device = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, code] { return service.enrollmentDevice(code); })).take_value());
     } else if (code.empty() && repair.starts_with("d-") && validToken(std::string_view(repair).substr(2))) {
         // Repair carries no enrollment capability; the installer requires this
         // exact identity and its existing DPAPI credential on the local machine.
         device = repair;
     }
     if (!device) {
-        context.status(ruvia::http_status::not_found);
+        context.draft().status(ruvia::http_status::not_found);
         co_return context.text("throw 'Installation command expired or invalid. Copy a new command from device management.'\n");
     }
     const auto& origin = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).config.origin;
@@ -89,7 +89,7 @@ ruvia::task<ruvia::http_response> DeviceController::rename(ruvia::context& conte
     const auto body = requestObject(co_await context.req().text(), {"device_id", "name"});
     const auto device = requestText(body, "device_id", 128);
     const auto name = requestText(body, "name", 128);
-    const bool updated = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, device, name] { return service.rename(user, device, name); }));
+    const bool updated = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, device, name] { return service.rename(user, device, name); })).take_value());
     if (!updated) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can rename an active device"});
     }
@@ -102,9 +102,9 @@ ruvia::task<ruvia::http_response> DeviceController::transferOwner(ruvia::context
     const auto owner = requestText(body, "owner_id", 128);
     auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
     const auto user = context.request_state<UserIdentity>();
-    const bool transferred = (co_await context.run_blocking([identities = runtime.identities, devices = runtime.devices, user, device, owner, password = optionalText(body, "current_password", 1024), code = optionalText(body, "code", 32), telegramProof = optionalText(body, "telegram_proof", 32)] {
-        return user.role == "admin" && identities.reauthenticate(user, password, code, telegramProof) && devices.transferOwner(user.id, device, owner);
-    }));
+    const bool transferred = ((co_await context.run_blocking([identities = runtime.identities, devices = runtime.devices, user, device, owner, password = optionalText(body, "current_password", 1024), code = optionalText(body, "code", 32), telegramProof = optionalText(body, "telegram_proof", 32)] {
+                                  return user.role == "admin" && identities.reauthenticate(user, password, code, telegramProof) && devices.transferOwner(user.id, device, owner);
+                              })).take_value());
     if (!transferred) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "owner_transfer_rejected", .message_ = "Owner transfer rejected"});
     }
@@ -117,7 +117,7 @@ ruvia::task<ruvia::http_response> DeviceController::remove(ruvia::context& conte
     const auto body = requestObject(co_await context.req().text(), {"device_id"});
     const auto device = requestText(body, "device_id", 128);
     auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
-    const bool removed = (co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device] { return service.remove(user, device); }));
+    const bool removed = ((co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device] { return service.remove(user, device); })).take_value());
     if (!removed) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can delete a device"});
     }
@@ -125,7 +125,7 @@ ruvia::task<ruvia::http_response> DeviceController::remove(ruvia::context& conte
     if (control != runtime.controlConnections.end()) {
         control->second->close();
     }
-    const auto sessions = (co_await context.run_blocking([service = runtime.sessions, device] { return service.revokeDevice(device); }));
+    const auto sessions = ((co_await context.run_blocking([service = runtime.sessions, device] { return service.revokeDevice(device); })).take_value());
     for (const auto& id : sessions) {
         const auto session = runtime.desktopSessions.find(id);
         if (session != runtime.desktopSessions.end()) {
@@ -162,7 +162,7 @@ ruvia::task<ruvia::http_response> DeviceController::windowsLogin(ruvia::context&
     }
     body.clear();
     auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
-    const bool allowed = (co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device] { return service.canConfigureWindowsLogin(user, device); }));
+    const bool allowed = ((co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device] { return service.canConfigureWindowsLogin(user, device); })).take_value());
     if (!allowed) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Windows credential configuration requires control permission"});
     }
@@ -172,7 +172,7 @@ ruvia::task<ruvia::http_response> DeviceController::windowsLogin(ruvia::context&
     }
     const auto connection = found->second;
     auto result = co_await connection->windowsLogin(std::move(request));
-    (co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device, action, success = result && result->success()] { service.auditWindowsLogin(user, device, action, success); }));
+    ((co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device, action, success = result && result->success()] { service.auditWindowsLogin(user, device, action, success); })).take_value());
     if (!result || !result->success()) {
         co_return context.error({.status_ = ruvia::http_status::service_unavailable, .code_ = "agent_settings_failed", .message_ = "Agent could not complete the credential operation; read the saved state before retrying"});
     }
@@ -183,7 +183,7 @@ ruvia::task<ruvia::http_response> DeviceController::restartPermissionStatus(ruvi
     if (device.empty() || device.size() > 128) {
         co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_field", .message_ = "deviceId is required"});
     }
-    const auto allowed = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, device] { return service.systemRestartPermission(user, device); }));
+    const auto allowed = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, device] { return service.systemRestartPermission(user, device); })).take_value());
     if (!allowed) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can read restart permission"});
     }
@@ -195,10 +195,10 @@ ruvia::task<ruvia::http_response> DeviceController::restart(ruvia::context& cont
     const auto key = requestText(body, "idempotencyKey", 128);
     auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
     const auto user = context.request_state<UserIdentity>().id;
-    auto operation = (co_await context.run_blocking([service = runtime.devices, user, device, key] { return service.restartByIdempotencyKey(user, device, key); }));
+    auto operation = ((co_await context.run_blocking([service = runtime.devices, user, device, key] { return service.restartByIdempotencyKey(user, device, key); })).take_value());
     std::shared_ptr<ControlConnection> control;
     if (!operation) {
-        const bool allowed = (co_await context.run_blocking([service = runtime.devices, user, device] { const auto permission = service.systemRestartPermission(user, device); return permission && *permission; }));
+        const bool allowed = ((co_await context.run_blocking([service = runtime.devices, user, device] { const auto permission = service.systemRestartPermission(user, device); return permission && *permission; })).take_value());
         if (!allowed) {
             co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Restart is not permitted"});
         }
@@ -207,7 +207,7 @@ ruvia::task<ruvia::http_response> DeviceController::restart(ruvia::context& cont
             co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "agent_unavailable", .message_ = "Device is offline or does not support restart"});
         }
         control = current->second;
-        operation = (co_await context.run_blocking([service = runtime.devices, user, device, key, boot = control->capabilities.boot_time_unix_seconds()] { return service.createRestart(user, device, key, boot); }));
+        operation = ((co_await context.run_blocking([service = runtime.devices, user, device, key, boot = control->capabilities.boot_time_unix_seconds()] { return service.createRestart(user, device, key, boot); })).take_value());
     }
     if (!operation) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Restart is not permitted"});
@@ -222,11 +222,11 @@ ruvia::task<ruvia::http_response> DeviceController::restart(ruvia::context& cont
         // the Agent. Cancellation before it leaves the durable PENDING record to expire.
         const bool enqueued = control->ready && current != runtime.controlConnections.end() && current->second == control && control->enqueueRestart(std::move(request));
         if (!enqueued) {
-            (co_await context.run_blocking([service = runtime.devices, id = operation->id] { service.updateRestart(id, "FAILED"); }));
+            ((co_await context.run_blocking([service = runtime.devices, id = operation->id] { service.updateRestart(id, "FAILED"); })).take_value());
             operation->status = "FAILED";
         }
     }
-    context.status(ruvia::http_status::accepted);
+    context.draft().status(ruvia::http_status::accepted);
     const auto state = operation->status == "RESOLVED" ? "resolved" : operation->status == "ACCEPTED" ? "agent_accepted"
                                                                   : operation->status == "UNKNOWN"    ? "unknown"
                                                                   : operation->status == "FAILED"     ? "failed"
@@ -236,7 +236,7 @@ ruvia::task<ruvia::http_response> DeviceController::restart(ruvia::context& cont
 }
 ruvia::task<ruvia::http_response> DeviceController::restartStatus(ruvia::context& context) {
     const auto id = std::string(context.req().param("id").value_or(""));
-    const auto operation = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, id] { return service.restart(user, id); }));
+    const auto operation = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, id] { return service.restart(user, id); })).take_value());
     if (!operation) {
         co_return context.error({.status_ = ruvia::http_status::not_found, .code_ = "not_found", .message_ = "Restart operation not found"});
     }
@@ -253,24 +253,24 @@ ruvia::task<ruvia::http_response> DeviceController::enrollment(ruvia::context& c
     if (requestText(body, "platform", 32) != "windows-x64") {
         co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "unsupported_platform", .message_ = "Platform not supported"});
     }
-    const auto code = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, userId = context.request_state<UserIdentity>().id, id] { return service.createEnrollment(userId, id); }));
+    const auto code = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, userId = context.request_state<UserIdentity>().id, id] { return service.createEnrollment(userId, id); })).take_value());
     if (!code) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device owner can install an Agent"});
     }
-    context.status(ruvia::http_status::created);
+    context.draft().status(ruvia::http_status::created);
     const auto& config = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).config;
     co_return jsonResponse(context, {{"code", *code}, {"device_id", id}, {"expires_in", code->empty() ? 0 : 600}, {"web_origin", config.origin}, {"native_host", config.nativeHost}, {"native_address", config.nativePublicAddress}, {"native_port", config.nativePort}});
 }
 ruvia::task<ruvia::http_response> DeviceController::create(ruvia::context& context) {
     const auto body = requestObject(co_await context.req().text(), {"name"});
     const auto name = requestText(body, "name", 128);
-    const auto device = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, userId = context.request_state<UserIdentity>().id, name] { return service.createDevice(userId, name); }));
-    context.status(ruvia::http_status::created);
+    const auto device = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, userId = context.request_state<UserIdentity>().id, name] { return service.createDevice(userId, name); })).take_value());
+    context.draft().status(ruvia::http_status::created);
     (*context.worker_state<std::shared_ptr<ServerRuntime>>()).status.publish("d:" + device.id);
     co_return jsonResponse(context, {{"id", device.id}, {"name", device.name}, {"enrolled", false}, {"can_manage", true}, {"desktop", true}, {"write_control", true}, {"verification_method", "direct"}, {"manage_credentials", true}, {"online", false}, {"last_seen", nullptr}});
 }
 ruvia::task<ruvia::http_response> DeviceController::devices(ruvia::context& context) {
-    const auto devices = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, userId = context.request_state<UserIdentity>().id] { return service.list(userId); }));
+    const auto devices = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, userId = context.request_state<UserIdentity>().id] { return service.list(userId); })).take_value());
     boost::json::array response;
     for (const auto& device : devices) {
         const auto& connections = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).controlConnections;
@@ -282,7 +282,7 @@ ruvia::task<ruvia::http_response> DeviceController::devices(ruvia::context& cont
     co_return jsonResponse(context, response);
 }
 ruvia::task<ruvia::http_response> DeviceController::grants(ruvia::context& context) {
-    const auto result = (co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, device = std::string(context.req().param("id").value_or(""))] { return service.grants(user, device); }));
+    const auto result = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).devices, user = context.request_state<UserIdentity>().id, device = std::string(context.req().param("id").value_or(""))] { return service.grants(user, device); })).take_value());
     if (!result) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Device owner or administrator required"});
     }
@@ -297,7 +297,7 @@ ruvia::task<ruvia::http_response> DeviceController::saveGrant(ruvia::context& co
     const auto device = std::string(context.req().param("id").value_or(""));
     const DeviceGrant grant{{}, requestText(body, "username", 64), requestBool(body, "connect"), requestBool(body, "connect"), false, false, requestText(body, "verification_method", 16)};
     auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
-    const bool ok = (co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device, grant, remove = requestBool(body, "remove")] { return service.setGrant(user, device, grant, remove); }));
+    const bool ok = ((co_await context.run_blocking([service = runtime.devices, user = context.request_state<UserIdentity>().id, device, grant, remove = requestBool(body, "remove")] { return service.setGrant(user, device, grant, remove); })).take_value());
     if (!ok) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "grant_rejected", .message_ = "Grant rejected; check administrator or owner, target user and Telegram configuration"});
     }
