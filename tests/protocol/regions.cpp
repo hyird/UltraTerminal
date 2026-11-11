@@ -34,7 +34,7 @@ std::string png() {
     value.replace(0, 8, "\211PNG\r\n\032\n", 8);
     value[11] = 13;
     value.replace(12, 4, "IHDR");
-    value[19] = 128;
+    value[19] = static_cast<char>(128);
     value[23] = 64;
     return value; // Header validation only; real decoding is tested separately.
 }
