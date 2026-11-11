@@ -5,7 +5,6 @@
 /.codex/
 /.claude/
 /.agents/
-CMakeUserPresets.json
 **/__pycache__/
 **/node_modules/
 /web/src/generated/

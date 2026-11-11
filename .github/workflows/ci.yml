@@ -112,7 +112,17 @@ jobs:
       - name: Configure Release
         id: configure
         run: |
-          cmake --preset linux-server-release \
+          cmake -S . -B build/linux-server -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-musl \
+            -DVCPKG_HOST_TRIPLET=x64-linux-musl \
+            -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/cmake/triplets" \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/llvm.cmake" \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-linux-musl-installed" \
+            -DVCPKG_MANIFEST_FEATURES=server \
+            -DULTRATERIMAL_BUILD_AGENT=OFF -DULTRATERIMAL_BUILD_SERVER=ON \
+            -DBUILD_TESTING=ON \
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
             -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
@@ -126,10 +136,10 @@ jobs:
       - name: Build
         run: |
           ccache --zero-stats
-          cmake --build --preset linux-server-release --parallel "$(nproc)"
+          cmake --build build/linux-server --parallel "$(nproc)"
           ccache --show-stats
       - name: Functional unit tests
-        run: ctest --preset linux-server-release --no-tests=error -L unit --output-junit test-results.xml
+        run: ctest --test-dir build/linux-server --no-tests=error -L unit --output-on-failure --output-junit "$GITHUB_WORKSPACE/build/linux-server/test-results.xml"
       - name: Save compiler cache
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.setup.outputs.compiler-cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
@@ -142,7 +152,7 @@ jobs:
         with:
           name: tests-linux-server-${{ github.sha }}
           path: |
-            test-results.xml
+            build/linux-server/test-results.xml
             build/linux-server/Testing/Temporary/LastTest.log
             build/linux-server/vcpkg-manifest-install.log
             build/linux-server/CMakeFiles/CMakeConfigureLog.yaml
@@ -220,12 +230,23 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-${{ hashFiles('vcpkg.json', 'CMakePresets.json', 'ports/**') }}
+          key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-${{ hashFiles('vcpkg.json', 'CMakeLists.txt', 'ports/**') }}
           restore-keys: |
             vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-
       - name: Configure Release
         id: configure
-        run: cmake --preset windows-agent-release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+        run: |
+          $configureArguments = @(
+            '-S', '.', '-B', 'build/windows-agent', '-A', 'x64',
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
+            '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
+            '-DVCPKG_HOST_TRIPLET=x64-windows-static',
+            "-DVCPKG_INSTALLED_DIR=$env:GITHUB_WORKSPACE/build/vcpkg_installed",
+            '-DULTRATERIMAL_BUILD_AGENT=ON', '-DULTRATERIMAL_BUILD_SERVER=OFF',
+            '-DBUILD_TESTING=ON', '-DCMAKE_COMPILE_WARNING_AS_ERROR=ON',
+            '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON'
+          )
+          cmake @configureArguments
       - name: Save vcpkg binary cache
         if: ${{ !cancelled() && steps.configure.outcome == 'success' && steps.vcpkg.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
@@ -233,16 +254,16 @@ jobs:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: ${{ steps.vcpkg.outputs.cache-primary-key }}
       - name: Build
-        run: cmake --build --preset windows-agent-release --parallel $([Environment]::ProcessorCount)
+        run: cmake --build build/windows-agent --config Release --parallel $([Environment]::ProcessorCount)
       - name: Functional unit tests
-        run: ctest --preset windows-agent-release --no-tests=error -L unit --output-junit test-results.xml
+        run: ctest --test-dir build/windows-agent -C Release --no-tests=error -L unit --output-on-failure --output-junit "$env:GITHUB_WORKSPACE/build/windows-agent/test-results.xml"
       - name: Upload test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: tests-windows-agent-${{ github.sha }}
           path: |
-            test-results.xml
+            build/windows-agent/test-results.xml
             build/windows-agent/Testing/Temporary/LastTest.log
             build/windows-agent/vcpkg-manifest-install.log
             build/windows-agent/CMakeFiles/CMakeConfigureLog.yaml

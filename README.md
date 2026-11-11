@@ -6,8 +6,8 @@
 
 GitHub Actions 在 `main` 推送、Pull Request 和手动触发时运行以下检查：
 
-- Windows Agent 使用 Windows Server 2025 / MSVC、`windows-agent-release` Preset、静态 CRT、Release LTO、功能单元测试和 MSI 打包。
-- Linux Server 使用 Ubuntu 24.04 托管 Runner，按 Ruvia 的 LLVM/musl 方式构建全静态网关。每次运行统一解析 clang-cross 发布版本并校验官方 SHA256，使用 `linux-server-release` Preset、Release LTO 和功能单元测试。
+- Windows Agent 使用 Windows Server 2025 / MSVC、静态 CRT、Release LTO、功能单元测试和 MSI 打包。
+- Linux Server 使用 Ubuntu 24.04 托管 Runner，按 Ruvia 的 LLVM/musl 方式构建全静态网关。每次运行统一解析 clang-cross 发布版本并校验官方 SHA256，启用 Release LTO 和功能单元测试。
 - Web 使用 Bun 1.4.4、锁文件安装、格式检查、功能单测、TypeScript 检查与生产构建。HeroUI Pro 安装通过仓库 Secret `HEROUI_AUTH_TOKEN` 使用专用 CI/CD Token。
 
 vcpkg 本体使用 manifest 的 `builtin-baseline` 提交，Actions 使用具体正式版本标签 `@vX.Y.Z`。工具链、vcpkg 二进制和 Linux ccache 分开缓存，依赖配置成功后保存完整依赖缓存。Ruvia 通过根 CMake 的 FetchContent 固定完整提交 SHA。成功构建保存 Windows MSI 和 Linux Server 产物 14 天，测试报告保存 7 天。Linux 发布包包含同一提交的 Server、单文件前端、修订信息和 SHA256SUMS，部署使用通过 CI 的完整产物。MSI 使用 Git for Windows 的 CA 集合，仓库变量 `ULTRATERIMAL_GATEWAY_HOST`、`ULTRATERIMAL_GATEWAY_ADDRESS` 决定安装清单地址。可在仓库 Actions 页下载对应提交的产物。
@@ -29,9 +29,9 @@ Windows Agent 及其本项目对应源代码按 GPL-3.0-or-later 发布，范围
 设置 `VCPKG_ROOT`，使用支持 C++23 的工具链及 CMake 3.28+。Windows Agent 需要 MSVC 和 Windows SDK，依赖及 CRT 静态链接；Agent-only 构建仅使用 Ruvia core，不构建 Web 网关或数据库客户端。
 
 ```powershell
-cmake --preset windows-agent-release
-cmake --build --preset windows-agent-release
-ctest --preset windows-agent-release
+cmake -S . -B build/windows-agent -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DVCPKG_HOST_TRIPLET=x64-windows-static "-DVCPKG_INSTALLED_DIR=$PWD/build/vcpkg_installed" -DULTRATERIMAL_BUILD_AGENT=ON -DULTRATERIMAL_BUILD_SERVER=OFF -DBUILD_TESTING=ON
+cmake --build build/windows-agent --config Release
+ctest --test-dir build/windows-agent -C Release -L unit --output-on-failure
 ```
 
 Agent 输出到 `build/windows-agent/agent/Release/agent.exe`。
@@ -51,12 +51,19 @@ Windows MSI 使用固定版本的 WiX 7.0.1 构建，打包静态链接的 Agent
 
 MSI 发布到 Web `assets/`，不生成独立源码包；`windows-agent.json` 的 `source` 为对应提交的公开仓库链接，`source_commit` 为完整提交 SHA。安装目录 `source_info.txt` 记录项目、Ruvia、vcpkg 修订和依赖 SPDX 来源及校验值。保持已分发版本的对应源码与依赖可获取。
 
-网关可使用 `windows-server-release`，或在 Linux 环境中安装 clang-cross、CMake、Ninja 和 vcpkg 后构建。`ULTRATERIMAL_MUSL_ROOT` 指向已校验的 `x86_64-unknown-linux-musl` 工具链根目录，CI 装配见 `.github/actions/setup-build/action.yml`。
+Windows 网关配置时设置 `-DULTRATERIMAL_BUILD_SERVER=ON -DVCPKG_MANIFEST_FEATURES=server`。Linux 环境中安装 clang-cross、CMake、Ninja 和 vcpkg 后构建。`ULTRATERIMAL_MUSL_ROOT` 指向已校验的 `x86_64-unknown-linux-musl` 工具链根目录，CI 装配见 `.github/actions/setup-build/action.yml`。
 
 ```sh
-cmake --preset linux-server-release
-cmake --build --preset linux-server-release -j4
-ctest --preset linux-server-release
+cmake -S . -B build/linux-server -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-musl -DVCPKG_HOST_TRIPLET=x64-linux-musl \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/cmake/triplets" \
+  -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$PWD/cmake/llvm.cmake" \
+  -DULTRATERIMAL_BUILD_AGENT=OFF -DULTRATERIMAL_BUILD_SERVER=ON \
+  -DVCPKG_MANIFEST_FEATURES=server -DBUILD_TESTING=ON
+cmake --build build/linux-server -j4
+ctest --test-dir build/linux-server -L unit --output-on-failure
 ```
 
 Linux 全静态网关输出到 `build/linux-server/server/gateway`。CI 校验 ELF 不包含动态加载器入口。数据库使用 MariaDB 10.6 或更新版本中的独立 InnoDB 数据库与应用角色。
@@ -183,8 +190,8 @@ Get-WinEvent -LogName Application -FilterXPath "*[System[Provider[@Name='Ultrate
 CI 运行 CTest 中标记为 unit 的功能单元测试。
 
 ```powershell
-ctest --preset windows-agent-release -L unit --no-tests=error
-ctest --preset linux-server-release -L unit --no-tests=error
+ctest --test-dir build/windows-agent -C Release -L unit --no-tests=error
+ctest --test-dir build/linux-server -L unit --no-tests=error
 ```
 
 本机真实桌面测试覆盖整帧采集、GPU/软件编码、首帧独立解码、基准重建、背压、前后台切换与桌面进程 IPC。单显示器可显式运行 agent-video-runtime-tests --resize，验证重复分辨率切换并在正常退出时恢复原模式。真实服务安装、登录/锁屏/UAC、媒体组件缺失、公网弱网及物理呈现延迟由专用测试环境验收。

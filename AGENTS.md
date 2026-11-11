@@ -20,7 +20,7 @@
 - Agent 使用 `ruvia::core` 管理业务生命周期；Agent ↔ Server 使用原生加密 UDP 优先、TLS/TCP 降级，注册、鉴权、心跳、信令和远控数据均不使用 HTTP/WebSocket/WSS。Agent-only 配置不构建网关或安装数据库客户端。共享协议不得暴露 Ruvia 类型。
 - Ruvia 参考 IotEngine 通过 CMake FetchContent 接入并固定完整提交 SHA，只使用公开 API，不建立 Ruvia vcpkg overlay port；其第三方依赖通过 vcpkg manifest 管理。网关 Web 入口只监听 HTTP/WS，由外部反向代理处理 HTTPS/WSS；HTTP、WebSocket、路由和中间件统一交给 Ruvia，不另建 Beast 服务端。Agent 原生传输的加密由静态链接的成熟传输库负责。
 - 本任务修改并推送 Ruvia 后，同步更新本项目 FetchContent 固定的 Ruvia 提交 SHA，完成两端构建、相关测试及部署验证。
-- C/C++ 依赖统一使用 vcpkg manifest 并固定 `builtin-baseline`，使用 CMake Presets；不得依赖本机临时安装的库。
+- C/C++ 依赖统一使用 vcpkg manifest 并固定 `builtin-baseline`，CMake 通过显式命令行参数配置；不得依赖本机临时安装的库。
 - Windows Agent 使用 `x64-windows-static` 和 `/MT`，第三方库与 CRT 静态链接；不要求额外第三方 DLL、VC++ Redistributable、.NET、SSH/VNC 服务或媒体扩展。
 - 基础系统 API 与现有驱动正常使用；可选媒体组件动态探测，缺失时不得阻止程序启动，编码回退到内嵌软件实现。
 - 前端以用户提供的 HeroUI Pro Dashboard Template 1.0.13 为视觉与布局基准，采用模板侧栏、顶栏、KPI、DataGrid 和默认主题；工作台与控制台使用独立菜单，通过左侧菜单顶部的管理员专属下拉入口切换；普通用户只显示工作台。只提供实际已接通的能力，不创建占位页面或虚构业务数据。
