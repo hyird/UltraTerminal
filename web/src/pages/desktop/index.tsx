@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Dropdown, Label, Tabs, toast } from "@heroui/react";
+import {
+  Button,
+  Dropdown,
+  Label,
+  ToggleButton,
+  ToggleButtonGroup,
+  toast,
+} from "@heroui/react";
 import { useLocation } from "react-router";
 import {
   Choice,
@@ -30,7 +37,7 @@ import { requestApproval } from "../identity/identity.service";
 import { useDevices } from "../devices/device_state";
 export function DesktopWorkspace() {
   const { pathname } = useLocation();
-  const { entries, active, activate, close } = useDesktops();
+  const { entries, active, close } = useDesktops();
   const visible = pathname === "/workbench/sessions";
   return (
     <section
@@ -38,46 +45,45 @@ export function DesktopWorkspace() {
       className="flex h-[calc(100dvh-var(--workspace-navbar-height))] min-h-0 min-w-0 max-w-full flex-col overflow-hidden"
       aria-label="远程桌面工作区"
     >
-      <Tabs
-        selectedKey={active}
-        onSelectionChange={(key) => {
-          if (typeof key === "string") activate(key);
-        }}
-        className="min-h-0 min-w-0 max-w-full flex-1 gap-0"
-      >
-        <div className="flex shrink-0 gap-1 overflow-auto border-b border-border px-4 py-2">
-          <Tabs.ListContainer className="max-w-full">
-            <Tabs.List aria-label="远程会话">
-              {entries.map((entry) => (
-                <Tabs.Tab
-                  key={entry.ticket.id}
-                  id={entry.ticket.id}
-                  aria-label={entry.device.name}
-                  className="h-8 min-h-8 min-w-16 w-auto flex-none gap-2 whitespace-nowrap px-2 text-sm"
-                >
-                  <span>{entry.device.name}</span>
-                  <Tabs.Indicator />
-                </Tabs.Tab>
-              ))}
-            </Tabs.List>
-          </Tabs.ListContainer>
-        </div>
-        {entries.map((entry) => (
-          <Tabs.Panel
-            key={entry.ticket.id}
-            id={entry.ticket.id}
-            shouldForceMount
-            className="m-0 flex min-h-0 min-w-0 max-w-full flex-1 p-0 data-[inert]:hidden"
-          >
-            <DesktopPanel
-              entry={entry}
-              visible={visible && active === entry.ticket.id}
-              onClose={() => close(entry.ticket.id)}
-            />
-          </Tabs.Panel>
-        ))}
-      </Tabs>
+      {entries.map((entry) => (
+        <DesktopPanel
+          key={entry.ticket.id}
+          entry={entry}
+          visible={visible && active === entry.ticket.id}
+          onClose={() => close(entry.ticket.id)}
+        />
+      ))}
     </section>
+  );
+}
+export function DesktopTabs() {
+  const { entries, active, activate } = useDesktops();
+  return (
+    <ToggleButtonGroup
+      aria-label="远程会话"
+      selectionMode="single"
+      disallowEmptySelection
+      selectedKeys={active ? [active] : []}
+      onSelectionChange={(keys) => {
+        const key = keys.values().next().value;
+        if (typeof key === "string") activate(key);
+      }}
+      size="sm"
+      isDetached
+      className="bg-default w-max flex-nowrap gap-1 rounded-full p-1"
+    >
+      {entries.map((entry) => (
+        <ToggleButton
+          key={entry.ticket.id}
+          id={entry.ticket.id}
+          aria-label={entry.device.name}
+          variant="ghost"
+          className="h-8 min-h-8 min-w-16 w-auto flex-none rounded-full whitespace-nowrap px-3 text-sm data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
+        >
+          <span>{entry.device.name}</span>
+        </ToggleButton>
+      ))}
+    </ToggleButtonGroup>
   );
 }
 function DesktopPanel({
