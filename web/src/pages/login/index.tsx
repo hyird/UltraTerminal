@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { useNavigate } from "react-router";
 import { Field, Notice, failureText } from "../../components/form";
@@ -16,6 +16,9 @@ export function LoginPage() {
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    document.title = `${step === "password" ? "登录" : "身份验证"} · Ultraterimal`;
+  }, [step]);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -64,7 +67,11 @@ export function LoginPage() {
             </p>
           )}
         </div>
-        <form className="flex flex-col gap-3" onSubmit={submit}>
+        <form
+          aria-label="账号登录"
+          className="flex flex-col gap-3"
+          onSubmit={submit}
+        >
           <Notice>{error}</Notice>
           {step === "password" ? (
             <>
@@ -75,6 +82,7 @@ export function LoginPage() {
                 required
                 maxLength={64}
                 autoComplete="username"
+                name="username"
               />
               <Field
                 label="密码"
@@ -83,6 +91,7 @@ export function LoginPage() {
                 onChange={setPassword}
                 required
                 autoComplete="current-password"
+                name="password"
               />
             </>
           ) : (
@@ -95,6 +104,9 @@ export function LoginPage() {
               maxLength={step === "totp" ? 6 : 32}
               pattern={step === "totp" ? "[0-9]{6}" : "[0-9a-fA-F]{32}"}
               autoComplete="one-time-code"
+              name="verification_code"
+              inputMode={step === "totp" ? "numeric" : "text"}
+              autoFocus
             />
           )}
           <Button

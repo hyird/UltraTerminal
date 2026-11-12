@@ -37,7 +37,7 @@ export function SettingsPage() {
       {loading ? (
         <LoadingSkeleton kind="settings" label="正在加载平台设置" rows={2} />
       ) : (
-        <div className="flex flex-col gap-3 p-6 sm:p-8">
+        <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-semibold">Telegram 验证服务</h2>
@@ -50,7 +50,7 @@ export function SettingsPage() {
               {loading ? "加载中" : bot ? "已配置" : "未配置"}
             </Chip>
           </div>
-          <dl className="my-8 grid gap-5 sm:grid-cols-2">
+          <dl className="my-3 grid gap-4 @min-[30rem]:grid-cols-2">
             <div>
               <dt className="text-muted text-xs">平台 Bot</dt>
               <dd className="mt-2 text-sm font-medium">

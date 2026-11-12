@@ -131,6 +131,8 @@ export function ProofFields({
             maxLength={6}
             pattern="[0-9]{6}"
             autoComplete="one-time-code"
+            inputMode="numeric"
+            name="verification_code"
           />
         ) : (
           <Field

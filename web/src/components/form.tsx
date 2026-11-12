@@ -11,7 +11,7 @@ import {
   Switch,
   TextField,
 } from "@heroui/react";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 export function Field({
   label,
@@ -25,6 +25,9 @@ export function Field({
   maxLength,
   minLength,
   pattern,
+  name,
+  inputMode,
+  autoFocus = false,
 }: {
   label: string;
   value: string;
@@ -37,7 +40,14 @@ export function Field({
   maxLength?: number;
   minLength?: number;
   pattern?: string;
+  name?: string;
+  inputMode?: ComponentProps<typeof Input>["inputMode"];
+  autoFocus?: boolean;
 }) {
+  const identifier =
+    type === "password" ||
+    autoComplete === "username" ||
+    autoComplete === "one-time-code";
   return (
     <TextField
       value={value}
@@ -46,6 +56,8 @@ export function Field({
       isRequired={required}
       isDisabled={disabled}
       autoComplete={autoComplete}
+      name={name}
+      autoFocus={autoFocus}
       className="w-full"
       variant="secondary"
       minLength={minLength}
@@ -53,7 +65,13 @@ export function Field({
       pattern={pattern}
     >
       <Label>{label}</Label>
-      <Input className="w-full" />
+      <Input
+        className="w-full"
+        inputMode={inputMode}
+        autoCapitalize={identifier ? "none" : undefined}
+        autoCorrect={identifier ? "off" : undefined}
+        spellCheck={identifier ? false : undefined}
+      />
       {hint && <Description>{hint}</Description>}
       <FieldError />
     </TextField>
@@ -76,7 +94,7 @@ export function Choice({
 }) {
   return (
     <Select
-      aria-label={label}
+      aria-label={compact ? label : undefined}
       value={value || null}
       onChange={(key) => {
         if (typeof key === "string") onChange(key);
@@ -91,9 +109,7 @@ export function Choice({
         <Select.Value />
         {!compact && <Select.Indicator />}
       </Select.Trigger>
-      <Select.Popover
-        className={`${compact ? "w-(--trigger-width) " : ""}[scrollbar-width:none]! [&::-webkit-scrollbar]:hidden`}
-      >
+      <Select.Popover className={compact ? "w-(--trigger-width)" : undefined}>
         <ListBox items={items}>
           {(item) => (
             <ListBox.Item id={item.id} textValue={item.label}>
@@ -178,8 +194,8 @@ export function Dialog({
       isKeyboardDismissDisabled={busy}
     >
       <Modal.Container size="sm" placement="center" scroll="inside">
-        <Modal.Dialog>
-          <Modal.CloseTrigger isDisabled={busy} />
+        <Modal.Dialog aria-busy={busy}>
+          <Modal.CloseTrigger aria-label="关闭对话框" isDisabled={busy} />
           <Modal.Header>
             <Modal.Heading>{title}</Modal.Heading>
           </Modal.Header>

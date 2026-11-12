@@ -3,13 +3,15 @@ import { AppLayout, Navbar, Sidebar } from "@heroui-pro/react";
 import { Button, Popover } from "@heroui/react";
 import { useConnectionRequests } from "../store/connection_requests";
 import { RequestsPanel } from "../pages/identity/requests";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 export function DashboardNavbar({
   title,
   children,
+  headingRef,
 }: {
   title: string;
   children?: ReactNode;
+  headingRef?: Ref<HTMLHeadingElement>;
 }) {
   const requests = useConnectionRequests();
   return (
@@ -18,7 +20,9 @@ export function DashboardNavbar({
         <AppLayout.MenuToggle aria-label="打开菜单" />
         <Sidebar.Trigger aria-label="收起侧栏" />
         <h1
-          className={`text-foreground min-w-0 text-xl font-semibold ${children ? "shrink-0 whitespace-nowrap max-sm:sr-only" : "break-words"}`}
+          ref={headingRef}
+          tabIndex={-1}
+          className={`text-foreground min-w-0 text-xl font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${children ? "shrink-0 whitespace-nowrap max-sm:sr-only" : "break-words"}`}
         >
           {title}
         </h1>

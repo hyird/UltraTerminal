@@ -6,11 +6,14 @@ import { DesktopTabs, DesktopWorkspace } from "../pages/desktop";
 import { DashboardNavbar } from "./dashboard_navbar";
 import { DashboardSidebar } from "./dashboard_sidebar";
 import { navigation } from "./navigation";
+import { useEffect, useRef } from "react";
 const routeLabels = new Map(navigation.map((item) => [item.href, item.label]));
 export function AppShell() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { user } = useAuth();
+  const content = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const desktopVisible = pathname === "/workbench/sessions";
   const title =
     pathname === "/overview"
@@ -18,11 +21,25 @@ export function AppShell() {
       : pathname === "/account/security"
         ? "个人安全"
         : (routeLabels.get(pathname) ?? "远程会话");
+  useEffect(() => {
+    document.title = `${title} · Ultraterimal`;
+    heading.current?.focus({ preventScroll: true });
+  }, [pathname, title]);
   return (
     <ConnectionRequestsProvider>
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          content.current?.focus();
+        }}
+      >
+        跳至主要内容
+      </a>
       <AppLayout
         navbar={
-          <DashboardNavbar title={title}>
+          <DashboardNavbar title={title} headingRef={heading}>
             {desktopVisible && <DesktopTabs />}
           </DashboardNavbar>
         }
@@ -30,8 +47,15 @@ export function AppShell() {
         sidebar={<DashboardSidebar pathname={pathname} />}
         sidebarCollapsible="offcanvas"
       >
-        <Outlet />
-        <DesktopWorkspace />
+        <div
+          ref={content}
+          id="main-content"
+          tabIndex={-1}
+          className="min-h-0 min-w-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
+        >
+          <Outlet />
+          <DesktopWorkspace />
+        </div>
       </AppLayout>
     </ConnectionRequestsProvider>
   );

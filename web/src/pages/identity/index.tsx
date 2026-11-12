@@ -10,7 +10,7 @@ import {
   Notice,
   failureText,
 } from "../../components/form";
-import { Icon } from "../../components/icon";
+import { Icon, type IconName } from "../../components/icon";
 import { useAuth } from "../../store/auth";
 import {
   bindTelegram,
@@ -246,25 +246,25 @@ function SecurityRow({
   description,
   children,
 }: {
-  icon: string;
+  icon: IconName;
   title: string;
   description: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] items-center gap-6 border-b border-border py-3 last:border-b-0 max-md:grid-cols-1 max-md:gap-4">
-      <div className="flex items-start gap-4">
-        <span className="text-muted mt-1">
+    <div className="grid grid-cols-1 items-center gap-3 border-b border-border py-3 last:border-b-0 @min-[38rem]:grid-cols-[minmax(0,1fr)_auto] @min-[38rem]:gap-6">
+      <div className="flex min-w-0 items-start gap-4">
+        <span className="text-muted mt-1 shrink-0">
           <Icon name={icon} />
         </span>
-        <div>
+        <div className="min-w-0 wrap-anywhere">
           <h2 className="font-medium">{title}</h2>
           <p className="text-muted mt-2 max-w-xl text-sm leading-6">
             {description}
           </p>
         </div>
       </div>
-      <div className="grid grid-cols-[8.5rem_4.5rem] items-center gap-3 [&>.button]:col-start-1 [&>.button]:w-full [&>.chip]:col-start-2 [&>.chip]:row-start-1 [&>.chip]:justify-self-start">
+      <div className="flex flex-wrap items-center justify-end gap-3">
         {children}
       </div>
     </div>

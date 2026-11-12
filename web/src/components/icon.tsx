@@ -1,18 +1,29 @@
-import { Icon as Iconify, addCollection } from "@iconify/react";
-import icons from "@iconify-json/gravity-ui/icons.json";
-addCollection(icons);
+import {
+  Display,
+  Ellipsis,
+  FileText,
+  Key,
+  PaperPlane,
+  Plus,
+  ShieldCheck,
+} from "@gravity-ui/icons";
+const icons = {
+  display: Display,
+  ellipsis: Ellipsis,
+  "file-text": FileText,
+  key: Key,
+  "paper-plane": PaperPlane,
+  plus: Plus,
+  "shield-check": ShieldCheck,
+};
+export type IconName = keyof typeof icons;
 export function Icon({
   name,
   className = "size-5",
 }: {
-  name: string;
+  name: IconName;
   className?: string;
 }) {
-  return (
-    <Iconify
-      icon={`gravity-ui:${name}`}
-      className={className}
-      aria-hidden="true"
-    />
-  );
+  const Glyph = icons[name];
+  return <Glyph className={className} aria-hidden="true" />;
 }

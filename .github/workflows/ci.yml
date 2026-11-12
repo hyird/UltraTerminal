@@ -75,7 +75,7 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: web-${{ github.sha }}
-          path: build/web/index.html
+          path: build/web/
           if-no-files-found: error
           retention-days: 14
 
@@ -179,7 +179,7 @@ jobs:
             --arg toolchain_sha256 "$TOOLCHAIN_SHA256" \
             '{commit: $commit, ruvia: $ruvia, vcpkg: $vcpkg, toolchain: $toolchain, toolchain_sha256: $toolchain_sha256}' \
             > build/server-release/release.json
-          (cd build/server-release && sha256sum bin/gateway web/index.html release.json > SHA256SUMS)
+          (cd build/server-release && find bin web -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum release.json >> SHA256SUMS)
           tar -czf build/linux-server.tar.gz -C build/server-release bin web release.json SHA256SUMS
       - uses: actions/upload-artifact@v7.0.2
         with:

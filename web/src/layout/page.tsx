@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Button } from "@heroui/react";
 import { Icon } from "../components/icon";
 export const pageLayout =
-  "mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 pt-3 pb-6 max-md:px-3 max-md:pb-5 [&_.table__cell]:px-3 [&_.table__cell]:py-2 [&_.table__column]:px-3 [&_.table__column]:py-2 [&_.card]:gap-2 [&_.card]:p-3 [&_.kpi]:gap-2 [&_.kpi]:p-3 [&_.input]:min-h-8 [&_.input]:py-1.5 [&_.select__trigger]:min-h-8 [&_.select__trigger]:py-1.5";
+  "@container mx-auto flex min-w-0 w-full max-w-7xl flex-col gap-3 px-4 pt-3 pb-6 max-md:px-3 max-md:pb-5 [&_.table__cell]:px-3 [&_.table__cell]:py-2 [&_.table__column]:px-3 [&_.table__column]:py-2 [&_.card]:gap-2 [&_.card]:p-3 [&_.kpi]:gap-2 [&_.kpi]:p-3";
 export function Page({
   title,
   description,

@@ -1,18 +1,13 @@
 import { LoadingSkeleton } from "./components/loading";
-import { OverviewPage } from "./pages/overview";
+import { lazy, Suspense } from "react";
+import { ErrorBoundary } from "./components/error_boundary";
 import { createRoot } from "react-dom/client";
-import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router";
+import { HashRouter, Navigate, Route, Routes } from "react-router";
 import { Button, Toast } from "@heroui/react";
 import { AuthProvider, useAuth } from "./store/auth";
-import { DesktopProvider, useDesktops } from "./store/desktops";
-import { DeviceProvider } from "./pages/devices/device_state";
-import { AppShell } from "./layout/app_shell";
 import { LoginPage } from "./pages/login";
-import { DevicesPage, AssetsPage } from "./pages/devices";
-import { AccountsPage } from "./pages/identity/accounts";
-import { SecurityPage } from "./pages/identity";
-import { SettingsPage } from "./pages/identity/telegram";
 import "./styles.css";
+const Application = lazy(() => import("./application"));
 function Protected() {
   const auth = useAuth();
   if (auth.loading)
@@ -28,23 +23,11 @@ function Protected() {
     );
   if (!auth.user) return <Navigate to="/login" replace />;
   return (
-    <DeviceProvider>
-      <DesktopProvider>
-        <AppShell />
-      </DesktopProvider>
-    </DeviceProvider>
-  );
-}
-function AdminOnly() {
-  return useAuth().user?.role === "admin" ? (
-    <Outlet />
-  ) : (
-    <Navigate to="/workbench/devices" replace />
-  );
-}
-function SessionRoute() {
-  return useDesktops().entries.length ? null : (
-    <Navigate to="/workbench/devices" replace />
+    <Suspense
+      fallback={<LoadingSkeleton kind="shell" label="正在加载工作台" />}
+    >
+      <Application />
+    </Suspense>
   );
 }
 function LoginRoute() {
@@ -56,25 +39,15 @@ function LoginRoute() {
 const root = document.getElementById("root");
 if (!root) throw new Error("Application root missing");
 createRoot(root).render(
-  <HashRouter>
-    <AuthProvider>
-      <Toast.Provider placement="top" width={320} gap={8} />
-      <Routes>
-        <Route path="/login" element={<LoginRoute />} />
-        <Route element={<Protected />}>
-          <Route path="/overview" element={<OverviewPage />} />
-          <Route path="/workbench/devices" element={<DevicesPage />} />
-          <Route path="/workbench/sessions" element={<SessionRoute />} />
-          <Route path="/account/security" element={<SecurityPage />} />
-          <Route element={<AdminOnly />}>
-            <Route path="/console/assets" element={<AssetsPage />} />
-            <Route path="/console/grants" element={<AssetsPage grants />} />
-            <Route path="/console/users" element={<AccountsPage />} />
-            <Route path="/console/settings" element={<SettingsPage />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/overview" replace />} />
-        </Route>
-      </Routes>
-    </AuthProvider>
-  </HashRouter>,
+  <ErrorBoundary>
+    <HashRouter>
+      <AuthProvider>
+        <Toast.Provider placement="top" width={320} gap={8} />
+        <Routes>
+          <Route path="/login" element={<LoginRoute />} />
+          <Route path="*" element={<Protected />} />
+        </Routes>
+      </AuthProvider>
+    </HashRouter>
+  </ErrorBoundary>,
 );

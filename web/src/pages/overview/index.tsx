@@ -52,7 +52,7 @@ export function OverviewPage() {
   return (
     <section aria-label="概览" className={pageLayout}>
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">工作概览</span>
+        <h2 className="text-sm font-medium">工作概览</h2>
         <span className="text-xs text-muted">设备状态实时同步</span>
       </div>
       <Notice>{error}</Notice>
@@ -60,7 +60,7 @@ export function OverviewPage() {
         <LoadingSkeleton kind="overview" label="正在加载概览" />
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 @min-[24rem]:grid-cols-2 @min-[44rem]:grid-cols-4">
             {stats.map((stat) => (
               <KPI key={stat.label}>
                 <KPI.Header>
@@ -76,7 +76,7 @@ export function OverviewPage() {
               </KPI>
             ))}
           </div>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 @min-[36rem]:grid-cols-2">
             <Card>
               <Card.Header>
                 <Card.Title>远程访问</Card.Title>

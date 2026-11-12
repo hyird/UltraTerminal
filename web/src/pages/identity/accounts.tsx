@@ -52,15 +52,16 @@ export function AccountsPage() {
       live = false;
     };
   }, []);
+  const query = search.trim().toLowerCase();
   const filtered = useMemo(
     () =>
       accounts.filter(
         (item) =>
-          item.username.toLowerCase().includes(search.toLowerCase()) &&
+          item.username.toLowerCase().includes(query) &&
           (filter === "all" ||
             (filter === "disabled" ? item.disabled : item.role === filter)),
       ),
-    [accounts, search, filter],
+    [accounts, query, filter],
   );
   const pages = Math.max(1, Math.ceil(filtered.length / 12));
   const currentPage = Math.min(page, pages);
@@ -150,8 +151,11 @@ export function AccountsPage() {
     >
       <Notice>{error}</Notice>
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="order-2 ml-auto w-[220px] max-w-full">
+        <search
+          className="flex flex-wrap items-center gap-2"
+          aria-label="搜索与筛选"
+        >
+          <div className="min-w-0 grow basis-48 sm:max-w-sm">
             <SearchField
               aria-label="搜索用户"
               value={search}
@@ -162,7 +166,13 @@ export function AccountsPage() {
             >
               <SearchField.Group>
                 <SearchField.SearchIcon />
-                <SearchField.Input placeholder="搜索用户…" />
+                <SearchField.Input
+                  name="account_search"
+                  placeholder="搜索用户…"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
                 <SearchField.ClearButton />
               </SearchField.Group>
             </SearchField>
@@ -182,7 +192,7 @@ export function AccountsPage() {
               { id: "disabled", label: "已停用" },
             ]}
           />
-        </div>
+        </search>
         {loading ? (
           <LoadingSkeleton kind="table" label="正在加载用户" />
         ) : filtered.length ? (
@@ -195,9 +205,9 @@ export function AccountsPage() {
           />
         ) : (
           <Empty
-            title={search ? "没有匹配的用户" : "暂无用户"}
+            title={search || filter !== "all" ? "没有匹配的用户" : "暂无用户"}
             description={
-              search
+              search || filter !== "all"
                 ? "试试其他用户名或筛选条件。"
                 : "创建普通用户后，为其分配需要访问的设备。"
             }

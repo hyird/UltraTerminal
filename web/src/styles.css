@@ -58,7 +58,7 @@ textarea {
 .select__trigger,
 .search-field__group {
   min-height: 2rem;
-  height: 2rem;
+  height: auto;
   font-size: 0.875rem;
 }
 .input,
@@ -81,4 +81,54 @@ textarea {
 .toast {
   padding: 0.75rem;
   font-size: 0.875rem;
+}
+
+.skip-link {
+  position: fixed;
+  inset-block-start: 0.5rem;
+  inset-inline-start: 0.5rem;
+  z-index: 100;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--foreground);
+}
+.skip-link:not(:focus) {
+  clip-path: inset(50%);
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.desktop-toolbar > .select {
+  width: fit-content;
+  min-width: 0;
+  max-width: 100%;
+}
+.desktop-toolbar .select__value {
+  flex: none;
+}
+[data-desktop-viewport] canvas[data-control="ready"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  :root {
+    --workspace-navbar-height: 4rem;
+  }
+  .input,
+  .select__trigger,
+  .search-field__group,
+  .modal .input,
+  .modal .select__trigger {
+    min-height: 3rem;
+    font-size: 1rem;
+  }
+  .button--sm,
+  .toggle-button--sm,
+  .sidebar__menu-item-content,
+  .list-box-item,
+  .menu-item {
+    min-height: 3rem;
+  }
 }

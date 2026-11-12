@@ -63,17 +63,18 @@ function DeviceList({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const personal = mode === "personal";
+  const query = search.trim().toLowerCase();
   const filtered = useMemo(
     () =>
       feed.devices.filter(
         (item) =>
           `${item.name} ${item.ownerUsername ?? ""}`
             .toLowerCase()
-            .includes(search.toLowerCase()) &&
+            .includes(query) &&
           (filter === "all" ||
             (filter === "online" ? item.online : !item.online)),
       ),
-    [feed.devices, search, filter],
+    [feed.devices, query, filter],
   );
   const pages = Math.max(1, Math.ceil(filtered.length / 12));
   const currentPage = Math.min(page, pages);
@@ -359,8 +360,11 @@ function DeviceList({
         </Button>
       )}
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="order-2 ml-auto w-[220px] max-w-full">
+        <search
+          className="flex flex-wrap items-center gap-2"
+          aria-label="搜索与筛选"
+        >
+          <div className="min-w-0 grow basis-48 sm:max-w-sm">
             <SearchField
               aria-label="搜索设备"
               value={search}
@@ -371,7 +375,13 @@ function DeviceList({
             >
               <SearchField.Group>
                 <SearchField.SearchIcon />
-                <SearchField.Input placeholder="搜索设备…" />
+                <SearchField.Input
+                  name="device_search"
+                  placeholder="搜索设备…"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
                 <SearchField.ClearButton />
               </SearchField.Group>
             </SearchField>
@@ -393,7 +403,7 @@ function DeviceList({
           <span className="text-muted text-[0.8125rem]">
             {feed.devices.filter((item) => item.online).length} 台在线
           </span>
-        </div>
+        </search>
         {feed.loading ? (
           <LoadingSkeleton kind="table" label="正在加载设备" />
         ) : filtered.length ? (
@@ -523,6 +533,8 @@ function DeviceList({
               maxLength={6}
               pattern="[0-9]{6}"
               autoComplete="one-time-code"
+              inputMode="numeric"
+              name="verification_code"
             />
             <FormActions
               busy={busy}
