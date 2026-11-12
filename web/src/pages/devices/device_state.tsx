@@ -8,7 +8,8 @@ import {
 import { observeDevices } from "./device.service";
 import type { Device } from "./device.types";
 import type { Approval } from "../identity/identity.types";
-export function useDeviceFeed(scope: "personal" | "administration") {
+import { useAuth } from "../../store/auth";
+function useDeviceFeed(scope: "personal" | "administration") {
   const [devices, setDevices] = useState<Device[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,7 +52,10 @@ export function useDeviceFeed(scope: "personal" | "administration") {
 type DeviceState = ReturnType<typeof useDeviceFeed>;
 const Context = createContext<DeviceState | null>(null);
 export function DeviceProvider({ children }: { children: ReactNode }) {
-  const state = useDeviceFeed("personal");
+  const { user } = useAuth();
+  const state = useDeviceFeed(
+    user?.role === "admin" ? "administration" : "personal",
+  );
   return <Context.Provider value={state}>{children}</Context.Provider>;
 }
 export function useDevices() {

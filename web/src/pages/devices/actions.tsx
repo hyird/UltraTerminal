@@ -196,7 +196,7 @@ export function DeviceActionDialog({
         {action === "create" && (
           <p className="text-muted text-sm leading-6">
             先创建设备，再在目标 Windows
-            电脑执行一次性安装命令。接入成功后可向普通用户分配权限。
+            电脑执行一次性安装命令。接入成功后可向其他用户分配访问权限。
           </p>
         )}
         {action === "transfer" &&

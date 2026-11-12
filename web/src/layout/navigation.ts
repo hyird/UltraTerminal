@@ -3,7 +3,6 @@ import {
   Gear,
   LayoutHeaderCellsLarge,
   Persons,
-  Server,
   ShieldCheck,
 } from "@gravity-ui/icons";
 export const navigation = [
@@ -19,7 +18,6 @@ export const navigation = [
     icon: Display,
     admin: false,
   },
-  { href: "/console/assets", label: "设备清单", icon: Server, admin: true },
   {
     href: "/console/grants",
     label: "设备授权",

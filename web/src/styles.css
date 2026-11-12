@@ -2,8 +2,48 @@
 @import "@heroui/styles";
 @import "@heroui-pro/react/css";
 
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src: url("/fonts/jetbrains_mono_nerd_regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  unicode-range: U+0000-D7FF, U+F900-FFFF, U+10000-EFFFF;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src: url("/fonts/jetbrains_mono_nerd_bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  unicode-range: U+0000-D7FF, U+F900-FFFF, U+10000-EFFFF;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  src: url("/fonts/jetbrains_mono_nerd_symbols.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+E000-F8FF, U+F0000-10FFFF;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Fallback";
+  src: local("Consolas");
+  /* 按 JetBrains Mono 与 Consolas 的实际度量匹配回退字号和行框。 */
+  size-adjust: 112.191%;
+  ascent-override: 90.916%;
+  descent-override: 26.74%;
+  line-gap-override: 0%;
+}
+@theme {
+  --font-sans:
+    "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Fallback",
+    "Cascadia Mono", Consolas, "Microsoft YaHei", "PingFang SC", monospace;
+  --font-mono: var(--font-sans);
+}
 :root {
-  font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-sans);
+  font-size-adjust: from-font;
   --workspace-navbar-height: 3rem;
 }
 :root,

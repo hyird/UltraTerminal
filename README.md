@@ -70,7 +70,7 @@ Linux 全静态网关输出到 `build/linux-server/server/gateway`。CI 校验 E
 
 ### 前端构建
 
-模板的 Next.js 路由已适配现有 React Router 和 Vite 静态部署；不需要 Next.js 服务端。模板默认主题与组件样式作为视觉基准，概览仅展示当前账号的真实授权设备、在线状态、会话和申请数量。
+模板的 Next.js 路由已适配现有 React Router 和 Vite 静态部署；不需要 Next.js 服务端。模板默认主题与组件样式作为视觉基准。管理员与普通用户共用工作台页面；“我的设备”和概览复用同一条状态订阅，普通用户看到自己拥有或获授权的设备，管理员看到全平台设备。普通用户可以添加自己的设备，管理员控制台只保留设备授权、用户管理和平台设置。旧 `/#/console/assets` 书签跳转到 `/#/workbench/devices`，迁移入口在前端 0.2.0 发布时移除。
 
 安装 Bun 1.4.4；第三方 Pro 安装脚本及 protobufjs 声明生成工具仍需要构建机的 Node.js。依赖安装、锁文件和脚本入口统一使用 Bun，不强制改写第三方 CLI 的解释器。首次开发需先执行 `bun x heroui-pro login` 登录拥有 React Pro 授权的账号；CI 使用 HeroUI Pro 控制台生成的 CI/CD Token，通过 `HEROUI_AUTH_TOKEN` 注入，不提交到源码。
 
@@ -84,6 +84,8 @@ bun run build
 提交 `web/bun.lock`，不混用 npm 锁文件。`build` 先从唯一协议源 `protocol/schemas/session.proto` 生成客户端契约，再执行类型检查与 Vite 构建，输出 `build/web/index.html`（CSS 内嵌）和 `web-assets/` 中的两个 JS：登录入口独立加载，身份检查通过后才加载唯一业务包；其余页面与远程会话不再拆分。构建时自动校验两个 JS 的依赖关系。Pro 组件安装脚本已在 `trustedDependencies` 中允许。若首次安装只得到公开占位包，执行 `bun x heroui-pro install --yes` 后重新构建。Bun 仅用于开发构建，部署时由现有 C++ 网关提供静态文件。
 
 发布时将整个前端输出合并到新版本的静态目录，保留已发布的 `windows-agent.json` 与 MSI；不能直接用空目录替换全部 `assets/`。必须发布 `index.html` 和 `web-assets/` 中的全部 JS，Agent 安装包作为独立下载资源保留。先发布带哈希的新 JS，再切换 HTML，保留旧 JS 供尚未刷新的页面加载业务包。页面通过平台 HTTPS 访问以使用同源登录 Cookie 与 WSS。新版本先保留完整回滚目录再切换并重启网关。页面采用 Hash 路由，刷新和书签不依赖反向代理 SPA 回退配置。
+
+前端统一使用本地托管的 JetBrainsMono Nerd Font Mono，中文回退到系统字体。字体来自 [Nerd Fonts v3.5.1](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1) 的 `JetBrainsMono.tar.xz`（SHA-256：`04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf`），以 FontTools 4.68.0 转为 WOFF2；正常字形和 Nerd 私用区符号按 Unicode 范围分开，避免普通页面下载整套符号。`web/public/fonts/ofl.txt` 保留原始 OFL 许可；发布时一并复制 `fonts/`。
 
 ## 网关配置
 

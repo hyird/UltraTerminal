@@ -86,7 +86,7 @@ function SidebarContents({
                   selectedKeys={[administration ? "console" : "workbench"]}
                   onAction={(key) =>
                     navigate(
-                      key === "console" ? "/console/assets" : "/overview",
+                      key === "console" ? "/console/grants" : "/overview",
                     )
                   }
                 >

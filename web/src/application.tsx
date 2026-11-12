@@ -4,7 +4,7 @@ import { useAuth } from "./store/auth";
 import { DeviceProvider } from "./pages/devices/device_state";
 import { AppShell } from "./layout/app_shell";
 import { OverviewPage } from "./pages/overview";
-import { DevicesPage, AssetsPage } from "./pages/devices";
+import { DevicesPage, DeviceGrantsPage } from "./pages/devices";
 import { AccountsPage } from "./pages/identity/accounts";
 import { SecurityPage } from "./pages/identity";
 import { SettingsPage } from "./pages/identity/telegram";
@@ -38,9 +38,13 @@ export default function Application() {
         <Route path="/workbench/devices" element={<DevicesPage />} />
         <Route path="/workbench/sessions" element={<SessionRoute />} />
         <Route path="/account/security" element={<SecurityPage />} />
+        {/* 已发布书签的迁移入口，前端 0.2.0 发布时移除。 */}
+        <Route
+          path="/console/assets"
+          element={<Navigate to="/workbench/devices" replace />}
+        />
         <Route element={<AdminOnly />}>
-          <Route path="/console/assets" element={<AssetsPage />} />
-          <Route path="/console/grants" element={<AssetsPage grants />} />
+          <Route path="/console/grants" element={<DeviceGrantsPage />} />
           <Route path="/console/users" element={<AccountsPage />} />
           <Route path="/console/settings" element={<SettingsPage />} />
         </Route>

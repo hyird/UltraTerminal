@@ -4,7 +4,6 @@ import { SearchField } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useMemo, useState } from "react";
 import { Button, Chip, Dropdown, Label, toast } from "@heroui/react";
-import { useNavigate } from "react-router";
 import { Page, Empty } from "../../layout/page";
 import {
   Choice,
@@ -21,28 +20,22 @@ import { useDesktops } from "../../store/desktops";
 import { requestApproval } from "../identity/identity.service";
 import { DeviceActionDialog, type DeviceAction } from "./actions";
 import { GrantsDialog } from "./grants";
-import { useDeviceFeed, useDevices } from "./device_state";
+import { useDevices } from "./device_state";
 import type { Device } from "./device.types";
 export function DevicesPage() {
   return <DeviceList feed={useDevices()} mode="personal" />;
 }
-export function AssetsPage({ grants = false }: { grants?: boolean }) {
-  return (
-    <DeviceList
-      feed={useDeviceFeed("administration")}
-      mode={grants ? "grants" : "assets"}
-    />
-  );
+export function DeviceGrantsPage() {
+  return <DeviceList feed={useDevices()} mode="grants" />;
 }
 function DeviceList({
   feed,
   mode,
 }: {
   feed: ReturnType<typeof useDevices>;
-  mode: "personal" | "assets" | "grants";
+  mode: "personal" | "grants";
 }) {
-  const { user } = useAuth();
-  const navigate = useNavigate();
+  const administrator = useAuth().user?.role === "admin";
   const requests = useConnectionRequests();
   const desktops = useDesktops();
   const [search, setSearch] = useState("");
@@ -122,11 +115,7 @@ function DeviceList({
       setBusy(false);
     }
   }
-  const title = personal
-    ? "我的设备"
-    : mode === "grants"
-      ? "设备授权"
-      : "设备清单";
+  const title = personal ? "我的设备" : "设备授权";
   const columns: DataGridColumn<Device>[] = [
     {
       id: "column0",
@@ -140,17 +129,20 @@ function DeviceList({
               <span className="bg-surface-secondary text-muted flex size-8 shrink-0 items-center justify-center rounded-lg">
                 <Icon name="display" />
               </span>
-              <div>
+              <div className="min-w-0">
                 <strong className="block max-w-[26rem] text-sm font-[550] wrap-anywhere">
                   {device.name}
                 </strong>
-                <small className="text-muted mt-0.5 block text-xs">
+                <small className="text-muted mt-0.5 block text-xs wrap-anywhere">
                   Windows · {device.enrolled ? "已接入" : "待安装"}
                   {device.agentVersion
                     ? ` · Agent ${device.agentVersion}`
                     : device.enrolled
                       ? " · Agent 版本未知"
                       : ""}
+                  {device.ownerUsername
+                    ? ` · 所有者：${device.ownerUsername}`
+                    : ""}
                 </small>
               </div>
             </div>
@@ -167,6 +159,7 @@ function DeviceList({
           <>
             <Chip
               size="sm"
+              className="w-max shrink-0 whitespace-nowrap"
               color={device.online ? "success" : "default"}
               variant="soft"
             >
@@ -184,11 +177,11 @@ function DeviceList({
         return (
           <>
             {personal ? (
-              device.desktop && device.writeControl ? (
-                "允许连接"
-              ) : (
-                "设备管理"
-              )
+              <span className="whitespace-nowrap">
+                {device.desktop && device.writeControl
+                  ? "允许连接"
+                  : "设备管理"}
+              </span>
             ) : (
               <span className="break-all">{device.ownerUsername ?? "—"}</span>
             )}
@@ -202,7 +195,7 @@ function DeviceList({
       minWidth: 120,
       cell: (device) => {
         return (
-          <>
+          <span className="whitespace-nowrap">
             {personal
               ? {
                   direct: "直接连接",
@@ -214,7 +207,7 @@ function DeviceList({
                 : device.lastSeen
                   ? localTime(device.lastSeen)
                   : "尚未接入"}
-          </>
+          </span>
         );
       },
     },
@@ -252,7 +245,9 @@ function DeviceList({
                   分配权限
                 </Button>
               ) : (
-                (device.canManage || !personal || device.manageCredentials) && (
+                (device.canManage ||
+                  administrator ||
+                  device.manageCredentials) && (
                   <Dropdown>
                     <Button
                       variant="ghost"
@@ -277,12 +272,12 @@ function DeviceList({
                             setDialog({ action: key, device });
                         }}
                       >
-                        {!personal && (
+                        {administrator && (
                           <Dropdown.Item id="transfer" textValue="修改所有者">
                             <Label>修改所有者</Label>
                           </Dropdown.Item>
                         )}
-                        {(device.canManage || !personal) && (
+                        {(device.canManage || administrator) && (
                           <>
                             <Dropdown.Item id="grants" textValue="分配权限">
                               <Label>分配权限</Label>
@@ -339,13 +334,11 @@ function DeviceList({
       title={title}
       description={
         personal
-          ? "访问分配给你的设备，按授权范围发起远程连接。"
-          : mode === "grants"
-            ? "按设备分配用户与操作权限，设置直接连接或二级验证。"
-            : "管理设备接入、归属与运行状态。远程访问权限单独授予。"
+          ? "添加自己的设备，查看设备状态并按授权发起远程连接。"
+          : "按设备分配用户与操作权限，设置直接连接或二级验证。"
       }
       actions={
-        !personal && mode !== "grants" ? (
+        mode !== "grants" ? (
           <Button size="sm" onPress={() => setDialog({ action: "create" })}>
             <Icon name="plus" className="size-4" />
             添加设备
@@ -416,32 +409,16 @@ function DeviceList({
           />
         ) : (
           <Empty
-            title={
-              search || filter !== "all"
-                ? "没有匹配的设备"
-                : personal
-                  ? "还没有获授权的设备"
-                  : "还没有设备"
-            }
+            title={search || filter !== "all" ? "没有匹配的设备" : "还没有设备"}
             description={
               search || filter !== "all"
                 ? "调整搜索词或设备状态筛选。"
                 : personal
-                  ? "请联系管理员分配设备，获得连接权限后会自动显示在这里。"
+                  ? "添加自己的 Windows 设备并安装 Agent，或由设备所有者为你分配访问权限。"
                   : "添加 Windows 设备并安装 Agent 后，即可向用户分配访问权限。"
             }
-            action={
-              !personal && mode !== "grants"
-                ? "添加设备"
-                : user?.role === "admin" && personal
-                  ? "进入控制台"
-                  : undefined
-            }
-            onAction={() =>
-              personal
-                ? navigate("/console/assets")
-                : setDialog({ action: "create" })
-            }
+            action={mode !== "grants" ? "添加设备" : undefined}
+            onAction={() => setDialog({ action: "create" })}
           />
         )}
         <div className="text-muted flex flex-wrap items-center justify-between gap-4 text-xs">

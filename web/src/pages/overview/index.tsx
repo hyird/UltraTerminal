@@ -13,7 +13,7 @@ export function OverviewPage() {
   const { entries } = useDesktops();
   const navigate = useNavigate();
   const stats = [
-    { label: "我的设备", value: devices.length },
+    { label: "设备总数", value: devices.length },
     { label: "在线设备", value: devices.filter((d) => d.online).length },
     { label: "当前会话", value: entries.length },
     { label: "连接申请", value: approvals.length },
