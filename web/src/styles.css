@@ -148,6 +148,14 @@ textarea {
 .desktop-toolbar .select__value {
   flex: none;
 }
+.select__popover--compact {
+  width: max-content;
+  min-width: min(max(var(--trigger-width), 13.75rem), calc(100svw - 2rem));
+  max-width: calc(100svw - 2rem);
+}
+.select__popover--compact .list-box-item {
+  white-space: nowrap;
+}
 [data-desktop-viewport] canvas[data-control="ready"]:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;

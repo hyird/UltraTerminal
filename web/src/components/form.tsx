@@ -109,7 +109,9 @@ export function Choice({
         <Select.Value />
         {!compact && <Select.Indicator />}
       </Select.Trigger>
-      <Select.Popover className={compact ? "w-(--trigger-width)" : undefined}>
+      <Select.Popover
+        className={compact ? "select__popover--compact" : undefined}
+      >
         <ListBox items={items}>
           {(item) => (
             <ListBox.Item id={item.id} textValue={item.label}>
