@@ -230,6 +230,7 @@ jobs:
           key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-${{ hashFiles('vcpkg.json', 'CMakeLists.txt', 'ports/**') }}
           restore-keys: |
             vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-
+            vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-
       - name: Configure Release
         id: configure
         run: |
