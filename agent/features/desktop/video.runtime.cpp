@@ -183,7 +183,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
-        auto operation = ruvia::run_blocking(self->loop.handle(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt]() mutable {
+        auto operation = ruvia::run_blocking(self->loop.worker(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt]() mutable {
             const auto computeStarted = VideoClock::now();
             initialStages.workerQueue = DesktopVideoStages::microseconds(queuedAt, computeStarted);
             std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged;
@@ -278,7 +278,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             ~Pending() { value = false; }
         } guard{self->pending};
         self->pending = true;
-        auto operation = ruvia::run_blocking(self->loop.handle(), [owned = self->worker, width, height] {
+        auto operation = ruvia::run_blocking(self->loop.worker(), [owned = self->worker, width, height] {
             return owned->resize(width, height);
         });
         const bool applied = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());

@@ -125,7 +125,7 @@ struct WindowsLoginBroker::State : std::enable_shared_from_this<State> {
                 }
                 ProtectedRecord record;
                 {
-                    auto preparation = ruvia::run_blocking(self->loop.handle(), [path = self->credentialFile, scenario] {
+                    auto preparation = ruvia::run_blocking(self->loop.worker(), [path = self->credentialFile, scenario] {
                         return prepareSavedWindowsLogon(path, scenario);
                     });
                     auto prepared = (co_await ruvia::as_awaitable(std::move(preparation))).take_value();

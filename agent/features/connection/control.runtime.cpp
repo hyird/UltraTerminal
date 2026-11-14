@@ -216,7 +216,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         while (!ended) {
             // The durable update result is a recovery record, not a local log.
             try {
-                const auto result = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop.handle(), [root = desktopExecutable.parent_path()] { return takeAgentUpdateResult(root); }))).take_value());
+                const auto result = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop.worker(), [root = desktopExecutable.parent_path()] { return takeAgentUpdateResult(root); }))).take_value());
                 if (result) {
                     updating = false;
                     log(*result == 0 || *result == 3010 ? wire::AgentLog::UPDATE_COMPLETED : wire::AgentLog::UPDATE_FAILED, {}, *result);
@@ -269,7 +269,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     if (!updating) {
                         bool launched = false;
                         try {
-                            launched = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop.handle(), [path = desktopExecutable, update = message->agent_update()] { return launchAgentUpdate(path, update); }))).take_value());
+                            launched = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop.worker(), [path = desktopExecutable, update = message->agent_update()] { return launchAgentUpdate(path, update); }))).take_value());
                         } catch (const std::exception&) {
                         }
                         updating = launched;
@@ -281,7 +281,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     }
                     logPending = false;
                 } else if (message->has_windows_login_request()) {
-                    auto operation = ruvia::run_blocking(loop.handle(),
+                    auto operation = ruvia::run_blocking(loop.worker(),
                                                          [path = config.credentialFile.parent_path() / "windows_login.credential", request = std::move(*message->mutable_windows_login_request())]() mutable {
                                                              return windowsLoginSettings(path, std::move(request));
                                                          });
@@ -295,7 +295,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     if (!message->session_id().empty() || !message->channel_id().empty()) {
                         throw std::runtime_error("Restart request is not permitted on a session channel");
                     }
-                    auto operation = ruvia::run_blocking(loop.handle(),
+                    auto operation = ruvia::run_blocking(loop.worker(),
                                                          [deviceId = config.deviceId,
                                                           request = std::move(*message->mutable_windows_restart_request())]() mutable {
                                                              const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
@@ -476,7 +476,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         }
     }
     asio::awaitable<void> watchStop() {
-        auto worker = loop.handle();
+        auto worker = loop.worker();
         while (!stopSource.stop_requested()) {
             (void)co_await ruvia::as_awaitable(waitForStop(worker));
         }

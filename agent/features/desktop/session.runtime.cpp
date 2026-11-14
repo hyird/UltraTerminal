@@ -234,7 +234,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                 bridgeFailure = {};
                 const char* stage = "worker_launch";
                 try {
-                    auto launch = ruvia::run_blocking(loop.handle(),
+                    auto launch = ruvia::run_blocking(loop.worker(),
                                                       [executor = loop.executor(), selected = binding.session(), path = executable] {
                                                           DesktopIdentity user(selected);
                                                           Resources resources;

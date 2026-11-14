@@ -237,7 +237,7 @@ int main() {
     try {
         ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
-        auto task = pool.loop(0).start(exercise(pool.loop(0).handle()));
+        auto task = pool.loop(0).start(exercise(pool.loop(0).worker()));
         task.get();
         pool.join();
         std::cout << "Control readiness, queue count/bytes, FIFO sequencing, cancellation and close passed\n";

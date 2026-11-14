@@ -18,7 +18,7 @@ struct DesktopWorkerChannel::State {
     DesktopRelay::State& relay;
     DesktopSendQueue input;
     bool cancelled = false;
-    State(DesktopRelay::State& owner, ruvia::event_loop worker) : relay(owner), input(worker.handle(), 64, 2 * 1024 * 1024) {}
+    State(DesktopRelay::State& owner, ruvia::event_loop worker) : relay(owner), input(worker.worker(), 64, 2 * 1024 * 1024) {}
 };
 struct DesktopRelay::State {
     ruvia::event_loop loop;
@@ -32,7 +32,7 @@ struct DesktopRelay::State {
     wire::Envelope terminal;
     bool stopped = false;
     State(ruvia::event_loop owner, DesktopTransport& remote)
-        : loop(owner), transport(remote), control(owner.handle(), 32, 2 * 1024 * 1024), video(owner.handle(), 2, 32 * 1024 * 1024) {}
+        : loop(owner), transport(remote), control(owner.worker(), 32, 2 * 1024 * 1024), video(owner.worker(), 2, 32 * 1024 * 1024) {}
     void detach() {
         if (worker) {
             worker->cancel();

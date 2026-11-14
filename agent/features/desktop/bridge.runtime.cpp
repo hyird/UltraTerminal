@@ -130,7 +130,7 @@ class Bridge {
                     std::uint32_t error = 1237; // ERROR_RETRY
                     if (now >= nextSecureAttention_) {
                         nextSecureAttention_ = now + std::chrono::seconds(2);
-                        error = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop_.handle(), [session = windowsSession_] {
+                        error = ((co_await ruvia::as_awaitable(ruvia::run_blocking(loop_.worker(), [session = windowsSession_] {
                                      try {
                                          return DesktopIdentity(session).sendSecureAttention();
                                      } catch (const std::system_error& failure) {

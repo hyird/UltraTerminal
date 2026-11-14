@@ -119,7 +119,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
     bool stopped = false;
 
     NativePeer(ruvia::event_loop owner, std::unique_ptr<NativeStream> transport, std::shared_ptr<std::atomic<std::size_t>> receiveBudget)
-        : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner.handle())), budget(std::move(receiveBudget)) {}
+        : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner.worker())), budget(std::move(receiveBudget)) {}
     void bind() {
         channel->abortNetwork = [weak = weak_from_this(), owner = loop] {
             (void)owner.post([weak] {
