@@ -11,9 +11,7 @@
 #include <vector>
 
 #include <ruvia/core/event_loop.h>
-#include <ruvia/core/event_loop_pool.h>
 #include <ruvia/core/task_scope.h>
-#include <ruvia/core/timer.h>
 
 #include "features/desktop/desktop.runtime.h"
 #include "features/desktop/desktop_exchange.runtime.h"
@@ -43,7 +41,7 @@ ruvia::task<void> awaitClose(server::DesktopEndpoint& endpoint, bool& finished) 
     require(!(co_await endpoint.receive({})));
     finished = true;
 }
-ruvia::task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, ruvia::worker_handle caller, bool& finished) {
+ruvia::task<void> forwardBurst(server::DesktopSession& session, std::shared_ptr<server::DesktopEndpoint> sender, ruvia::worker_ref caller, bool& finished) {
     for (std::uint64_t sequence = 10; sequence <= 100; ++sequence) {
         require(caller.is_current());
         require(co_await session.forward(sender, refresh(sequence)));
@@ -157,7 +155,7 @@ wire::DesktopStageTiming workerStages() {
     return timing;
 }
 struct TestDesktopWriter {
-    ruvia::worker_handle worker;
+    ruvia::worker_ref worker;
     std::vector<wire::Envelope> messages;
     bool aborted = false;
     ruvia::task<void> binary(std::string_view bytes) {
@@ -170,7 +168,7 @@ struct TestDesktopWriter {
     }
     void abort() { aborted = true; }
 };
-ruvia::task<void> exerciseWriters(ruvia::worker_handle worker) {
+ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     auto owner = std::make_shared<server::DesktopSession>(worker, budget);
     auto& session = *owner;
@@ -288,7 +286,7 @@ ruvia::task<void> exerciseWriters(ruvia::worker_handle worker) {
         }
     }
 }
-ruvia::task<void> exerciseDynamicStagePresence(ruvia::worker_handle worker) {
+ruvia::task<void> exerciseDynamicStagePresence(ruvia::worker_ref worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     for (int presence = 0; presence < 6; ++presence) {
         server::DesktopSession session(worker, budget);
@@ -331,7 +329,7 @@ ruvia::task<void> exerciseDynamicStagePresence(ruvia::worker_handle worker) {
         require(stages[0].summary().meanMicroseconds == 0 && budget->used == 0);
     }
 }
-ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_handle worker) {
+ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_ref worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     for (const auto status : {wire::DesktopRefinementAck::APPLIED, wire::DesktopRefinementAck::SUPERSEDED}) {
         for (const auto contract : {2u, 0u, 3u}) {
@@ -467,7 +465,7 @@ ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_handle worker) {
         require(session.diagnostics().feedbackMessages == 0 && budget->used == 0);
     }
 }
-ruvia::task<void> exerciseOptimization(ruvia::worker_handle worker) {
+ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     {
         server::DesktopSession session(worker, budget);
@@ -700,7 +698,7 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_handle worker) {
     }
     require(budget->used == 0);
 }
-ruvia::task<void> exercise(ruvia::worker_handle worker) {
+ruvia::task<void> exercise(ruvia::worker_ref worker) {
     {
         auto continuousBudget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
         server::DesktopSession session(worker, continuousBudget);

@@ -1,8 +1,8 @@
 #include <iostream>
 #include <stdexcept>
 
+#include <ruvia/web/app.h>
 #include <ruvia/web/controller.h>
-#include <ruvia/web/testing.h>
 
 #include "middleware/json.transport.h"
 

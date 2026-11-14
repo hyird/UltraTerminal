@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include <ruvia/core/async.h>
+#include <ruvia/core/event_loop.h>
 #include <sddl.h>
 
 #include "login_peer.transport.h"

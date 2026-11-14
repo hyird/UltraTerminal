@@ -42,7 +42,7 @@ jobs:
           read -r sha256 _ <<< "$checksum"
           [[ "$sha256" =~ ^[[:xdigit:]]{64}$ ]]
           vcpkg_commit="$(jq -er '."builtin-baseline"' vcpkg.json)"
-          ruvia_commit="$(sed -nE 's|^    URL https://github.com/hyird/Ruvia/archive/([0-9a-f]{40})\.tar\.gz$|\1|p' CMakeLists.txt)"
+          ruvia_commit="$(sed -nE 's/^    GIT_TAG ([0-9a-f]{40})\)/\1/p' CMakeLists.txt)"
           [[ "$vcpkg_commit" =~ ^[0-9a-f]{40}$ ]]
           [[ "$ruvia_commit" =~ ^[0-9a-f]{40}$ ]]
           printf 'release=%s\nsha256=%s\nvcpkg_commit=%s\nruvia_commit=%s\n' \

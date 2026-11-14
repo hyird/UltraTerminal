@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include <ruvia/web/web_worker.h>
+#include <ruvia/web/middleware.h>
 
 #include "config/server.config.h"
 
@@ -13,7 +13,7 @@ class NativeServer {
     ~NativeServer();
     NativeServer(const NativeServer&) = delete;
     NativeServer& operator=(const NativeServer&) = delete;
-    void start(ruvia::web_worker_handle businessWorker);
+    void start(ruvia::web_worker_ref businessWorker);
     void stop();
 
   private:

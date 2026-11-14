@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/channel.h>
 #include <ruvia/core/task.h>
+#include <ruvia/core/worker_wait.h>
 
 #include "ultraterimal/protocol/message.protocol.h"
 
@@ -37,7 +37,7 @@ class DesktopSendQueue {
         DesktopSendQueue* owner_;
         std::size_t bytes_;
     };
-    DesktopSendQueue(ruvia::worker_handle worker, std::size_t capacity, std::size_t maximumBytes)
+    DesktopSendQueue(ruvia::worker_ref worker, std::size_t capacity, std::size_t maximumBytes)
         : queue_(ruvia::make_channel<Entry>(worker, {.capacity_ = capacity})),
           space_(ruvia::make_channel<bool>(std::move(worker), {.capacity_ = 1})), capacity_(capacity), maximumBytes_(maximumBytes) {}
     // Best effort diagnostics never suspend a video writer for control space.

@@ -11,8 +11,8 @@
 #include <system_error>
 #include <utility>
 
-#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "optimization.runtime.h"
 #include "platform/windows/desktop_failure.error.h"

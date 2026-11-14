@@ -3,9 +3,8 @@
 #include <iostream>
 #include <stdexcept>
 
-#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/event_loop.h>
 #include <ruvia/core/task_scope.h>
-#include <ruvia/core/timer.h>
 
 #include "features/control/control.runtime.h"
 
@@ -30,7 +29,7 @@ ruvia::task<void> replyLogin(ultraterimal::server::ControlConnection& connection
         }
     }
 }
-ruvia::task<void> replyRestartLate(ultraterimal::server::ControlConnection& connection, ruvia::worker_handle worker, bool& accepted) {
+ruvia::task<void> replyRestartLate(ultraterimal::server::ControlConnection& connection, ruvia::worker_ref worker, bool& accepted) {
     auto bytes = co_await connection.receive({});
     if (!bytes) {
         throw std::runtime_error("Missing restart request for timeout test");
@@ -54,7 +53,7 @@ void require(bool value) {
         throw std::runtime_error("Control queue invariant failed");
     }
 }
-ruvia::task<void> exercise(ruvia::worker_handle worker) {
+ruvia::task<void> exercise(ruvia::worker_ref worker) {
     using namespace ultraterimal;
     server::ControlConnection connection(worker);
     wire::Envelope heartbeat;

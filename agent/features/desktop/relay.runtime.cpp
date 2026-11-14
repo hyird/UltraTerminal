@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/async.h>
+#include <ruvia/core/event_loop.h>
 
 #include "continuity.protocol.h"
 #include "desktop.transport.h"

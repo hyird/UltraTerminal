@@ -3,9 +3,8 @@
 #include <iostream>
 #include <stdexcept>
 
-#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/event_loop.h>
 #include <ruvia/core/task_scope.h>
-#include <ruvia/core/timer.h>
 
 #include "features/desktop/optimization.runtime.h"
 #include "features/desktop/pipeline.runtime.h"
@@ -23,7 +22,7 @@ ruvia::task<void> enqueue(DesktopSendQueue& queue, Envelope message, bool& compl
     accepted = co_await queue.send(std::move(message), false, optimizationContract);
     completed = true;
 }
-ruvia::task<void> exercise(ruvia::worker_handle worker) {
+ruvia::task<void> exercise(ruvia::worker_ref worker) {
     DesktopSendQueue video(worker, 1, 1024), control(worker, 4, 1024);
     Envelope frame;
     frame.set_sequence(1);

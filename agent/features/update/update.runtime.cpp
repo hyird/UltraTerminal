@@ -9,7 +9,6 @@
 #include <stdexcept>
 
 #include <openssl/evp.h>
-#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
 #include <ruvia/core/event_loop.h>
 

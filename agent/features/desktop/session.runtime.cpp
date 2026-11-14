@@ -10,8 +10,8 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "bridge.runtime.h"
 #include "desktop.transport.h"

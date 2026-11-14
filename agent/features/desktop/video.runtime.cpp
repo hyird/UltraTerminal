@@ -11,8 +11,8 @@
 #include <tuple>
 #include <utility>
 
-#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
+#include <ruvia/core/event_loop.h>
 
 #include "frame_flow.runtime.h"
 #include "platform/windows/deadline_timer.transport.h"

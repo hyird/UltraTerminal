@@ -7,8 +7,7 @@
 
 #include <boost/json.hpp>
 #include <ruvia/core/task_scope.h>
-#include <ruvia/core/timer.h>
-#include <ruvia/web/websocket.h>
+#include <ruvia/web/streaming.h>
 
 namespace ultraterimal::server {
 namespace {

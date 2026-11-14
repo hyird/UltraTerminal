@@ -101,7 +101,7 @@ DesktopDelivery::~DesktopDelivery() {
         global_->used -= bytes_.size();
     }
 }
-DesktopEndpoint::DesktopEndpoint(ruvia::worker_handle worker, protocol::DesktopChannelBinding binding)
+DesktopEndpoint::DesktopEndpoint(ruvia::worker_ref worker, protocol::DesktopChannelBinding binding)
     : validator_(binding), queue_(ruvia::make_channel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity_ = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
       space_(ruvia::make_channel<bool>(std::move(worker), {.capacity_ = 1})) {}
 ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::stop_token stop) {
@@ -128,7 +128,7 @@ void DesktopEndpoint::close() {
     queue_.first.close();
     space_.first.close();
 }
-DesktopSession::DesktopSession(ruvia::worker_handle worker, std::shared_ptr<DesktopBudget> global)
+DesktopSession::DesktopSession(ruvia::worker_ref worker, std::shared_ptr<DesktopBudget> global)
     : worker_(std::move(worker)), global_(std::move(global)) {
     if (!global_) {
         throw std::invalid_argument("Desktop session requires a Worker budget");

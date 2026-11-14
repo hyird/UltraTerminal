@@ -15,9 +15,9 @@
 #include <stdexcept>
 #include <utility>
 
-#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/timer.h>
+#include <ruvia/core/event_loop.h>
+#include <ruvia/core/task_scope.h>
 
 #include "config/version.config.h"
 #include "connection.transport.h"
@@ -189,7 +189,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         outbound.push_back(std::move(bytes));
         writeReady.cancel();
     }
-    ruvia::task<void> waitForStop(const ruvia::worker_handle& worker) {
+    ruvia::task<void> waitForStop(const ruvia::worker_ref& worker) {
         (void)co_await ruvia::sleep_for(worker, std::chrono::hours(24), stopSource.token());
     }
     asio::awaitable<void> writeLoop() {

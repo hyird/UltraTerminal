@@ -6,7 +6,6 @@
 
 #include <ruvia/core/task.h>
 #include <ruvia/core/task_scope.h>
-#include <ruvia/core/timer.h>
 #include <spdlog/spdlog.h>
 
 #include "config/server.runtime.h"

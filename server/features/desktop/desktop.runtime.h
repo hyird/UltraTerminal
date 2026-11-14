@@ -9,8 +9,8 @@
 #include <string_view>
 #include <utility>
 
-#include <ruvia/core/channel.h>
 #include <ruvia/core/task.h>
+#include <ruvia/core/worker_wait.h>
 
 #include "desktop_diagnostics.types.h"
 #include "modules/sessions/session.types.h"
@@ -77,7 +77,7 @@ class DesktopEndpoint {
 
   private:
     friend class DesktopSession;
-    DesktopEndpoint(ruvia::worker_handle worker, protocol::DesktopChannelBinding binding);
+    DesktopEndpoint(ruvia::worker_ref worker, protocol::DesktopChannelBinding binding);
     void close();
     bool closed_ = false;
     bool waiting_ = false;
@@ -87,7 +87,7 @@ class DesktopEndpoint {
 };
 class DesktopSession {
   public:
-    DesktopSession(ruvia::worker_handle worker, std::shared_ptr<DesktopBudget> global);
+    DesktopSession(ruvia::worker_ref worker, std::shared_ptr<DesktopBudget> global);
     ~DesktopSession();
     DesktopSession(const DesktopSession&) = delete;
     DesktopSession& operator=(const DesktopSession&) = delete;
@@ -128,7 +128,7 @@ class DesktopSession {
     std::uint32_t browserOptimizationRequest_ = 0, agentOptimizationCapability_ = 0;
     bool optimizationActive_ = false;
     DesktopFrameKey cumulativeVideoStages_{};
-    ruvia::worker_handle worker_;
+    ruvia::worker_ref worker_;
     std::shared_ptr<DesktopBudget> global_;
     std::shared_ptr<DesktopBudget> local_ = std::make_shared<DesktopBudget>(32 * 1024 * 1024);
     std::array<std::shared_ptr<DesktopEndpoint>, 4> endpoints_;

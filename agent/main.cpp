@@ -7,7 +7,6 @@
 #include <string_view>
 #include <vector>
 
-#include <ruvia/core/async.h>
 #include <ruvia/core/blocking_pool.h>
 #include <ruvia/core/event_loop.h>
 

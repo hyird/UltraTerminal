@@ -14,8 +14,7 @@
 #include <map>
 #include <type_traits>
 
-#include <ruvia/core/async.h>
-#include <ruvia/core/event_loop_pool.h>
+#include <ruvia/core/event_loop.h>
 #include <spdlog/spdlog.h>
 
 #include "config/server.runtime.h"
@@ -38,7 +37,7 @@ class NativeContext {
   public:
     NativeContext(ruvia::web_worker_context& context, DeviceIdentity device, std::shared_ptr<NativeChannel> channel)
         : context_(context), device_(std::move(device)), channel_(std::move(channel)) {}
-    const ruvia::worker_handle& worker() const { return context_.worker(); }
+    const ruvia::worker_ref& worker() const { return context_.worker(); }
     template <typename T>
     T& worker_state() { return context_.worker_state<T>(); }
     template <typename Fn>
@@ -221,7 +220,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
         }
         stop();
     }
-    static asio::awaitable<void> run(std::shared_ptr<NativePeer> self, ruvia::web_worker_handle businessWorker) {
+    static asio::awaitable<void> run(std::shared_ptr<NativePeer> self, ruvia::web_worker_ref businessWorker) {
         bool handshaken = false;
         try {
             self->bind();
@@ -259,7 +258,7 @@ struct NativeServer::State : std::enable_shared_from_this<State> {
     std::shared_ptr<std::atomic<std::size_t>> budget = std::make_shared<std::atomic<std::size_t>>(0);
     std::map<std::uint64_t, std::shared_ptr<NativePeer>> peers;
     ruvia::event_loop_stop_registration stopping;
-    ruvia::web_worker_handle business;
+    ruvia::web_worker_ref business;
     std::string alpn;
     std::uint64_t sequence = 0;
     asio::steady_timer peersDone{loop.executor()};
@@ -340,7 +339,7 @@ NativeServer::NativeServer(const ServerConfig& config) : state_(std::make_shared
     });
 }
 NativeServer::~NativeServer() { stop(); }
-void NativeServer::start(ruvia::web_worker_handle businessWorker) {
+void NativeServer::start(ruvia::web_worker_ref businessWorker) {
     state_->business = std::move(businessWorker);
     state_->stopping = state_->loop.on_stop([weak = std::weak_ptr<State>(state_)]() -> ruvia::task<void> {
         if (const auto state = weak.lock()) {

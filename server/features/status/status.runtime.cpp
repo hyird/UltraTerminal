@@ -4,7 +4,7 @@
 #include <utility>
 
 namespace ultraterimal::server {
-StatusSubscription::StatusSubscription(ruvia::worker_handle worker, std::string user)
+StatusSubscription::StatusSubscription(ruvia::worker_ref worker, std::string user)
     : userId(std::move(user)), queue_(ruvia::make_channel<std::string>(std::move(worker), {.capacity_ = 64})) {}
 bool StatusSubscription::enqueue(std::string event) {
     if (closed_ || event.empty() || event.size() > 130) {
@@ -38,7 +38,7 @@ void StatusSubscription::close() {
     queue_.first.close();
     pending_.clear();
 }
-std::shared_ptr<StatusSubscription> StatusHub::subscribe(ruvia::worker_handle worker, const std::string& user) {
+std::shared_ptr<StatusSubscription> StatusHub::subscribe(ruvia::worker_ref worker, const std::string& user) {
     std::erase_if(subscribers_, [](const auto& weak) { const auto entry = weak.lock(); return !entry || entry->closed(); });
     if (subscribers_.size() >= 128 || std::count_if(subscribers_.begin(), subscribers_.end(), [&](const auto& weak) { const auto entry = weak.lock(); return entry && entry->userId == user; }) >= 4) {
         return {};
