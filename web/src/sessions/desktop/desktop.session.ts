@@ -129,7 +129,9 @@ export class DesktopSession {
   ) {
     const context = canvas.getContext("2d", {
       alpha: false,
-      desynchronized: true,
+      // Keep whole-frame presentation in the compositor's normal paint cycle.
+      // A desynchronized canvas can tear across scrolling desktop content.
+      desynchronized: false,
     });
     const cursorContext = overlay.getContext("2d");
     if (!context || !cursorContext || !globalThis.VideoDecoder)
