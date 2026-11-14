@@ -105,7 +105,7 @@ DesktopEndpoint::DesktopEndpoint(ruvia::worker_ref worker, protocol::DesktopChan
     : validator_(binding), queue_(ruvia::make_channel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity_ = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
       space_(ruvia::make_channel<bool>(std::move(worker), {.capacity_ = 1})) {}
 ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::stop_token stop) {
-    auto result = co_await queue_.second.receive(std::move(stop));
+    auto result = co_await queue_.second.receive({.stop_token_ = std::move(stop)});
     if (!result.has_value()) {
         co_return nullptr;
     }
@@ -422,7 +422,7 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
         ++diagnostics_.backpressureEvents;
         const auto waitStarted = std::chrono::steady_clock::now();
         target->waiting_ = true;
-        const auto available = co_await target->space_.second.receive(stop);
+        const auto available = co_await target->space_.second.receive({.stop_token_ = stop});
         target->waiting_ = false;
         diagnostics_.backpressureMilliseconds += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waitStarted).count();
         if (!available.has_value()) {

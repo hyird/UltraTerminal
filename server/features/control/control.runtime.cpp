@@ -23,7 +23,7 @@ ruvia::task<std::optional<wire::WindowsLoginResult>> ControlConnection::windowsL
     if (!enqueue(std::move(envelope))) {
         co_return std::nullopt;
     }
-    auto result = co_await receiver.wait_for(std::chrono::seconds(5));
+    auto result = co_await receiver.wait({.timeout_ = std::chrono::seconds(5)});
     if (!result.has_value()) {
         co_return std::nullopt;
     }
@@ -89,7 +89,7 @@ bool ControlConnection::enqueue(wire::Envelope message) {
     return true;
 }
 ruvia::task<std::optional<std::string>> ControlConnection::receive(ruvia::stop_token stop) {
-    auto result = co_await queue_.second.receive(std::move(stop));
+    auto result = co_await queue_.second.receive({.stop_token_ = std::move(stop)});
     if (!result.has_value()) {
         co_return std::nullopt;
     }

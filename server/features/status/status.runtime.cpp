@@ -25,7 +25,7 @@ bool StatusSubscription::enqueue(std::string event) {
     return true;
 }
 ruvia::task<std::optional<std::string>> StatusSubscription::receive(ruvia::stop_token stop) {
-    auto result = co_await queue_.second.receive(std::move(stop));
+    auto result = co_await queue_.second.receive({.stop_token_ = std::move(stop)});
     if (!result.has_value() || closed_) {
         co_return std::nullopt;
     }
