@@ -19,7 +19,7 @@
   unicode-range: U+0000-D7FF, U+F900-FFFF, U+10000-EFFFF;
 }
 @font-face {
-  font-family: "JetBrainsMono Nerd Font Mono";
+  font-family: "JetBrainsMono Nerd Symbols";
   src: url("/fonts/jetbrains_mono_nerd_symbols.woff2") format("woff2");
   font-style: normal;
   font-weight: 400 700;
@@ -37,8 +37,9 @@
 }
 @theme {
   --font-sans:
-    "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Fallback",
-    "Cascadia Mono", Consolas, "Microsoft YaHei", "PingFang SC", monospace;
+    "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Symbols",
+    "JetBrainsMono Nerd Fallback", "Cascadia Mono", Consolas, "Microsoft YaHei",
+    "PingFang SC", monospace;
   --font-mono: var(--font-sans);
 }
 :root {
