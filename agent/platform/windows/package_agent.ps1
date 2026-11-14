@@ -59,7 +59,7 @@ foreach ($directory in Get-ChildItem (Join-Path $DependencyRoot 'share') -Direct
     }
 }
 [IO.File]::WriteAllText((Join-Path $payload 'third_party_notices.txt'), $notices.ToString(), (New-Object System.Text.UTF8Encoding($false)))
-if (-not ($sourceResources | Where-Object { $_.package -eq 'x264' -and $_.resources })) { throw 'x264 source metadata missing' }
+if (-not ($sourceResources | Where-Object { $_.package -eq 'openh264' -and $_.resources })) { throw 'OpenH264 source metadata missing' }
 $sourceMetadata = @{ project_commit=$commit; ruvia_commit=$ruvia; vcpkg_baseline=$baseline; agent_sha256=(Get-FileHash $AgentExe -Algorithm SHA256).Hash.ToLowerInvariant(); dependencies=$sourceResources } | ConvertTo-Json -Depth 12
 $sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject source and build instructions: $sourceUrl`nProject download: https://github.com/hyird/UltraTerminal/archive/$commit.tar.gz`nRuvia source location and exact revision: $sourceUrl/CMakeLists.txt`nDependency recipes: https://github.com/microsoft/vcpkg/tree/$baseline`nDependency source locations and checksums (SPDX):`n$sourceMetadata`n"
 [IO.File]::WriteAllText((Join-Path $payload 'source_info.txt'), $sourceNotice, (New-Object System.Text.UTF8Encoding($false)))

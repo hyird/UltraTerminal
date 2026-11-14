@@ -5,7 +5,8 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
-#include <x264.h>
+
+#include <wels/codec_api.h>
 
 #include "avc.protocol.h"
 #include "ultraterimal/protocol/message.protocol.h"
@@ -13,30 +14,37 @@
 
 namespace ultraterimal::agent {
 namespace {
-int codecBitrate(std::uint32_t bitrate, std::uint32_t nominalFps, std::uint32_t captureFps) {
-    // x264 cannot reconfigure FPS; VFR introduces one-frame lookahead. Keep
-    // its initial CFR clock and scale the per-frame budget instead. Units are
-    // integer kbit/s with x264's supported limits; transport pacing is separate.
-    return static_cast<int>(std::clamp<std::uint64_t>(static_cast<std::uint64_t>(bitrate) * nominalFps / captureFps / 1000, 1, 2000000));
+std::uint32_t codecBitrate(std::uint32_t bitrate, std::uint32_t framesPerSecond) {
+    // OpenH264 caps its rate-control clock at 60 Hz. Preserve the requested
+    // per-picture budget for callers above that cadence without buffering.
+    bitrate = static_cast<std::uint32_t>(static_cast<std::uint64_t>(bitrate) * std::min(framesPerSecond, 60u) / framesPerSecond);
+    // OpenH264 redistributes SPATIAL_LAYER_ALL through float even with
+    // one layer. An unrepresentable integer can round UP past its exact layer
+    // ceiling, causing SetOption(BITRATE) to fail after mutating codec state.
+    // Multiples of 8 are exactly representable throughout our <=100 Mbps range.
+    // Normalize target and ceilings together, down by at most 7 bits/second.
+    return bitrate - bitrate % 8;
 }
-int codecBufferSize(int bitrate, std::uint32_t nominalFps) {
-    // One codec picture of credit prevents an idle desktop from saving a
-    // second of bitrate for the next window movement/closing transition.
-    return std::max(1, (bitrate + static_cast<int>(nominalFps) - 1) / static_cast<int>(nominalFps));
+void requireCodec(int result, const char* operation) {
+    if (result != cmResultSuccess) {
+        throw std::runtime_error(operation);
+    }
 }
 } // namespace
 struct SoftwareVideoEncoder::State {
-    x264_t* encoder = nullptr;
+    ISVCEncoder* encoder = nullptr;
+    bool initialized = false;
     bool refreshRequired = true;
     VideoEncoderConfig config;
-    std::uint32_t nominalFps = 0;
-    std::uint64_t nextPicture = 0;
     std::vector<std::uint8_t> i420;
     std::optional<std::uint64_t> lastTimestamp;
     std::string codec;
     ~State() {
         if (encoder) {
-            x264_encoder_close(encoder);
+            if (initialized) {
+                encoder->Uninitialize();
+            }
+            WelsDestroySVCEncoder(encoder);
         }
     }
 };
@@ -47,76 +55,80 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
         config.bitrate < 64000 || config.bitrate > 100000000 || !config.framesPerSecond || config.framesPerSecond > 120) {
         throw std::invalid_argument("Invalid software video configuration");
     }
+    const auto bitrate = codecBitrate(config.bitrate, config.framesPerSecond);
     state_->config = config;
-    state_->nominalFps = config.framesPerSecond;
     state_->i420.resize(static_cast<std::size_t>(pixels * 3 / 2));
-    x264_param_t parameters{};
-    if (x264_param_default_preset(&parameters, "superfast", "zerolatency,psnr") < 0) {
-        throw std::runtime_error("Cannot configure x264 preset");
-    }
-    parameters.i_width = static_cast<int>(config.width);
-    parameters.i_height = static_cast<int>(config.height);
-    parameters.i_csp = X264_CSP_I420;
-    parameters.i_bitdepth = 8;
-    // Slice threading has no frame queue. Leave CPU capacity for capture/input.
+    requireCodec(WelsCreateSVCEncoder(&state_->encoder), "Cannot create OpenH264 encoder");
+    int traceLevel = WELS_LOG_QUIET;
+    requireCodec(state_->encoder->SetOption(ENCODER_OPTION_TRACE_LEVEL, &traceLevel), "Cannot configure encoder logging");
+    SEncParamExt parameters{};
+    requireCodec(state_->encoder->GetDefaultParams(&parameters), "Cannot obtain encoder defaults");
+    parameters.iMinQp = config.sharp ? 10 : config.bitrate >= 15000000 ? 10
+                                        : config.bitrate >= 6000000    ? 14
+                                                                       : 18;
+    parameters.iMaxQp = config.sharp ? 18 : 42;
+    parameters.iUsageType = SCREEN_CONTENT_REAL_TIME;
+    parameters.iPicWidth = static_cast<int>(config.width);
+    parameters.iPicHeight = static_cast<int>(config.height);
+    parameters.iTargetBitrate = static_cast<int>(bitrate);
+    parameters.iMaxBitrate = static_cast<int>(bitrate);
+    parameters.iRCMode = RC_BITRATE_MODE;
+    parameters.fMaxFrameRate = static_cast<float>(std::min(config.framesPerSecond, 60u));
+    parameters.iTemporalLayerNum = 1;
+    parameters.iSpatialLayerNum = 1;
+    parameters.iComplexityMode = LOW_COMPLEXITY;
+    parameters.uiIntraPeriod = 0; // Reliable delivery; refresh and baseline changes force IDR.
+    parameters.iNumRefFrame = 1;
+    parameters.eSpsPpsIdStrategy = CONSTANT_ID;
+    parameters.bPrefixNalAddingCtrl = false;
+    parameters.bEnableSSEI = false;
+    parameters.bEnableFrameSkip = false;
+    parameters.bEnableLongTermReference = false;
+    // Bound codec parallelism so capture, input and networking retain CPU time.
+    // Small frames do not amortize the cost of slice worker synchronization.
+    // Two slices keep 1080p resource use bounded; larger frames can use four.
     const auto maximumThreads = pixels <= 1920 * 1080 ? 2u : 4u;
     const auto threads = pixels >= 1280 * 720 ? std::clamp(std::thread::hardware_concurrency() / 2, 1u, maximumThreads) : 1u;
-    parameters.i_threads = static_cast<int>(threads);
-    parameters.b_sliced_threads = 1;
-    parameters.i_slice_count = static_cast<int>(threads);
-    parameters.i_frame_reference = 1;
-    // Reliable ordered transport preserves references. Periodic IDRs can be
-    // much larger than the ACK byte window and interrupt an otherwise steady
-    // cadence; baseline changes and explicit recovery still force an IDR.
-    parameters.i_keyint_max = X264_KEYINT_MAX_INFINITE;
-    parameters.i_scenecut_threshold = 0;
-    parameters.i_bframe = 0;
-    parameters.i_fps_num = config.framesPerSecond;
-    parameters.i_fps_den = 1;
-    parameters.i_timebase_num = 1;
-    parameters.i_timebase_den = config.framesPerSecond;
-    // VFR adds one buffered frame even with zerolatency. Use a private CFR
-    // sequence; the wire frame keeps the original capture timestamp.
-    parameters.b_vfr_input = 0;
-    parameters.b_annexb = 1;
-    parameters.b_repeat_headers = 1;
-    parameters.i_log_level = X264_LOG_NONE;
-    parameters.rc.i_rc_method = X264_RC_ABR;
-    parameters.rc.i_bitrate = codecBitrate(config.bitrate, state_->nominalFps, config.framesPerSecond);
-    parameters.rc.i_vbv_max_bitrate = parameters.rc.i_bitrate;
-    parameters.rc.i_vbv_buffer_size = codecBufferSize(parameters.rc.i_bitrate, state_->nominalFps);
-    parameters.rc.f_vbv_buffer_init = 1.0f;
-    parameters.rc.i_qp_min = config.sharp ? 10 : 0;
-    parameters.rc.i_qp_max = config.sharp ? 18 : 51;
-    // Sharp mode may exceed VBV when the quality floor cannot fit the budget;
-    // the existing bounded frame/ACK pacing remains authoritative for transport.
-    parameters.vui.i_vidformat = 5;
-    parameters.vui.b_fullrange = 0;
-    parameters.vui.i_colorprim = 1; // BT.709 primaries.
-    parameters.vui.i_transfer = 13; // IEC 61966-2-1 transfer.
-    parameters.vui.i_colmatrix = 6; // SMPTE 170M / BT.601 limited-range matrix.
-    parameters.vui.i_sar_width = 1;
-    parameters.vui.i_sar_height = 1;
-    if (x264_param_apply_profile(&parameters, "baseline") < 0) {
-        throw std::runtime_error("Cannot configure x264 Baseline profile");
-    }
-    state_->encoder = x264_encoder_open(&parameters);
-    if (!state_->encoder) {
-        throw std::runtime_error("Cannot initialize x264 encoder");
-    }
-    x264_encoder_parameters(state_->encoder, &parameters);
-    if (parameters.i_bframe || parameters.rc.i_lookahead || parameters.i_sync_lookahead || (parameters.i_threads > 1 && !parameters.b_sliced_threads) ||
-        x264_encoder_maximum_delayed_frames(state_->encoder) != 0) {
-        throw std::runtime_error("x264 changed the low-latency timestamp contract");
-    }
+    parameters.iMultipleThreadIdc = static_cast<unsigned short>(threads);
+    parameters.bEnableDenoise = false;
+    parameters.bEnableBackgroundDetection = false;
+    parameters.bEnableAdaptiveQuant = false;
+    // OpenH264 requires scene detection in screen-content mode. It can emit
+    // a scene-cut IDR independently of explicit recovery, but no periodic GOP.
+    parameters.bEnableSceneChangeDetect = true;
+    parameters.bEnableFrameCroppingFlag = true;
+    auto& layer = parameters.sSpatialLayers[0];
+    layer.iVideoWidth = parameters.iPicWidth;
+    layer.iVideoHeight = parameters.iPicHeight;
+    layer.fFrameRate = parameters.fMaxFrameRate;
+    layer.iSpatialBitrate = parameters.iTargetBitrate;
+    layer.iMaxSpatialBitrate = parameters.iMaxBitrate;
+    layer.uiProfileIdc = PRO_BASELINE;
+    layer.sSliceArgument.uiSliceMode = threads > 1 ? SM_FIXEDSLCNUM_SLICE : SM_SINGLE_SLICE;
+    layer.sSliceArgument.uiSliceNum = threads;
+    layer.bVideoSignalTypePresent = true;
+    layer.uiVideoFormat = VF_UNDEF;
+    layer.bFullRange = false;
+    layer.bColorDescriptionPresent = true;
+    layer.uiColorPrimaries = CP_BT709;
+    layer.uiTransferCharacteristics = TRC_IEC61966_2_1;
+    layer.uiColorMatrix = CM_SMPTE170M;
+    layer.bAspectRatioPresent = true;
+    layer.eAspectRatio = ASP_1x1;
+    requireCodec(state_->encoder->InitializeExt(&parameters), "Cannot initialize OpenH264 encoder");
+    state_->initialized = true;
 }
 SoftwareVideoEncoder::~SoftwareVideoEncoder() = default;
 void SoftwareVideoEncoder::setDetail(bool sharp) {
     if (state_->config.sharp == sharp) {
         return;
     }
-    // QP bounds cannot be reconfigured through x264_encoder_reconfig. Rebuild
-    // only on quality-mode changes, preserving timestamp order and emitting IDR.
+    // A bitrate ceiling alone does not improve a static desktop's first IDR.
+    // Bound quantization in detail mode; transport backpressure still bounds
+    // outstanding frames when detailed content needs more bytes. OpenH264's
+    // live parameter update does not rebuild its rate controller's QP limits.
+    // Recreate only on a mode transition and start an independent IDR; keep
+    // dimensions, codec profile and the external frame/generation sequence.
     auto config = state_->config;
     config.sharp = sharp;
     SoftwareVideoEncoder replacement(config);
@@ -127,14 +139,26 @@ void SoftwareVideoEncoder::setRate(std::uint32_t framesPerSecond, std::uint32_t 
     if (!framesPerSecond || framesPerSecond > 120 || bitrate < 64000 || bitrate > 100000000) {
         throw std::invalid_argument("Invalid adaptive video rate");
     }
-    if (bitrate != state_->config.bitrate || framesPerSecond != state_->config.framesPerSecond) {
-        x264_param_t parameters{};
-        x264_encoder_parameters(state_->encoder, &parameters);
-        parameters.rc.i_bitrate = codecBitrate(bitrate, state_->nominalFps, framesPerSecond);
-        parameters.rc.i_vbv_max_bitrate = parameters.rc.i_bitrate;
-        parameters.rc.i_vbv_buffer_size = codecBufferSize(parameters.rc.i_bitrate, state_->nominalFps);
-        if (x264_encoder_reconfig(state_->encoder, &parameters) < 0) {
-            throw std::runtime_error("Cannot update x264 bitrate");
+    const auto previousBitrate = codecBitrate(state_->config.bitrate, state_->config.framesPerSecond);
+    const auto nextBitrate = codecBitrate(bitrate, framesPerSecond);
+    if (framesPerSecond != state_->config.framesPerSecond) {
+        float rate = static_cast<float>(std::min(framesPerSecond, 60u));
+        requireCodec(state_->encoder->SetOption(ENCODER_OPTION_FRAME_RATE, &rate), "Cannot update encoder frame rate");
+    }
+    if (nextBitrate != previousBitrate) {
+        SBitrateInfo rate{SPATIAL_LAYER_ALL, static_cast<int>(nextBitrate)};
+        const auto maximum = [&] {
+            SBitrateInfo layer{SPATIAL_LAYER_0, static_cast<int>(nextBitrate)};
+            requireCodec(state_->encoder->SetOption(ENCODER_OPTION_MAX_BITRATE, &layer), "Cannot update layer maximum bitrate");
+            requireCodec(state_->encoder->SetOption(ENCODER_OPTION_MAX_BITRATE, &rate), "Cannot update maximum bitrate");
+        };
+        // Raise ceilings before the target; lower the target before ceilings.
+        if (nextBitrate > previousBitrate) {
+            maximum();
+        }
+        requireCodec(state_->encoder->SetOption(ENCODER_OPTION_BITRATE, &rate), "Cannot update encoder bitrate");
+        if (nextBitrate < previousBitrate) {
+            maximum();
         }
     }
     state_->config.framesPerSecond = framesPerSecond;
@@ -149,7 +173,7 @@ std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(
     if (stride < static_cast<std::size_t>(width) * 4 || stride > 64 * 1024 * 1024 / height || bgra.size() < stride * height) {
         return std::unexpected(VideoEncodeError::kInvalidPixels);
     }
-    if (timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+    if (timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<long long>::max()) ||
         (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
         return std::unexpected(VideoEncodeError::kInvalidTimestamp);
     }
@@ -157,52 +181,61 @@ std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(
         return std::unexpected(VideoEncodeError::kInvalidPixels);
     }
     const bool requireKeyFrame = forceKeyFrame || state.refreshRequired;
-    x264_picture_t picture{}, output{};
-    x264_picture_init(&picture);
-    picture.img.i_csp = X264_CSP_I420;
-    picture.img.i_plane = 3;
-    picture.img.i_stride[0] = static_cast<int>(width);
-    picture.img.i_stride[1] = picture.img.i_stride[2] = static_cast<int>(width / 2);
-    picture.img.plane[0] = state.i420.data();
-    picture.img.plane[1] = picture.img.plane[0] + static_cast<std::size_t>(width) * height;
-    picture.img.plane[2] = picture.img.plane[1] + static_cast<std::size_t>(width) * height / 4;
-    picture.i_pts = static_cast<std::int64_t>(state.nextPicture++);
-    picture.i_type = requireKeyFrame ? X264_TYPE_IDR : X264_TYPE_AUTO;
-    state.lastTimestamp = timestampMicroseconds;
-    state.refreshRequired = true;
-    x264_nal_t* nals = nullptr;
-    int count = 0;
-    const int bytes = x264_encoder_encode(state.encoder, &nals, &count, &picture, &output);
-    if (bytes < 0 || x264_encoder_delayed_frames(state.encoder) != 0) {
+    if (requireKeyFrame && state.encoder->ForceIntraFrame(true) != cmResultSuccess) {
+        state.refreshRequired = true;
         return std::unexpected(VideoEncodeError::kCodecFailure);
     }
-    if (!bytes) {
+    state.lastTimestamp = timestampMicroseconds;
+    SSourcePicture picture{};
+    picture.iColorFormat = videoFormatI420;
+    picture.iPicWidth = static_cast<int>(width);
+    picture.iPicHeight = static_cast<int>(height);
+    picture.iStride[0] = static_cast<int>(width);
+    picture.iStride[1] = picture.iStride[2] = static_cast<int>(width / 2);
+    picture.pData[0] = state.i420.data();
+    picture.pData[1] = picture.pData[0] + static_cast<std::size_t>(width) * height;
+    picture.pData[2] = picture.pData[1] + static_cast<std::size_t>(width) * height / 4;
+    picture.uiTimeStamp = static_cast<long long>(timestampMicroseconds / 1000);
+    // OpenH264 normalizes this millisecond timestamp for rate control. Keep
+    // the caller's original microsecond timestamp on the wire, not its RC clock.
+    SFrameBSInfo info{};
+    state.refreshRequired = true; // Any failed or oversized output forces a new independent baseline.
+    if (state.encoder->EncodeFrame(&picture, &info) != cmResultSuccess) {
+        return std::unexpected(VideoEncodeError::kCodecFailure);
+    }
+    if (info.eFrameType == videoFrameTypeSkip) {
         return std::unexpected(VideoEncodeError::kFrameSkipped);
     }
     constexpr auto kMaximumVideoBytes = protocol::kMaximumMessageBytes - 1024;
-    if (static_cast<std::size_t>(bytes) > kMaximumVideoBytes) {
+    if (info.iFrameSizeInBytes <= 0 || static_cast<std::size_t>(info.iFrameSizeInBytes) > kMaximumVideoBytes ||
+        info.iLayerNum <= 0 || info.iLayerNum > MAX_LAYER_NUM_OF_FRAME) {
         return std::unexpected(VideoEncodeError::kFrameTooLarge);
-    }
-    if (!nals || count <= 0 || count > bytes || output.i_pts != picture.i_pts) {
-        return std::unexpected(VideoEncodeError::kCodecFailure);
     }
     EncodedVideoFrame frame;
     frame.timestampMicroseconds = timestampMicroseconds;
-    frame.keyFrame = output.i_type == X264_TYPE_IDR;
+    frame.keyFrame = info.eFrameType == videoFrameTypeIDR;
     if (requireKeyFrame && !frame.keyFrame) {
         return std::unexpected(VideoEncodeError::kCodecFailure);
     }
-    frame.annexB.reserve(static_cast<std::size_t>(bytes));
-    for (int i = 0; i < count; ++i) {
-        const auto length = nals[i].i_payload;
-        if (!nals[i].p_payload || length <= 0 || static_cast<std::size_t>(length) > static_cast<std::size_t>(bytes) - frame.annexB.size()) {
+    frame.annexB.reserve(static_cast<std::size_t>(info.iFrameSizeInBytes));
+    for (int i = 0; i < info.iLayerNum; ++i) {
+        const auto& layer = info.sLayerInfo[i];
+        if (layer.iNalCount < 0 || layer.iNalCount > MAX_NAL_UNITS_IN_LAYER || !layer.pBsBuf || !layer.pNalLengthInByte) {
             return std::unexpected(VideoEncodeError::kCodecFailure);
         }
-        const std::span<const std::uint8_t> nal(nals[i].p_payload, static_cast<std::size_t>(length));
-        frame.annexB.insert(frame.annexB.end(), nal.begin(), nal.end());
+        std::size_t offset = 0;
+        for (int j = 0; j < layer.iNalCount; ++j) {
+            const auto length = layer.pNalLengthInByte[j];
+            if (length <= 0 || frame.annexB.size() + static_cast<std::size_t>(length) > static_cast<std::size_t>(info.iFrameSizeInBytes)) {
+                return std::unexpected(VideoEncodeError::kFrameTooLarge);
+            }
+            const std::span<const std::uint8_t> nal(layer.pBsBuf + offset, static_cast<std::size_t>(length));
+            frame.annexB.insert(frame.annexB.end(), nal.begin(), nal.end());
+            offset += static_cast<std::size_t>(length);
+        }
     }
     const auto description = describeAvcFrame(frame.annexB, state.codec);
-    if (frame.annexB.size() != static_cast<std::size_t>(bytes) || !description || description->keyFrame != frame.keyFrame) {
+    if (frame.annexB.size() != static_cast<std::size_t>(info.iFrameSizeInBytes) || !description || description->keyFrame != frame.keyFrame) {
         return std::unexpected(VideoEncodeError::kCodecFailure);
     }
     state.codec = description->codec;

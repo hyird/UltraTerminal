@@ -17,15 +17,6 @@
     "boost-json",
     "openssl",
     {
-      "name": "x264",
-      "platform": "windows",
-      "default-features": false,
-      "features": [
-        "asm",
-        "gpl"
-      ]
-    },
-    {
       "name": "openh264",
       "platform": "windows"
     },

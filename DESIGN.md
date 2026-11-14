@@ -57,7 +57,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 | 前端 | HeroUI Pro Dashboard Template 1.0.13、React、TypeScript、Tailwind、Bun |
 | 浏览器桌面显示 | 独立会话对象、画布与输入控制，沿用现有视频协议 |
 | 桌面采集与输入 | DXGI Desktop Duplication、Win32 |
-| 视频编码 | Media Foundation 硬编、x264 软编 |
+| 视频编码 | Media Foundation 硬编、OpenH264 屏幕内容实时模式软编 |
 | 无损矩形 | libpng、zlib，Raw/RLE 补充 |
 | VNC | Agent 内嵌 LibVNCServer，浏览器 noVNC |
 | SSH | Agent 内嵌 libssh，网关 libssh2，浏览器 xterm.js |
@@ -78,7 +78,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 服务和桌面工作进程各持有一个 standalone Asio `io_context`，通过 Ruvia `attach_event_loop()` 绑定事件循环，由 `event_loop_attachment::run()` 在单一线程驱动。连接、IPC、心跳和取消的协程在该事件循环启动；有界队列、定时器和阻塞任务使用事件循环导出的 `worker_ref`。退出先取消并等待原生 I/O，再调用 attachment 的 `stop()`，持续驱动到 Ruvia 托管任务及清理完成，不在退休后重新取得 executor。服务和桌面进程分别在装配入口拥有一个单线程、队列容量为 4 的有界阻塞池，通过 attachment 的 `blocking_pool_` 绑定给 Worker；池比 attachment 和所属运行组件存活更久。服务的设置、进程启动、登录准备与 `SendSAS` 通过同一 Worker 的公开 `run_blocking(worker, ...)` 串行卸载；桌面进程的池专用于采编与线程内资源释放，不与服务池共享。运行组件等待其卸载结果后才结束，采编对象的最终释放任务完成后才销毁线程池。阻塞卸载显式检查结果，失败由既有任务或请求边界处理。
 
-桌面工作进程在独占采编线程上依次执行 DXGI 采集、颜色转换和编码，采集与编码器对象也在该线程创建及销毁；事件循环继续处理输入与 IPC。x264 仅对同一帧的切片并行，线程数按像素规模和逻辑 CPU 数限制为 1～4。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
+桌面工作进程在独占采编线程上依次执行 DXGI 采集、颜色转换和编码，采集与编码器对象也在该线程创建及销毁；事件循环继续处理输入与 IPC。OpenH264 仅对同一帧的切片并行，线程数按像素规模和逻辑 CPU 数限制为 1～4。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
 
 ### 会话流程
 
@@ -113,7 +113,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 Windows 桌面采用 DXGI Desktop Duplication，画面变化时保留一张最新整帧快照，鼠标形状和位置独立传输。接收窗口关闭时继续合并未编码的原始画面，编码前选取最新来源。CPU 采集和硬件失败回退均读取完整图像；采集接口只提供完整读回与借用 GPU 纹理。
 
-编码优先选择双方支持的 AV1、HEVC、H.264 硬件编码器，系统媒体组件缺失或硬件编码失败时回退到内嵌 x264。支持 GPU 的 MFT 通过 D3D11 Video Processor 将完整 BGRA 纹理转换为 NV12。编码器遵守目标码率，自适应帧率受真实链路、编解码压力与接收信用约束。视频、输入使用独立原生连接与有界队列，已编码依赖帧按序发送。
+编码优先选择双方支持的 AV1、HEVC、H.264 硬件编码器，系统媒体组件缺失或硬件编码失败时回退到内嵌 OpenH264 的 `SCREEN_CONTENT_REAL_TIME` 模式。软件路径使用低复杂度、单时域/空间层、无跳帧和按需 IDR，保持逐帧同步输出与原始采集时间戳；调整帧率、码率不重建编码器，清晰模式切换才重建独立基准。支持 GPU 的 MFT 通过 D3D11 Video Processor 将完整 BGRA 纹理转换为 NV12。码率是编码目标，瞬时复杂帧仍由有界字节、帧数和显示确认窗口约束，自适应帧率受真实链路、编解码压力与接收信用约束。视频、输入使用独立原生连接与有界队列，已编码依赖帧按序发送；继续全部经 Server 中继，不引入直连。
 
 Agent 1.0.41 起，桌面生产链路统一发送 VideoConfig、VideoFrame 和独立 CursorUpdate。PNG 区域更新、CopyRect、瓦片缓存、静态/动态 PNG 精修、GPU 差分与区域读回成本调度已移除。对应的 Agent 实现、浏览器合成器、辅助解码信用和测试夹具一并删除。
 

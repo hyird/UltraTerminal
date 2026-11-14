@@ -69,7 +69,7 @@ void exercise(std::uint32_t initialRate) {
         }
     };
     // Preserve historical non-round rate and overflow boundaries when changing
-    // codecs. x264 uses integer kbit/s, not the caller's bits/s.
+    // codecs. OpenH264 redistributes all-layer bitrates through float.
     for (const auto rate : {8000000u, 18000003u, 64000u, 24000000u, 16777215u, 16777217u, 16777219u,
                             33554431u, 33554435u, 67108863u, 67108871u, 99999999u, 100000000u, 64001u}) {
         update(rate, 60);
@@ -95,6 +95,14 @@ void exerciseFrameBudget() {
     std::uint64_t timestamp = 0;
     const auto measure = [&](std::uint32_t fps, std::uint32_t bitrate) {
         encoder.setRate(fps, bitrate);
+        if (timestamp) {
+            // Test reconfiguration on unchanged pixels separately from a new
+            // random scene: screen-content mode requires scene-cut detection.
+            const auto unchanged = encoder.encode(pixels, 320 * 4, timestamp);
+            require(unchanged.has_value() && !unchanged->keyFrame, "Rate changes must not rebuild the encoder");
+            decoder.verify(*unchanged);
+            timestamp += 1000000 / fps;
+        }
         std::uint64_t bytes = 0;
         for (unsigned i = 0; i < 120; ++i) {
             for (auto& value : pixels) {
@@ -103,9 +111,6 @@ void exerciseFrameBudget() {
             }
             auto frame = encoder.encode(pixels, 320 * 4, timestamp);
             require(frame.has_value(), "Adaptive frame budget skipped/failed a frame");
-            if (i == 0 && timestamp) {
-                require(!frame->keyFrame, "Rate changes must not rebuild the encoder");
-            }
             decoder.verify(*frame);
             if (i >= 30) {
                 bytes += frame->annexB.size();

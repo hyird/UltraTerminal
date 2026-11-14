@@ -122,6 +122,9 @@ int main() {
             fault = Fault::kNone;
             for (std::uint64_t timestamp = 3; timestamp < 20; ++timestamp) {
                 const auto next = encoder.encode(pixels, 256, timestamp);
+                if (!next) {
+                    std::cerr << "Fallback encode error=" << static_cast<int>(next.error()) << " timestamp=" << timestamp << '\n';
+                }
                 require(next && !next->baselineReset && !encoder.hardware(), "Failed hardware retried or baseline repeatedly reset");
             }
             require(creations == before + 1, "Unbounded hardware retry");
