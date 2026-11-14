@@ -42,6 +42,7 @@
   --font-mono: var(--font-sans);
 }
 :root {
+  --radius: 0.25rem;
   font-family: var(--font-sans);
   font-size-adjust: from-font;
   --workspace-navbar-height: 3rem;
@@ -148,6 +149,9 @@ textarea {
 }
 .desktop-toolbar .select__value {
   flex: none;
+}
+.desktop-toolbar .select__trigger {
+  border-radius: var(--radius-3xl);
 }
 .select__popover--compact {
   width: max-content;

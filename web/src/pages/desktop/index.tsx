@@ -70,7 +70,7 @@ export function DesktopTabs() {
       }}
       size="sm"
       isDetached
-      className="bg-default w-max flex-nowrap gap-1 rounded-full p-1"
+      className="bg-default w-max flex-nowrap gap-1 rounded-2xl p-1"
     >
       {entries.map((entry) => (
         <ToggleButton
@@ -78,7 +78,7 @@ export function DesktopTabs() {
           id={entry.ticket.id}
           aria-label={entry.device.name}
           variant="ghost"
-          className="h-8 min-h-8 min-w-16 w-auto flex-none rounded-full whitespace-nowrap px-3 text-sm data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
+          className="h-8 min-h-8 min-w-16 w-auto flex-none rounded-xl whitespace-nowrap px-3 text-sm data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
         >
           <span>{entry.device.name}</span>
         </ToggleButton>
