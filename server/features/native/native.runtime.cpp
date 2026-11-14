@@ -122,7 +122,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
         : loop(owner), stream(std::move(transport)), authDeadline(owner.executor()), readDeadline(owner.executor()), writeDeadline(owner.executor()), channel(std::make_shared<NativeChannel>(owner.worker())), budget(std::move(receiveBudget)) {}
     void bind() {
         channel->abortNetwork = [weak = weak_from_this(), owner = loop] {
-            (void)owner.post([weak] {
+            (void)owner.worker().post([weak] {
                 if (const auto self = weak.lock()) {
                     self->channel->recordCloseCause(NativeCloseCause::kServerAbort);
                     self->stop();
@@ -130,7 +130,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
             });
         };
         channel->authorizeNetwork = [weak = weak_from_this(), owner = loop](std::size_t limit) {
-            const auto posted = owner.post([weak, limit] {
+            const auto posted = owner.worker().post([weak, limit] {
                 if (const auto self = weak.lock()) {
                     self->maximum = limit;
                     self->authDeadline.cancel();

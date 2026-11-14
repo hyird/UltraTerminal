@@ -6,7 +6,7 @@
 namespace ultraterimal::server {
 class BrowserOrigin final {
   public:
-    ruvia::task<void> handle(ruvia::context& context, ruvia::next& next) {
+    ruvia::task<void> invoke(ruvia::context& context, ruvia::next& next) {
         if (context.req().header("Origin").value_or("") != (*context.worker_state<std::shared_ptr<ServerRuntime>>()).config.origin) {
             // Finish the bounded request body before Ruvia closes a rejected request.
             (void)co_await context.req().text();
@@ -18,7 +18,7 @@ class BrowserOrigin final {
 };
 class UserAuthentication final {
   public:
-    ruvia::task<void> handle(ruvia::context& context, ruvia::next& next) {
+    ruvia::task<void> invoke(ruvia::context& context, ruvia::next& next) {
         const auto user = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).identities, token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""))] { return service.authenticate(token); })).take_value());
         if (!user) {
             (void)co_await context.req().text();

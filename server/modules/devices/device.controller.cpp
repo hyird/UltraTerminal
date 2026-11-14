@@ -2,6 +2,7 @@
 
 #include <exception>
 #include <typeinfo>
+#include <utility>
 
 #include <spdlog/spdlog.h>
 
@@ -82,8 +83,8 @@ ruvia::task<ruvia::http_response> DeviceController::install(ruvia::context& cont
         co_return context.text("throw 'Installation command expired or invalid. Copy a new command from device management.'\n");
     }
     const auto& origin = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).config.origin;
-    const auto script = "& { $utOrigin='" + origin + "'; $utDevice='" + *device + "'; $utCode='" + code + "'; $ErrorActionPreference='Stop'; irm ($utOrigin + '/install.ps1') | iex }\n";
-    co_return context.text(std::pmr::string(script, context.arena()));
+    auto script = "& { $utOrigin='" + origin + "'; $utDevice='" + *device + "'; $utCode='" + code + "'; $ErrorActionPreference='Stop'; irm ($utOrigin + '/install.ps1') | iex }\n";
+    co_return context.text(std::move(script));
 }
 ruvia::task<ruvia::http_response> DeviceController::rename(ruvia::context& context) {
     const auto body = requestObject(co_await context.req().text(), {"device_id", "name"});

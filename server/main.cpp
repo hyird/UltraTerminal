@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
         // Shared business state is confined to one application Worker.
         app.listen({.address_ = config.address, .http_ = config.port})
             .server({.worker_count_ = 1, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install, .idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::seconds(10), .write_timeout_ = std::chrono::seconds(10), .max_connections_per_worker_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
-            .client({.alias_ = "telegram", .base_url_ = "https://api.telegram.org", .connection_count_ = 2, .max_buffered_requests_ = 32, .request_timeout_ = std::chrono::seconds(10), .max_response_bytes_ = 65536})
+            .client({.alias_ = "telegram", .base_url_ = "https://api.telegram.org", .connection_limits_ = {.max_open_ = 2, .max_idle_http1_ = 2, .max_idle_multiplexed_ = 2}, .max_buffered_requests_ = 32, .request_timeout_ = std::chrono::seconds(10), .max_response_bytes_ = 65536})
             .blocking_pool({.thread_count_ = 4, .queue_capacity_ = 64})
             .rate_limit({.rule_ = {.max_requests_ = 300, .window_ = std::chrono::minutes(1)}})
             .use_worker_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })

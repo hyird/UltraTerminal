@@ -2,6 +2,7 @@
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 
 #include <ruvia/core/event_loop.h>
 #include <ruvia/core/task_scope.h>
@@ -238,7 +239,7 @@ int main() {
         ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
         auto task = pool.loop(0).start(exercise(pool.loop(0).worker()));
-        task.get();
+        std::move(task).get();
         pool.join();
         std::cout << "Control readiness, queue count/bytes, FIFO sequencing, cancellation and close passed\n";
         return 0;

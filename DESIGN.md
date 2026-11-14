@@ -76,7 +76,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 服务复制自身主令牌并绑定当前控制台会话，启动前再次检查会话未改变；启动特权仅在线程作用域内启用。桌面进程核验父进程为 Session 0 的 LocalSystem，管道 ACL 限制为服务身份并校验双方 PID 与目标会话。
 - 高权限桌面工作进程只承担桌面功能。SSH/ConPTY 由 Agent 服务进程启动并继承其运行账户，不另做操作系统用户映射；LocalSystem 服务对应 SYSTEM 终端。
 
-服务和桌面工作进程各持有一个 standalone Asio `io_context`，通过 Ruvia `attach_event_loop()` 绑定事件循环，由 `event_loop_attachment::run()` 在单一线程驱动。连接、IPC、心跳和取消的协程在该事件循环启动；有界队列、定时器和阻塞任务使用事件循环导出的 `worker_handle`。退出先取消并等待原生 I/O，再调用 attachment 的 `stop()`，持续驱动到 Ruvia 托管任务及清理完成，不在退休后重新取得 executor。服务和桌面进程分别在装配入口拥有一个单线程、队列容量为 4 的有界阻塞池，通过 attachment 的 `blocking_pool_` 绑定给 Worker；池比 attachment 和所属运行组件存活更久。服务的设置、进程启动、登录准备与 `SendSAS` 通过同一 Worker 的公开 `run_blocking(worker, ...)` 串行卸载；桌面进程的池专用于采编与线程内资源释放，不与服务池共享。运行组件等待其卸载结果后才结束，采编对象的最终释放任务完成后才销毁线程池。阻塞卸载显式检查结果，失败由既有任务或请求边界处理。
+服务和桌面工作进程各持有一个 standalone Asio `io_context`，通过 Ruvia `attach_event_loop()` 绑定事件循环，由 `event_loop_attachment::run()` 在单一线程驱动。连接、IPC、心跳和取消的协程在该事件循环启动；有界队列、定时器和阻塞任务使用事件循环导出的 `worker_ref`。退出先取消并等待原生 I/O，再调用 attachment 的 `stop()`，持续驱动到 Ruvia 托管任务及清理完成，不在退休后重新取得 executor。服务和桌面进程分别在装配入口拥有一个单线程、队列容量为 4 的有界阻塞池，通过 attachment 的 `blocking_pool_` 绑定给 Worker；池比 attachment 和所属运行组件存活更久。服务的设置、进程启动、登录准备与 `SendSAS` 通过同一 Worker 的公开 `run_blocking(worker, ...)` 串行卸载；桌面进程的池专用于采编与线程内资源释放，不与服务池共享。运行组件等待其卸载结果后才结束，采编对象的最终释放任务完成后才销毁线程池。阻塞卸载显式检查结果，失败由既有任务或请求边界处理。
 
 桌面工作进程在独占采编线程上依次执行 DXGI 采集、颜色转换和编码，采集与编码器对象也在该线程创建及销毁；事件循环继续处理输入与 IPC。x264 仅对同一帧的切片并行，线程数按像素规模和逻辑 CPU 数限制为 1～4。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
 

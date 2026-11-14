@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <ruvia/core/event_loop.h>
@@ -1215,7 +1216,7 @@ int main() {
         ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
         auto task = pool.loop(0).start(exercise(pool.loop(0).worker()));
-        task.get();
+        std::move(task).get();
         pool.join();
         std::cout << "Desktop four-endpoint pairing, binding, FIFO, replay, read-only access and bounded in-flight ownership passed\n";
         return 0;
