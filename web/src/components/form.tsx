@@ -111,6 +111,7 @@ export function Choice({
       </Select.Trigger>
       <Select.Popover
         className={compact ? "select__popover--compact" : undefined}
+        placement={compact ? "bottom start" : undefined}
       >
         <ListBox items={items}>
           {(item) => (

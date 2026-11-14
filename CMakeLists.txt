@@ -26,8 +26,9 @@ set(RUVIA_ENABLE_REDIS OFF CACHE BOOL "" FORCE)
 set(RUVIA_ENABLE_JWT OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(ruvia
     SYSTEM
-    GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG 3a354a07ca15e2c9068ef6c674ba2e578c950a85)
+    URL https://github.com/hyird/Ruvia/archive/3a354a07ca15e2c9068ef6c674ba2e578c950a85.tar.gz
+    URL_HASH SHA256=645dc00d8c42fb5d1e1594c1b1a349a6cff1c04ccbd5455977e495100fee7e94
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(ruvia)
 add_subdirectory(protocol)
 if(ULTRATERIMAL_BUILD_AGENT)

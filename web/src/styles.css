@@ -43,6 +43,7 @@
 }
 :root {
   --radius: 0.25rem;
+  --field-radius: calc(var(--radius) * 3);
   font-family: var(--font-sans);
   font-size-adjust: from-font;
   --workspace-navbar-height: 3rem;
@@ -150,12 +151,9 @@ textarea {
 .desktop-toolbar .select__value {
   flex: none;
 }
-.desktop-toolbar .select__trigger {
-  border-radius: var(--radius-3xl);
-}
 .select__popover--compact {
   width: max-content;
-  min-width: min(max(var(--trigger-width), 13.75rem), calc(100svw - 2rem));
+  min-width: var(--trigger-width);
   max-width: calc(100svw - 2rem);
 }
 .select__popover--compact .list-box-item {
