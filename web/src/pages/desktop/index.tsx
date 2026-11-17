@@ -68,19 +68,15 @@ export function DesktopTabs() {
         const key = keys.values().next().value;
         if (typeof key === "string") activate(key);
       }}
-      size="sm"
-      isDetached
-      className="desktop-session-tabs flex-nowrap gap-0.5"
+      className="desktop-session-tabs"
     >
       {entries.map((entry) => (
         <ToggleButton
           key={entry.ticket.id}
           id={entry.ticket.id}
           aria-label={entry.device.name}
-          variant="ghost"
-          className="flex-none whitespace-nowrap data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
         >
-          <span>{entry.device.name}</span>
+          {entry.device.name}
         </ToggleButton>
       ))}
     </ToggleButtonGroup>

@@ -111,7 +111,7 @@ body {
   min-width: 320px;
   background: var(--background);
 }
-button,
+button:not(.toggle-button),
 input,
 select,
 textarea {
@@ -143,7 +143,6 @@ textarea {
 /* Share sizing across components that present the same kind of control. */
 :is(
   .button,
-  .toggle-button,
   .input,
   .select__trigger,
   .search-field__group,
@@ -158,15 +157,14 @@ textarea {
   font-size: var(--control-font-size);
   line-height: 1.4;
 }
-:is(.button, .toggle-button, .input, .select__trigger) {
+:is(.button, .input, .select__trigger) {
   padding-inline: var(--control-padding-inline);
 }
-:is(.button, .toggle-button, .select__trigger) {
+:is(.button, .select__trigger) {
   align-items: center;
   font-weight: 500;
 }
-.button--icon-only,
-.toggle-button--icon-only {
+.button--icon-only {
   inline-size: var(--control-size);
   padding-inline: 0;
 }
@@ -215,26 +213,18 @@ textarea {
   flex: none;
   white-space: nowrap;
 }
-.desktop-toolbar :is(.button, .select__trigger),
-.desktop-session-tabs .toggle-button {
+.desktop-toolbar :is(.button, .select__trigger) {
   color: var(--foreground);
 }
 @media (pointer: fine) {
-  .desktop-toolbar,
-  .desktop-session-tabs {
+  .desktop-toolbar {
     --control-size: 1.75rem;
     --control-font-size: var(--text-xs);
     --control-radius: calc(var(--control-size) * var(--corner-ratio));
   }
 }
-.desktop-session-tabs .toggle-button {
-  --toggle-button-bg: var(--default);
-  --toggle-button-bg-hover: var(--default-hover);
-  border: 1px solid transparent;
-  border-radius: var(--control-radius);
-}
-.desktop-session-tabs .toggle-button[data-selected="true"] {
-  border-color: var(--border);
+.desktop-session-tabs {
+  --radius-3xl: var(--control-radius);
 }
 :is(.select__popover, .dropdown__popover).desktop-menu {
   width: max-content;
