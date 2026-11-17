@@ -215,6 +215,10 @@ textarea {
   flex: none;
   white-space: nowrap;
 }
+.desktop-toolbar :is(.button, .select__trigger),
+.desktop-session-tabs .toggle-button {
+  color: var(--foreground);
+}
 @media (pointer: fine) {
   .desktop-toolbar,
   .desktop-session-tabs {
