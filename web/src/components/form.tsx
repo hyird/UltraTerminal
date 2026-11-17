@@ -101,7 +101,7 @@ export function Choice({
       }}
       isDisabled={disabled}
       placeholder="请选择"
-      className={compact ? "min-w-32 max-w-56" : "w-full"}
+      className={compact ? "w-fit max-w-full" : "w-full"}
       variant="secondary"
     >
       {!compact && <Label>{label}</Label>}
@@ -110,7 +110,7 @@ export function Choice({
         {!compact && <Select.Indicator />}
       </Select.Trigger>
       <Select.Popover
-        className={compact ? "select__popover--compact" : undefined}
+        className={compact ? "desktop-menu" : undefined}
         placement={compact ? "bottom start" : undefined}
       >
         <ListBox items={items}>

@@ -85,7 +85,9 @@ bun run build
 
 发布时将整个前端输出合并到新版本的静态目录，保留已发布的 `windows-agent.json` 与 MSI；不能直接用空目录替换全部 `assets/`。必须发布 `index.html` 和 `web-assets/` 中的全部 JS，Agent 安装包作为独立下载资源保留。先发布带哈希的新 JS，再切换 HTML，保留旧 JS 供尚未刷新的页面加载业务包。页面通过平台 HTTPS 访问以使用同源登录 Cookie 与 WSS。新版本先保留完整回滚目录再切换并重启网关。页面采用 Hash 路由，刷新和书签不依赖反向代理 SPA 回退配置。
 
-前端统一使用本地托管的 JetBrainsMono Nerd Font Mono，中文回退到系统字体。字体来自 [Nerd Fonts v3.5.1](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1) 的 `JetBrainsMono.tar.xz`（SHA-256：`04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf`），以 FontTools 4.68.0 转为 WOFF2；正常字形和 Nerd 私用区符号按 Unicode 范围分开，避免普通页面下载整套符号。`web/public/fonts/ofl.txt` 保留原始 OFL 许可；发布时一并复制 `fonts/`。
+前端本地托管 JetBrainsMono Nerd Font Mono 和 Maple Mono NF CN。西文和 Nerd 符号来自 [Nerd Fonts v3.5.1](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1) 的 `JetBrainsMono.tar.xz`（SHA-256 `04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf`），正文和符号按 Unicode 范围分开加载。
+
+中文来自 [Maple Mono v7.9](https://github.com/subframe7536/maple-font/releases/tag/v7.9) 的 `MapleMonoNormalNL-NF-CN-unhinted.zip`（SHA-256 `1bd6b4be3062e6ef2b4aaa44e044d05efa4501afd3c42367842154bdb0367d0b`）。同字号下一个汉字占两个西文字符宽度。常规和粗体均以 FontTools 4.68.0 转为 WOFF2：`ui` 收录界面源码和服务端消息中的汉字及常用全角符号，`extended` 保留来源字体在相同 Unicode 范围内的其余字形。浏览器仅在需要时请求扩展文件，来源字体缺少的字形由系统字体补齐。发布时随 `fonts/` 一并提供两套字体的 OFL 许可。
 
 ## 网关配置
 

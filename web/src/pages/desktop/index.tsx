@@ -70,7 +70,7 @@ export function DesktopTabs() {
       }}
       size="sm"
       isDetached
-      className="bg-default w-max flex-nowrap gap-0.5 rounded-2xl p-0.5"
+      className="desktop-session-tabs flex-nowrap gap-0.5"
     >
       {entries.map((entry) => (
         <ToggleButton
@@ -78,7 +78,7 @@ export function DesktopTabs() {
           id={entry.ticket.id}
           aria-label={entry.device.name}
           variant="ghost"
-          className="h-7 min-h-7 min-w-12 w-auto flex-none rounded-xl whitespace-nowrap px-2.5 text-xs data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
+          className="flex-none whitespace-nowrap data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
         >
           <span>{entry.device.name}</span>
         </ToggleButton>
@@ -304,15 +304,13 @@ function DesktopPanel({
         {entry.ticket.writeControl && (
           <>
             <Dropdown>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="bg-default w-fit min-w-0 max-w-full"
-                isDisabled={ended}
-              >
+              <Button size="sm" variant="tertiary" isDisabled={ended}>
                 快捷键
               </Button>
-              <Dropdown.Popover>
+              <Dropdown.Popover
+                placement="bottom start"
+                className="desktop-menu"
+              >
                 <Dropdown.Menu
                   onAction={(key) => {
                     const shortcut = desktopShortcuts.find(
@@ -365,7 +363,7 @@ function DesktopPanel({
         <div className="flex-1" />
         <Button
           size="sm"
-          variant="secondary"
+          variant="tertiary"
           onPress={() => {
             const action = document.fullscreenElement
               ? document.exitFullscreen()
@@ -378,7 +376,7 @@ function DesktopPanel({
         {canRestart && (
           <Button
             size="sm"
-            variant="secondary"
+            variant="tertiary"
             isDisabled={ended}
             onPress={() => {
               restartKey.current = "";
@@ -388,7 +386,7 @@ function DesktopPanel({
             重启
           </Button>
         )}
-        <Button size="sm" variant="secondary" onPress={onClose}>
+        <Button size="sm" variant="tertiary" onPress={onClose}>
           关闭
         </Button>
       </div>
