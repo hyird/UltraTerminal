@@ -152,6 +152,17 @@ textarea {
 .desktop-toolbar .select__value {
   flex: none;
 }
+@media (pointer: fine) {
+  .desktop-toolbar .button,
+  .desktop-toolbar .select__trigger {
+    height: 1.75rem;
+    min-height: 1.75rem;
+    min-width: 0;
+    padding-block: 0;
+    padding-inline: 0.75rem;
+    font-size: 0.75rem;
+  }
+}
 .select__popover--compact {
   width: max-content;
   min-width: var(--trigger-width);
