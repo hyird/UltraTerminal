@@ -224,7 +224,7 @@ textarea {
   }
 }
 .desktop-session-tabs {
-  --radius-3xl: var(--control-radius);
+  --radius: calc(var(--control-radius) / 3);
 }
 :is(.select__popover, .dropdown__popover).desktop-menu {
   width: max-content;
