@@ -46,7 +46,7 @@ export function SettingsPage() {
                 验证发送给发起连接的用户本人，仅申请人需要绑定 Telegram。
               </p>
             </div>
-            <Chip color={bot ? "success" : "default"} variant="soft" size="sm">
+            <Chip color={bot ? "success" : "default"} variant="soft">
               {loading ? "加载中" : bot ? "已配置" : "未配置"}
             </Chip>
           </div>
@@ -63,16 +63,11 @@ export function SettingsPage() {
             </div>
           </dl>
           <div className="flex flex-wrap gap-3">
-            <Button
-              size="sm"
-              onPress={() => setAction("configure")}
-              isDisabled={loading}
-            >
+            <Button onPress={() => setAction("configure")} isDisabled={loading}>
               {bot ? "更换 Bot" : "配置 Bot"}
             </Button>
             {bot && (
               <Button
-                size="sm"
                 variant="danger-soft"
                 onPress={() => setAction("disable")}
               >

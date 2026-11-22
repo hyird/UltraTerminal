@@ -30,7 +30,7 @@ export function OverviewPage() {
       id: "status",
       header: "状态",
       cell: (d) => (
-        <Chip size="sm" color={d.online ? "success" : "default"} variant="soft">
+        <Chip color={d.online ? "success" : "default"} variant="soft">
           {d.online ? "在线" : "离线"}
         </Chip>
       ),
@@ -86,7 +86,6 @@ export function OverviewPage() {
               </Card.Header>
               <Card.Footer>
                 <Button
-                  size="sm"
                   variant="secondary"
                   onPress={() => navigate("/workbench/devices")}
                 >
@@ -103,7 +102,6 @@ export function OverviewPage() {
               </Card.Header>
               <Card.Footer>
                 <Button
-                  size="sm"
                   variant="secondary"
                   onPress={() => navigate("/account/security")}
                 >
@@ -115,7 +113,6 @@ export function OverviewPage() {
           <div className="mt-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold">设备一览</h2>
             <Button
-              size="sm"
               variant="tertiary"
               onPress={() => navigate("/workbench/devices")}
             >

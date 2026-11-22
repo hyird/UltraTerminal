@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button } from "@heroui/react";
+import { Button, Card } from "@heroui/react";
 import { useNavigate } from "react-router";
 import { Field, Notice, failureText } from "../../components/form";
 import { ApiError } from "../../lib/http";
@@ -50,7 +50,7 @@ export function LoginPage() {
   }
   return (
     <main className="bg-surface-secondary flex min-h-dvh items-center justify-center px-6 py-12">
-      <section className="bg-surface w-full max-w-[26rem] rounded-3xl border border-border p-6 max-md:p-7">
+      <Card className="w-full max-w-[26rem]">
         <div className="mb-7">
           <h1 className="text-2xl font-semibold tracking-tight">
             {step === "password"
@@ -109,19 +109,13 @@ export function LoginPage() {
               autoFocus
             />
           )}
-          <Button
-            size="sm"
-            type="submit"
-            className="mt-2 w-full"
-            isPending={busy}
-          >
+          <Button type="submit" className="mt-2 w-full" isPending={busy}>
             {step === "password" ? "登录" : "验证并登录"}
           </Button>
           {step !== "password" && (
             <div className="flex flex-wrap justify-between gap-1">
               <Button
                 variant="ghost"
-                size="sm"
                 onPress={() => {
                   setCode("");
                   setError("");
@@ -132,7 +126,6 @@ export function LoginPage() {
               </Button>
               <Button
                 variant="ghost"
-                size="sm"
                 onPress={() => {
                   setStep("password");
                   setPassword("");
@@ -145,7 +138,7 @@ export function LoginPage() {
             </div>
           )}
         </form>
-      </section>
+      </Card>
     </main>
   );
 }

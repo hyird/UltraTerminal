@@ -42,7 +42,7 @@ function SidebarContents({
     <>
       <Sidebar.Header>
         <div className="flex items-center gap-3 px-1 py-1">
-          <Avatar size="sm">
+          <Avatar>
             <Avatar.Fallback>
               {user?.username.slice(0, 1).toUpperCase()}
             </Avatar.Fallback>
@@ -62,9 +62,8 @@ function SidebarContents({
           {user?.role === "admin" ? (
             <Dropdown>
               <Button
-                size="sm"
                 variant="tertiary"
-                className="mb-2 w-full justify-between [&>span]:gap-3 [&_.sidebar__menu-icon>svg]:size-4 [&_.sidebar__menu-icon>svg]:shrink-0"
+                className="mb-2 w-full justify-between"
                 aria-label="切换工作区域"
               >
                 <span className="flex items-center gap-2">
@@ -136,7 +135,7 @@ function SidebarContents({
                 </Sidebar.MenuIcon>
                 <Sidebar.MenuLabel>远程会话</Sidebar.MenuLabel>
                 <Sidebar.MenuChip>
-                  <Chip size="sm" color="success" variant="soft">
+                  <Chip color="success" variant="soft">
                     {entries.length}
                   </Chip>
                 </Sidebar.MenuChip>

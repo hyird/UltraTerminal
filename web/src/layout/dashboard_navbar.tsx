@@ -15,7 +15,7 @@ export function DashboardNavbar({
 }) {
   const requests = useConnectionRequests();
   return (
-    <Navbar maxWidth="full" size="sm" height="var(--workspace-navbar-height)">
+    <Navbar maxWidth="full">
       <Navbar.Header className="min-w-0 gap-3 max-sm:gap-2">
         <AppLayout.MenuToggle aria-label="打开菜单" />
         <Sidebar.Trigger aria-label="收起侧栏" />
@@ -36,7 +36,6 @@ export function DashboardNavbar({
         <Popover isOpen={requests.open} onOpenChange={requests.setOpen}>
           <Button
             isIconOnly
-            size="sm"
             variant="tertiary"
             className="shrink-0"
             aria-label="查看连接申请"

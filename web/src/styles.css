@@ -89,33 +89,15 @@
   --font-mono: var(--font-sans);
 }
 :root {
-  --control-size: 2rem;
-  --control-font-size: var(--text-sm);
-  --control-padding-inline: 0.75rem;
-  --corner-ratio: 0.25;
-  --control-radius: calc(var(--control-size) * var(--corner-ratio));
-  --surface-radius: calc(3rem * var(--corner-ratio));
-  --radius: calc(var(--surface-radius) / 3);
-  --field-radius: var(--control-radius);
+  --radius: 0.25rem;
   font-family: var(--font-sans);
   font-size-adjust: from-font;
-  --workspace-navbar-height: 3rem;
-}
-:root,
-[data-theme="light"],
-.light {
-  --background: oklch(98.5% 0 0);
+  --workspace-navbar-height: 4rem;
 }
 body {
   margin: 0;
   min-width: 320px;
   background: var(--background);
-}
-button:not(.toggle-button),
-input,
-select,
-textarea {
-  font: inherit;
 }
 [hidden] {
   display: none !important;
@@ -133,58 +115,9 @@ textarea {
     scroll-behavior: auto !important;
   }
 }
-.modal__header {
-  padding-bottom: 0.75rem;
-}
 .sidebar,
 .sidebar__offcanvas-wrapper {
   --sidebar-width: 12rem;
-}
-/* Share sizing across components that present the same kind of control. */
-:is(
-  .button,
-  .input,
-  .select__trigger,
-  .search-field__group,
-  .sidebar__menu-item-content,
-  .list-box-item,
-  .menu-item
-) {
-  block-size: auto;
-  min-block-size: var(--control-size);
-  border-radius: var(--control-radius);
-  padding-block: 0.25rem;
-  font-size: var(--control-font-size);
-  line-height: 1.4;
-}
-:is(.button, .input, .select__trigger) {
-  padding-inline: var(--control-padding-inline);
-}
-:is(.button, .select__trigger) {
-  align-items: center;
-  font-weight: 500;
-}
-.button--icon-only {
-  inline-size: var(--control-size);
-  padding-inline: 0;
-}
-.select__value,
-.search-field__input,
-.menu-item .label {
-  font: inherit;
-}
-.search-field__input {
-  padding-block: 0.25rem;
-}
-:is(.list-box-item, .menu-item) {
-  gap: 0.5rem;
-}
-:is(.card, .modal__dialog, .popover, .select__popover, .dropdown__popover) {
-  border-radius: var(--surface-radius);
-}
-.toast {
-  padding: 0.75rem;
-  font-size: 0.875rem;
 }
 
 .skip-link {
@@ -204,30 +137,6 @@ textarea {
   overflow: hidden;
   white-space: nowrap;
 }
-.desktop-toolbar > .select {
-  width: fit-content;
-  min-width: 0;
-  max-width: 100%;
-}
-.desktop-toolbar .select__value {
-  flex: none;
-  white-space: nowrap;
-}
-.desktop-toolbar :is(.button, .select__trigger) {
-  color: var(--foreground);
-}
-@media (pointer: fine) {
-  .desktop-toolbar,
-  .desktop-session-tabs {
-    --control-size: 1.75rem;
-    --control-font-size: var(--text-xs);
-    --control-radius: calc(var(--control-size) * var(--corner-ratio));
-  }
-}
-.desktop-session-tabs {
-  --radius: calc(var(--control-radius) / 3);
-  border-radius: calc(var(--control-radius) + var(--spacing) * 0.5);
-}
 :is(.select__popover, .dropdown__popover).desktop-menu {
   width: max-content;
   min-width: var(--trigger-width);
@@ -239,11 +148,4 @@ textarea {
 [data-desktop-viewport] canvas[data-control="ready"]:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
-}
-@media (pointer: coarse) {
-  :root {
-    --workspace-navbar-height: 4rem;
-    --control-size: 3rem;
-    --control-font-size: var(--text-base);
-  }
 }

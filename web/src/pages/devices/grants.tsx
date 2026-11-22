@@ -197,7 +197,6 @@ export function GrantsDialog({
           <div className="mb-5 mt-2 flex flex-wrap items-center justify-between gap-3">
             <p className="text-muted text-sm">按用户授予最小必要权限。</p>
             <Button
-              size="sm"
               isDisabled={loading}
               onPress={() => {
                 setSearch("");
@@ -221,11 +220,7 @@ export function GrantsDialog({
                       <strong className="break-all text-sm font-medium">
                         {item.username}
                       </strong>
-                      {isOwner(item) && (
-                        <Chip size="sm" variant="soft">
-                          所有者
-                        </Chip>
-                      )}
+                      {isOwner(item) && <Chip variant="soft">所有者</Chip>}
                     </div>
                     <p className="text-muted mt-2 text-xs leading-6">
                       {item.connect ? "允许连接" : "未授予连接权限"}
@@ -242,7 +237,6 @@ export function GrantsDialog({
                   {
                     <div className="flex shrink-0">
                       <Button
-                        size="sm"
                         variant="secondary"
                         onPress={() => setGrant({ ...item })}
                       >
@@ -250,7 +244,6 @@ export function GrantsDialog({
                       </Button>
                       {!isOwner(item) && (
                         <Button
-                          size="sm"
                           variant="danger-soft"
                           onPress={() => setRemoving(item)}
                           aria-label={`撤销 ${item.username} 的授权`}
@@ -267,7 +260,7 @@ export function GrantsDialog({
             <p className="text-muted py-6 text-sm">暂无共享授权。</p>
           )}
           <div className="mt-6 flex justify-end">
-            <Button size="sm" variant="tertiary" onPress={onClose}>
+            <Button variant="tertiary" onPress={onClose}>
               关闭
             </Button>
           </div>

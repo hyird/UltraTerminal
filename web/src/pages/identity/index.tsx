@@ -1,6 +1,6 @@
 import { LoadingSkeleton } from "../../components/loading";
 import { useEffect, useState } from "react";
-import { Button, Chip, toast } from "@heroui/react";
+import { Avatar, Button, Card, Chip, toast } from "@heroui/react";
 import QRCode from "qrcode";
 import { Page } from "../../layout/page";
 import {
@@ -88,9 +88,11 @@ export function SecurityPage() {
       ) : (
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-3">
           <div className="flex items-center gap-3 border-b border-border py-3 wrap-anywhere">
-            <span className="bg-accent-soft text-accent-soft-foreground inline-flex size-12 shrink-0 items-center justify-center rounded-full text-xl">
-              {user?.username.slice(0, 1).toUpperCase()}
-            </span>
+            <Avatar>
+              <Avatar.Fallback>
+                {user?.username.slice(0, 1).toUpperCase()}
+              </Avatar.Fallback>
+            </Avatar>
             <div>
               <h2 className="text-lg font-semibold">{user?.username}</h2>
               <p className="text-muted mt-1 text-sm">
@@ -103,11 +105,7 @@ export function SecurityPage() {
             title="登录密码"
             description="定期更换密码，避免在不同平台重复使用。"
           >
-            <Button
-              size="sm"
-              variant="outline"
-              onPress={() => setAction("password")}
-            >
+            <Button variant="outline" onPress={() => setAction("password")}>
               修改密码
             </Button>
           </SecurityRow>
@@ -116,15 +114,10 @@ export function SecurityPage() {
             title="双重验证"
             description="使用 Google 验证器，在密码之外增加一道验证。"
           >
-            <Chip
-              size="sm"
-              variant="soft"
-              color={security?.totp ? "success" : "default"}
-            >
+            <Chip variant="soft" color={security?.totp ? "success" : "default"}>
               {security ? (security.totp ? "已开启" : "未开启") : "加载中"}
             </Chip>
             <Button
-              size="sm"
               variant="outline"
               isDisabled={!security}
               onPress={() => setAction(security?.totp ? "disable" : "begin")}
@@ -138,11 +131,7 @@ export function SecurityPage() {
               title="恢复码"
               description={`剩余 ${security.recoveryCodes} 个一次性恢复码。重新生成会使旧码全部失效。`}
             >
-              <Button
-                size="sm"
-                variant="outline"
-                onPress={() => setAction("recovery")}
-              >
+              <Button variant="outline" onPress={() => setAction("recovery")}>
                 重新生成
               </Button>
             </SecurityRow>
@@ -159,14 +148,12 @@ export function SecurityPage() {
             }
           >
             <Chip
-              size="sm"
               variant="soft"
               color={telegram?.telegramId ? "success" : "default"}
             >
               {telegram?.telegramId ? "已绑定" : "未绑定"}
             </Chip>
             <Button
-              size="sm"
               variant="outline"
               isDisabled={!telegram?.botUsername}
               onPress={() =>
@@ -213,14 +200,13 @@ export function SecurityPage() {
           <p className="text-muted mb-4 text-sm">
             恢复码只显示这一次，请保存在安全的位置。每个码只能使用一次。
           </p>
-          <div className="bg-surface-secondary grid gap-2 rounded-lg p-4 text-[0.8125rem] wrap-anywhere">
+          <Card>
             {recovery.map((code) => (
               <code key={code}>{code}</code>
             ))}
-          </div>
+          </Card>
           <div className="mt-5 flex flex-wrap justify-end gap-2">
             <Button
-              size="sm"
               variant="outline"
               onPress={() =>
                 void navigator.clipboard
@@ -231,9 +217,7 @@ export function SecurityPage() {
             >
               复制恢复码
             </Button>
-            <Button size="sm" onPress={() => setRecovery([])}>
-              我已保存
-            </Button>
+            <Button onPress={() => setRecovery([])}>我已保存</Button>
           </div>
         </Dialog>
       )}
@@ -367,9 +351,7 @@ function SecurityAction({
                 className="mx-auto"
               />
             )}
-            <code className="break-all rounded-lg bg-surface-secondary p-3 text-center text-sm">
-              {secret}
-            </code>
+            <code className="break-all text-center">{secret}</code>
           </>
         )}
         {action === "password" && (

@@ -1,6 +1,6 @@
 import { LoadingSkeleton } from "../../components/loading";
 import { useEffect, useState } from "react";
-import { Button, toast } from "@heroui/react";
+import { Button, TextArea, toast } from "@heroui/react";
 import {
   Choice,
   Dialog,
@@ -249,15 +249,14 @@ export function DeviceActionDialog({
             </p>
             {command && (
               <>
-                <textarea
+                <TextArea
                   aria-label="安装命令"
-                  className="bg-surface-secondary w-full resize-y rounded-lg border border-border p-4 font-mono text-xs leading-7"
+                  className="w-full resize-y font-mono"
                   readOnly
                   value={command}
                   rows={5}
                 />
                 <Button
-                  size="sm"
                   variant="outline"
                   onPress={() =>
                     void navigator.clipboard

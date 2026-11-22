@@ -68,17 +68,12 @@ export function DesktopTabs() {
         const key = keys.values().next().value;
         if (typeof key === "string") activate(key);
       }}
-      size="sm"
-      isDetached
-      className="desktop-session-tabs bg-default w-max flex-nowrap gap-0.5 p-0.5"
     >
       {entries.map((entry) => (
         <ToggleButton
           key={entry.ticket.id}
           id={entry.ticket.id}
           aria-label={entry.device.name}
-          variant="ghost"
-          className="h-auto min-h-(--control-size) min-w-12 flex-none px-2.5 text-xs data-[selected=true]:bg-surface data-[selected=true]:text-foreground data-[selected=true]:shadow-sm"
         >
           {entry.device.name}
         </ToggleButton>
@@ -304,7 +299,7 @@ function DesktopPanel({
         {entry.ticket.writeControl && (
           <>
             <Dropdown>
-              <Button size="sm" variant="tertiary" isDisabled={ended}>
+              <Button variant="tertiary" isDisabled={ended}>
                 快捷键
               </Button>
               <Dropdown.Popover
@@ -362,7 +357,6 @@ function DesktopPanel({
         </div>
         <div className="flex-1" />
         <Button
-          size="sm"
           variant="tertiary"
           onPress={() => {
             const action = document.fullscreenElement
@@ -375,7 +369,6 @@ function DesktopPanel({
         </Button>
         {canRestart && (
           <Button
-            size="sm"
             variant="tertiary"
             isDisabled={ended}
             onPress={() => {
@@ -386,7 +379,7 @@ function DesktopPanel({
             重启
           </Button>
         )}
-        <Button size="sm" variant="tertiary" onPress={onClose}>
+        <Button variant="tertiary" onPress={onClose}>
           关闭
         </Button>
       </div>

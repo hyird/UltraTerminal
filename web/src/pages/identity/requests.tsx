@@ -92,7 +92,6 @@ export function RequestsPanel() {
                     {device?.name ?? "设备已不可访问"}
                   </p>
                   <Chip
-                    size="sm"
                     variant="soft"
                     color={
                       state === "approved"
@@ -111,7 +110,6 @@ export function RequestsPanel() {
                 </div>
                 {state === "approved" ? (
                   <Button
-                    size="sm"
                     variant="secondary"
                     isDisabled={!device?.online || !!busy}
                     onPress={() => setConnecting(item)}
@@ -120,7 +118,6 @@ export function RequestsPanel() {
                   </Button>
                 ) : state === "pending" ? (
                   <Button
-                    size="sm"
                     variant="secondary"
                     isDisabled={!!busy}
                     onPress={() => void act(item, true)}
@@ -151,18 +148,13 @@ export function RequestsPanel() {
             </p>
             <div className="flex justify-end gap-2">
               <Button
-                size="sm"
                 variant="tertiary"
                 isDisabled={!!busy}
                 onPress={() => setConnecting(null)}
               >
                 取消
               </Button>
-              <Button
-                size="sm"
-                isPending={!!busy}
-                onPress={() => void act(connecting)}
-              >
+              <Button isPending={!!busy} onPress={() => void act(connecting)}>
                 确认连接
               </Button>
             </div>

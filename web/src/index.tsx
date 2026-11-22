@@ -16,9 +16,7 @@ function Protected() {
     return (
       <div className="text-muted flex min-h-dvh flex-col items-center justify-center gap-6">
         <p role="alert">{auth.error}</p>
-        <Button size="sm" onPress={() => void auth.refresh()}>
-          重试
-        </Button>
+        <Button onPress={() => void auth.refresh()}>重试</Button>
       </div>
     );
   if (!auth.user) return <Navigate to="/login" replace />;

@@ -21,14 +21,14 @@ export function LoadingSkeleton({
         {(kind === "overview" || kind === "shell") && (
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {Array.from({ length: 4 }, (_, i) => (
-              <Skeleton key={i} className="h-20 rounded-2xl" />
+              <Skeleton key={i} className="h-20" />
             ))}
           </div>
         )}
         {kind === "table" && (
           <div className="flex justify-between gap-6">
-            <Skeleton className="h-9 w-32 rounded-lg" />
-            <Skeleton className="h-9 w-56 rounded-lg" />
+            <Skeleton className="h-9 w-32" />
+            <Skeleton className="h-9 w-56" />
           </div>
         )}
         {Array.from({ length: rows }, (_, i) => (
@@ -41,17 +41,13 @@ export function LoadingSkeleton({
             }
           >
             <Skeleton
-              className={
-                kind === "form"
-                  ? "h-4 w-24 rounded"
-                  : "size-9 shrink-0 rounded-lg"
-              }
+              className={kind === "form" ? "h-4 w-24" : "size-9 shrink-0"}
             />
             <div className="flex-1 space-y-3">
-              <Skeleton className="h-4 w-2/5 rounded" />
-              <Skeleton className="h-3 w-3/5 rounded" />
+              <Skeleton className="h-4 w-2/5" />
+              <Skeleton className="h-3 w-3/5" />
             </div>
-            {kind !== "form" && <Skeleton className="h-9 w-28 rounded-lg" />}
+            {kind !== "form" && <Skeleton className="h-9 w-28" />}
           </div>
         ))}
       </div>

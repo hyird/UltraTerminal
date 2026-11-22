@@ -108,7 +108,6 @@ export function ProofFields({
                 : "请先在个人安全页面绑定 Telegram；平台管理员需先配置 Bot。"}
             </p>
             <Button
-              size="sm"
               type="button"
               variant="secondary"
               isDisabled={!telegram || sending || !!telegramProof}

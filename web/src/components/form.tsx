@@ -59,7 +59,6 @@ export function Field({
       name={name}
       autoFocus={autoFocus}
       className="w-full"
-      variant="secondary"
       minLength={minLength}
       maxLength={maxLength}
       pattern={pattern}
@@ -102,7 +101,6 @@ export function Choice({
       isDisabled={disabled}
       placeholder="请选择"
       className={compact ? "w-fit max-w-full" : "w-full"}
-      variant="secondary"
     >
       {!compact && <Label>{label}</Label>}
       <Select.Trigger>
@@ -145,7 +143,6 @@ export function Toggle({
         {hint && <p className="text-muted mt-1 text-xs">{hint}</p>}
       </div>
       <Switch
-        size="sm"
         aria-label={label}
         isSelected={selected}
         onChange={onChange}
@@ -202,7 +199,7 @@ export function Dialog({
           <Modal.Header>
             <Modal.Heading>{title}</Modal.Heading>
           </Modal.Header>
-          <Modal.Body className="pb-4">{children}</Modal.Body>
+          <Modal.Body>{children}</Modal.Body>
         </Modal.Dialog>
       </Modal.Container>
     </Modal.Backdrop>
@@ -221,11 +218,10 @@ export function FormActions({
 }) {
   return (
     <div className="flex justify-end gap-2 pt-2">
-      <Button size="sm" variant="tertiary" onPress={onCancel} isDisabled={busy}>
+      <Button variant="tertiary" onPress={onCancel} isDisabled={busy}>
         取消
       </Button>
       <Button
-        size="sm"
         type="submit"
         isPending={busy}
         variant={danger ? "danger-soft" : "primary"}

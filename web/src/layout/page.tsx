@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { Button } from "@heroui/react";
+import { Avatar, Button } from "@heroui/react";
 import { Icon } from "../components/icon";
 export const pageLayout =
-  "@container mx-auto flex min-w-0 w-full max-w-7xl flex-col gap-3 px-4 pt-3 pb-6 max-md:px-3 max-md:pb-5 [&_.table__cell]:px-3 [&_.table__cell]:py-2 [&_.table__column]:px-3 [&_.table__column]:py-2 [&_.card]:gap-2 [&_.card]:p-3 [&_.kpi]:gap-2 [&_.kpi]:p-3";
+  "@container mx-auto flex min-w-0 w-full max-w-7xl flex-col gap-3 px-4 pt-3 pb-6 max-md:px-3 max-md:pb-5";
 export function Page({
   title,
   description,
@@ -41,13 +41,15 @@ export function Empty({
 }) {
   return (
     <div className="flex min-h-40 flex-col items-center justify-center px-4 py-6 text-center">
-      <div className="bg-surface-secondary text-muted mb-3 flex size-10 items-center justify-center rounded-2xl">
-        <Icon name="display" className="size-6" />
-      </div>
+      <Avatar className="mb-3">
+        <Avatar.Fallback>
+          <Icon name="display" />
+        </Avatar.Fallback>
+      </Avatar>
       <h2 className="font-medium">{title}</h2>
       <p className="text-muted mt-2 max-w-md text-sm">{description}</p>
       {action && onAction && (
-        <Button size="sm" className="mt-3" onPress={onAction}>
+        <Button className="mt-3" onPress={onAction}>
           {action}
         </Button>
       )}

@@ -3,7 +3,7 @@ import { LoadingSkeleton } from "../../components/loading";
 import { SearchField } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useMemo, useState } from "react";
-import { Button, Chip, Dropdown, Label, toast } from "@heroui/react";
+import { Avatar, Button, Chip, Dropdown, Label, toast } from "@heroui/react";
 import { Page, Empty } from "../../layout/page";
 import {
   Choice,
@@ -126,11 +126,13 @@ function DeviceList({
         return (
           <>
             <div className="flex min-w-40 items-center gap-2">
-              <span className="bg-surface-secondary text-muted flex size-8 shrink-0 items-center justify-center rounded-lg">
-                <Icon name="display" />
-              </span>
+              <Avatar>
+                <Avatar.Fallback>
+                  <Icon name="display" />
+                </Avatar.Fallback>
+              </Avatar>
               <div className="min-w-0">
-                <strong className="block max-w-[26rem] text-sm font-[550] wrap-anywhere">
+                <strong className="block max-w-[26rem] text-sm font-medium wrap-anywhere">
                   {device.name}
                 </strong>
                 <small className="text-muted mt-0.5 block text-xs wrap-anywhere">
@@ -158,7 +160,6 @@ function DeviceList({
         return (
           <>
             <Chip
-              size="sm"
               className="w-max shrink-0 whitespace-nowrap"
               color={device.online ? "success" : "default"}
               variant="soft"
@@ -221,7 +222,6 @@ function DeviceList({
             <div className="flex items-center gap-1">
               {personal && device.desktop && (
                 <Button
-                  size="sm"
                   variant="secondary"
                   isPending={desktops.connecting === device.id}
                   isDisabled={!device.online || !!desktops.connecting}
@@ -237,11 +237,7 @@ function DeviceList({
                 </Button>
               )}
               {mode === "grants" ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onPress={() => setGrant(device)}
-                >
+                <Button variant="secondary" onPress={() => setGrant(device)}>
                   分配权限
                 </Button>
               ) : (
@@ -252,7 +248,6 @@ function DeviceList({
                     <Button
                       variant="ghost"
                       isIconOnly
-                      size="sm"
                       aria-label={`管理设备 ${device.name}`}
                     >
                       <Icon name="ellipsis" />
@@ -339,7 +334,7 @@ function DeviceList({
       }
       actions={
         mode !== "grants" ? (
-          <Button size="sm" onPress={() => setDialog({ action: "create" })}>
+          <Button onPress={() => setDialog({ action: "create" })}>
             <Icon name="plus" className="size-4" />
             添加设备
           </Button>
@@ -348,7 +343,7 @@ function DeviceList({
     >
       <Notice>{error || feed.error}</Notice>
       {feed.error && (
-        <Button size="sm" variant="tertiary" onPress={feed.reconnect}>
+        <Button variant="tertiary" onPress={feed.reconnect}>
           重新连接状态服务
         </Button>
       )}
@@ -393,7 +388,7 @@ function DeviceList({
               { id: "offline", label: "离线" },
             ]}
           />
-          <span className="text-muted text-[0.8125rem]">
+          <span className="text-muted text-sm">
             {feed.devices.filter((item) => item.online).length} 台在线
           </span>
         </search>
@@ -425,7 +420,6 @@ function DeviceList({
           <span>共 {filtered.length} 台设备</span>
           <div className="flex items-center gap-2">
             <Button
-              size="sm"
               variant="ghost"
               isDisabled={currentPage <= 1}
               onPress={() => setPage(currentPage - 1)}
@@ -436,7 +430,6 @@ function DeviceList({
               {currentPage} / {pages}
             </span>
             <Button
-              size="sm"
               variant="ghost"
               isDisabled={currentPage >= pages}
               onPress={() => setPage(currentPage + 1)}
@@ -533,15 +526,10 @@ function DeviceList({
               继续连接 {takeover.name} 将接管设备并结束原有会话。
             </p>
             <div className="flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="tertiary"
-                onPress={() => setTakeover(null)}
-              >
+              <Button variant="tertiary" onPress={() => setTakeover(null)}>
                 取消
               </Button>
               <Button
-                size="sm"
                 isPending={!!desktops.connecting}
                 onPress={() => void connect(takeover, true)}
               >

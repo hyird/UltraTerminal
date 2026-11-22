@@ -2,7 +2,7 @@ import { LoadingSkeleton } from "../../components/loading";
 import { SearchField } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useEffect, useMemo, useState } from "react";
-import { Button, Chip, toast } from "@heroui/react";
+import { Avatar, Button, Chip, toast } from "@heroui/react";
 import { Page, Empty } from "../../layout/page";
 import {
   Choice,
@@ -75,9 +75,11 @@ export function AccountsPage() {
         return (
           <>
             <div className="flex items-center gap-3">
-              <span className="bg-accent-soft text-accent-soft-foreground inline-flex size-8 shrink-0 items-center justify-center rounded-full text-sm">
-                {item.username.slice(0, 1).toUpperCase()}
-              </span>
+              <Avatar>
+                <Avatar.Fallback>
+                  {item.username.slice(0, 1).toUpperCase()}
+                </Avatar.Fallback>
+              </Avatar>
               <strong className="break-all font-medium">{item.username}</strong>
             </div>
           </>
@@ -99,11 +101,7 @@ export function AccountsPage() {
       cell: (item) => {
         return (
           <>
-            <Chip
-              size="sm"
-              variant="soft"
-              color={item.disabled ? "default" : "success"}
-            >
+            <Chip variant="soft" color={item.disabled ? "default" : "success"}>
               {item.disabled ? "已停用" : "正常"}
             </Chip>
           </>
@@ -127,7 +125,6 @@ export function AccountsPage() {
           <>
             <Button
               variant="secondary"
-              size="sm"
               onPress={() => setEditing(item)}
               aria-label={`管理 ${item.username}`}
             >
@@ -143,7 +140,7 @@ export function AccountsPage() {
       title="用户管理"
       description="管理平台身份、账号状态和登录安全。设备访问权限在设备授权中配置。"
       actions={
-        <Button size="sm" onPress={() => setEditing("new")}>
+        <Button onPress={() => setEditing("new")}>
           <Icon name="plus" className="size-4" />
           创建用户
         </Button>
@@ -217,7 +214,6 @@ export function AccountsPage() {
           <span>共 {filtered.length} 个用户</span>
           <div className="flex items-center gap-2">
             <Button
-              size="sm"
               variant="ghost"
               isDisabled={currentPage <= 1}
               onPress={() => setPage(currentPage - 1)}
@@ -228,7 +224,6 @@ export function AccountsPage() {
               {currentPage} / {pages}
             </span>
             <Button
-              size="sm"
               variant="ghost"
               isDisabled={currentPage >= pages}
               onPress={() => setPage(currentPage + 1)}
