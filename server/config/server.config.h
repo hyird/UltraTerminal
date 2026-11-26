@@ -14,6 +14,7 @@ struct ServerConfig {
     std::uint16_t nativePort = 7443;
     std::filesystem::path nativeCertificateFile, nativeKeyFile;
     std::filesystem::path webRoot;
+    std::filesystem::path agentReleaseDir;
     DatabaseConfig database;
     std::string origin;
     std::string securityKey;

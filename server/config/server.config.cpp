@@ -22,7 +22,7 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
     }
     const auto& object = value.as_object();
     for (const auto& item : object) {
-        if (item.key() != "address" && item.key() != "port" && item.key() != "database" && item.key() != "origin" && item.key() != "web_root" && item.key() != "native_address" && item.key() != "native_public_address" && item.key() != "native_host" && item.key() != "native_port" && item.key() != "native_certificate_file" && item.key() != "native_key_file" && item.key() != "security_key_file") {
+        if (item.key() != "address" && item.key() != "port" && item.key() != "database" && item.key() != "origin" && item.key() != "web_root" && item.key() != "agent_release_dir" && item.key() != "native_address" && item.key() != "native_public_address" && item.key() != "native_host" && item.key() != "native_port" && item.key() != "native_certificate_file" && item.key() != "native_key_file" && item.key() != "security_key_file") {
             throw std::invalid_argument("Unknown gateway setting");
         }
     }
@@ -53,6 +53,9 @@ ServerConfig loadServerConfig(const std::filesystem::path& file) {
     }
     if (object.contains("web_root")) {
         config.webRoot = localPath("web_root");
+    }
+    if (object.contains("agent_release_dir")) {
+        config.agentReleaseDir = localPath("agent_release_dir");
     }
     config.database = parseDatabaseConfig(boost::json::serialize(object.at("database")));
     config.origin = text("origin");

@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
         telegramClient.max_response_bytes_ = 65536;
         auto& app = ruvia::app();
         if (!config.webRoot.empty()) {
-            app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind::only, .extensions_ = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi", "gz"}}}, .precompress_gzip_ = true});
+            app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind::only, .extensions_ = {"html", "js", "css", "svg", "ico", "png", "woff", "woff2", "txt", "md"}}}, .precompress_gzip_ = true});
         }
         // Homogeneous multi-core Ruvia workers; mutable state is strictly partitioned per worker.
         app.listen({.address_ = config.address, .http_ = config.port})

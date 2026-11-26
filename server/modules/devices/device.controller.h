@@ -19,6 +19,8 @@ class DeviceController final {
     RUVIA_CONTROLLER_GROUP("/api")
     RUVIA_ROUTES_BEGIN(DeviceController)
     RUVIA_GET("/install.ps1", install, ruvia::rate_limit<30, 60000>);
+    RUVIA_POST("/install/manifest", installManifest, ruvia::rate_limit<20, 60000>);
+    RUVIA_POST("/install/package", installPackage, ruvia::rate_limit<10, 60000>);
     RUVIA_POST("/enrollments", enrollment, BrowserOrigin, UserAuthentication, ruvia::rate_limit<20, 60000>);
     RUVIA_GET("/devices", devices, UserAuthentication);
     RUVIA_POST("/devices/create", create, BrowserOrigin, UserAuthentication, ruvia::rate_limit<20, 60000>);
@@ -37,6 +39,8 @@ class DeviceController final {
     ruvia::task<ruvia::http_response> grants(ruvia::context& context);
     ruvia::task<ruvia::http_response> saveGrant(ruvia::context& context);
     ruvia::task<ruvia::http_response> install(ruvia::context& context);
+    ruvia::task<ruvia::http_response> installManifest(ruvia::context& context);
+    ruvia::task<ruvia::http_response> installPackage(ruvia::context& context);
     ruvia::task<ruvia::http_response> enrollment(ruvia::context& context);
     ruvia::task<ruvia::http_response> devices(ruvia::context& context);
     ruvia::task<ruvia::http_response> create(ruvia::context& context);

@@ -1,6 +1,7 @@
 #include "device.controller.h"
 
 #include <exception>
+#include <fstream>
 #include <typeinfo>
 #include <utility>
 
@@ -28,7 +29,7 @@ ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& conte
             co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can update its Agent"});
         }
         stage = "release_lookup";
-        const auto release = ((co_await context.run_blocking([root = runtime.config.webRoot] { return agentRelease(root); })).take_value());
+        const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir] { return agentRelease(root); })).take_value());
         if (!release) {
             co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
         }
@@ -76,6 +77,83 @@ ruvia::task<ruvia::http_response> DeviceController::install(ruvia::context& cont
     const auto& origin = context.worker_state<ServerRuntime>().config.origin;
     auto script = "& { $utOrigin='" + origin + "'; $utDevice='" + *device + "'; $utCode='" + code + "'; $ErrorActionPreference='Stop'; irm ($utOrigin + '/install.ps1') | iex }\n";
     co_return context.text(std::move(script));
+}
+namespace {
+bool authorizeInstallerRequest(const DeviceService& service, const std::string& deviceId, const std::string& code, const std::string& credential) {
+    if (!code.empty() && credential.empty()) {
+        const auto enrolled = service.enrollmentDevice(code);
+        return enrolled && *enrolled == deviceId;
+    }
+    if (code.empty() && !credential.empty()) {
+        const auto identity = service.authenticate(credential);
+        return identity && identity->id == deviceId;
+    }
+    return false;
+}
+} // namespace
+ruvia::task<ruvia::http_response> DeviceController::installManifest(ruvia::context& context) {
+    const auto body = requestObject(co_await context.request().body_text(), {"device_id", "code", "credential"});
+    const auto device = requestText(body, "device_id", 128);
+    const auto code = optionalText(body, "code", 128);
+    const auto credential = optionalText(body, "credential", 128);
+    auto& runtime = context.worker_state<ServerRuntime>();
+    const bool authorized = ((co_await context.run_blocking([service = runtime.devices, device, code, credential] {
+                                 return authorizeInstallerRequest(service, device, code, credential);
+                             })).take_value());
+    if (!authorized) {
+        co_return context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Valid device enrollment code or credential is required"});
+    }
+    const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir] { return agentRelease(root); })).take_value());
+    if (!release) {
+        co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
+    }
+    const auto& config = runtime.config;
+    co_return jsonResponse(context, {
+                                        {"version", release->update.version()},
+                                        {"file", release->file.filename().string()},
+                                        {"sha256", release->update.sha256()},
+                                        {"size", release->update.size()},
+                                        {"native_host", config.nativeHost},
+                                        {"native_address", config.nativePublicAddress},
+                                        {"native_port", config.nativePort},
+                                    });
+}
+ruvia::task<ruvia::http_response> DeviceController::installPackage(ruvia::context& context) {
+    const auto body = requestObject(co_await context.request().body_text(), {"device_id", "code", "credential", "sha256"});
+    const auto device = requestText(body, "device_id", 128);
+    const auto code = optionalText(body, "code", 128);
+    const auto credential = optionalText(body, "credential", 128);
+    const auto expectedSha256 = optionalText(body, "sha256", 64);
+    auto& runtime = context.worker_state<ServerRuntime>();
+    const bool authorized = ((co_await context.run_blocking([service = runtime.devices, device, code, credential] {
+                                 return authorizeInstallerRequest(service, device, code, credential);
+                             })).take_value());
+    if (!authorized) {
+        co_return context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Valid device enrollment code or credential is required"});
+    }
+    const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir] { return agentRelease(root); })).take_value());
+    if (!release || (!expectedSha256.empty() && release->update.sha256() != expectedSha256)) {
+        co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "Requested Agent package is unavailable"});
+    }
+    if (release->update.size() == 0 || release->update.size() > 64ull * 1024 * 1024) {
+        co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "Agent package size exceeds limit"});
+    }
+    auto bytes = ((co_await context.run_blocking([path = release->file, size = release->update.size()] -> std::optional<std::string> {
+                      std::ifstream input(path, std::ios::binary);
+                      std::string data(static_cast<std::size_t>(size), '\0');
+                      input.read(data.data(), static_cast<std::streamsize>(data.size()));
+                      if (!input || static_cast<std::uint64_t>(input.gcount()) != size) {
+                          return std::nullopt;
+                      }
+                      return data;
+                  })).take_value());
+    if (!bytes) {
+        co_return context.error({.status_ = ruvia::http_status::service_unavailable, .code_ = "release_unavailable", .message_ = "Cannot read Agent package"});
+    }
+    context.policy().header("Content-Type", "application/octet-stream");
+    context.policy().header("Cache-Control", "no-store");
+    context.policy().header("X-Content-Type-Options", "nosniff");
+    co_return context.body(std::move(*bytes));
 }
 ruvia::task<ruvia::http_response> DeviceController::rename(ruvia::context& context) {
     const auto body = requestObject(co_await context.request().body_text(), {"device_id", "name"});
