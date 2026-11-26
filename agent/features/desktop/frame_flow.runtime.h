@@ -112,7 +112,11 @@ class DesktopFrameFlow {
         videoPacingActive_ = type == FrameType::kVideo && pixels != 0;
         if (videoPacingActive_) {
             const auto sample = std::min<std::uint64_t>(bytes, 4 * 1024 * 1024);
-            videoFrameBytes_ = videoFrameBytes_ ? (videoFrameBytes_ * 7 + sample) / 8 : sample;
+            // Track sudden large changed frames immediately so a quiet period of
+            // 1KB updates cannot starve the first window-drag frame, then decay slowly.
+            videoFrameBytes_ = !videoFrameBytes_ || sample > videoFrameBytes_
+                                   ? sample
+                                   : (videoFrameBytes_ * 15 + sample) / 16;
             const auto nominalBytes = static_cast<std::uint64_t>(rate_.bitrate) / (8 * rate_.framesPerSecond);
             // The observed wire picture includes metadata and modest VBV variation.
             // This tolerance validates a cost probe; it never enlarges credit.
@@ -154,7 +158,7 @@ class DesktopFrameFlow {
         if (!baseline_ && !roundTrip_) {
             return std::min<std::size_t>(2, clientFrameLimit_);
         }
-        const auto frames = (static_cast<std::uint64_t>(pathDelay().count()) * rate_.framesPerSecond + 999999) / 1000000 + 4;
+        const auto frames = (static_cast<std::uint64_t>(pathDelay().count()) * rate_.framesPerSecond + 999999) / 1000000 + 6;
         return std::min<std::size_t>(std::clamp<std::uint64_t>(frames, 2, kMaximumInFlightFrames), clientFrameLimit_);
     }
     std::size_t byteWindow() const {
@@ -163,7 +167,7 @@ class DesktopFrameFlow {
         // ACK delay and codec-size variation need a normal two-picture
         // cushion, just as frameWindow has slots beyond the path BDP.
         // Keyframes and repeats cannot inflate it; age/frame guards remain.
-        return static_cast<std::size_t>(std::clamp<std::uint64_t>(std::max(bytes, videoFrameBytes_ * 2), 16384, 4 * 1024 * 1024));
+        return static_cast<std::size_t>(std::clamp<std::uint64_t>(std::max(bytes, videoFrameBytes_ * 2), 65536, 4 * 1024 * 1024));
     }
     std::chrono::microseconds maximumFrameAge() const {
         const auto rtt = pathDelay();
