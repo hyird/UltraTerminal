@@ -1,0 +1,21 @@
+--- a/include/compat/msvc/stdatomic.h
++++ b/include/compat/msvc/stdatomic.h
+@@ -32,10 +32,14 @@
+ #pragma warning(push)
+ #pragma warning(disable:4067)    /* newline for __has_include_next */
+ 
+-#if defined(__clang__) && __has_include_next(<stdatomic.h>)
+-   /* use the clang stdatomic.h with clang-cl*/
+-#  include_next <stdatomic.h>
+-#else /* ! stdatomic.h */
++#if defined(__clang__)
++#  if __has_include_next(<stdatomic.h>)
++     /* use the clang stdatomic.h with clang-cl*/
++#    include_next <stdatomic.h>
++#    define DAV1D_HAVE_CLANG_STDATOMIC_H 1
++#  endif
++#endif
++#ifndef DAV1D_HAVE_CLANG_STDATOMIC_H
+ 
+ #include <windows.h>
+ 
