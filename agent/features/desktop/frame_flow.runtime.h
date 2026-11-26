@@ -158,7 +158,7 @@ class DesktopFrameFlow {
         if (!baseline_ && !roundTrip_) {
             return std::min<std::size_t>(2, clientFrameLimit_);
         }
-        const auto frames = (static_cast<std::uint64_t>(pathDelay().count()) * rate_.framesPerSecond + 999999) / 1000000 + 6;
+        const auto frames = (static_cast<std::uint64_t>(pathDelay().count()) * rate_.framesPerSecond + 999999) / 1000000 + 16;
         return std::min<std::size_t>(std::clamp<std::uint64_t>(frames, 2, kMaximumInFlightFrames), clientFrameLimit_);
     }
     std::size_t byteWindow() const {
