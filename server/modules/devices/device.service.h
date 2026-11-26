@@ -28,6 +28,7 @@ struct DeviceInfo {
     std::string verificationMethod = "direct";
     bool manageCredentials = false;
     std::string ownerUsername = {};
+    std::optional<std::string> agentVersion = {};
 };
 struct DeviceGrant {
     std::string userId, username;
@@ -54,7 +55,7 @@ class DeviceService {
     std::optional<DeviceRegistration> registerDevice(std::string_view code, std::string_view name) const;
     std::optional<DeviceIdentity> authenticate(std::string_view credential) const;
     bool heartbeat(const DeviceIdentity& device) const;
-    bool capabilities(const DeviceIdentity& device, std::string_view protobuf) const;
+    bool capabilities(const DeviceIdentity& device, std::string_view protobuf, std::string_view agentVersion = {}) const;
     std::vector<DeviceInfo> list(std::string_view userId, bool administration = false) const;
     bool rename(std::string_view userId, std::string_view deviceId, std::string_view name) const;
     bool transferOwner(std::string_view actorId, std::string_view deviceId, std::string_view targetUserId) const;

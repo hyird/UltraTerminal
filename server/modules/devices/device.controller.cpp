@@ -344,7 +344,10 @@ ruvia::task<ruvia::http_response> DeviceController::devices(ruvia::context& cont
     for (const auto& device : devices) {
         const auto found = onlineStates.find(device.id);
         const auto& state = found != onlineStates.end() ? found->second : DeviceOnlineState{};
-        boost::json::object item{{"agent_version", state.online ? boost::json::value(state.agentVersion) : boost::json::value(nullptr)}, {"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"online", state.online}};
+        const auto agentVersion = state.online && !state.agentVersion.empty()            ? boost::json::value(state.agentVersion)
+                                  : device.agentVersion && !device.agentVersion->empty() ? boost::json::value(*device.agentVersion)
+                                                                                         : boost::json::value(nullptr);
+        boost::json::object item{{"agent_version", agentVersion}, {"id", device.id}, {"name", device.name}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"online", state.online}};
         item["last_seen"] = device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr);
         response.push_back(std::move(item));
     }

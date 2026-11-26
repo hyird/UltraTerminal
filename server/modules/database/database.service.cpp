@@ -12,7 +12,7 @@ void migrateDatabase(const DatabaseConfig& settings) {
         throw std::runtime_error("Database migration is locked");
     }
     connection.exec("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,completed BOOLEAN NOT NULL DEFAULT FALSE,applied_at DATETIME(6) NOT NULL DEFAULT now(6)) ENGINE=InnoDB");
-    constexpr std::array migrations{kMariaDbMigration, kControlOnlyMigration, kIdentityTelegramMigration, kGrantVerificationMigration, kSessionReconnectMigration, kRequesterTelegramMigration};
+    constexpr std::array migrations{kMariaDbMigration, kControlOnlyMigration, kIdentityTelegramMigration, kGrantVerificationMigration, kSessionReconnectMigration, kRequesterTelegramMigration, kDeviceAgentVersionMigration};
     const auto versions = connection.exec("SELECT version,completed FROM schema_migrations ORDER BY version");
     for (std::size_t index = 0; index < versions.size(); ++index) {
         if (index >= migrations.size() || versions[index][0].as<int>() != static_cast<int>(index + 1) || !versions[index][1].as<bool>()) {

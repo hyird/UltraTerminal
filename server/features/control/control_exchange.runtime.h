@@ -76,8 +76,8 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
         co_return;
     }
     auto& runtime = context.template worker_state<ServerRuntime>();
-    if (!(((co_await context.run_blocking([service = runtime.devices, sessions = runtime.sessions, device, bytes = hello->hello().capabilities().SerializeAsString()] {
-               if (!service.capabilities(device, bytes)) {
+    if (!(((co_await context.run_blocking([service = runtime.devices, sessions = runtime.sessions, device, bytes = hello->hello().capabilities().SerializeAsString(), version = hello->hello().agent_version()] {
+               if (!service.capabilities(device, bytes, version)) {
                    return false;
                }
                sessions.disconnectDevice(device);

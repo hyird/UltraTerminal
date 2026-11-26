@@ -4,6 +4,7 @@
 
 #include "modules/database/database.service.h"
 #include "modules/identity/identity.service.h"
+#include "ultraterimal/protocol/update.protocol.h"
 namespace ultraterimal::server {
 DeviceInfo DeviceService::createDevice(std::string_view userId, std::string_view name) const {
     if (name.empty() || name.size() > 128 || name.find_first_not_of(" \t\r\n") == std::string_view::npos || name.find('\0') != std::string_view::npos) {
@@ -97,7 +98,7 @@ bool DeviceService::heartbeat(const DeviceIdentity& device) const {
     tx.commit();
     return !rows.empty();
 }
-bool DeviceService::capabilities(const DeviceIdentity& device, std::string_view protobuf) const {
+bool DeviceService::capabilities(const DeviceIdentity& device, std::string_view protobuf, std::string_view agentVersion) const {
     if (protobuf.size() > 65536) {
         return false;
     }
@@ -108,16 +109,21 @@ bool DeviceService::capabilities(const DeviceIdentity& device, std::string_view 
     }
     const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(protobuf.data()), protobuf.size());
     tx.exec("INSERT INTO device_capabilities(device_id,protocol_version,protobuf) VALUES(?,1,?) ON DUPLICATE KEY UPDATE protocol_version=1,protobuf=VALUES(protobuf),updated_at=now(6)", device.id, bytes);
+    if (!agentVersion.empty() && agentVersion.size() <= 64 && protocol::updateVersion(agentVersion)) {
+        tx.exec("UPDATE devices SET agent_version=?,last_seen_at=now(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", agentVersion, device.id, device.credentialHash);
+    } else {
+        tx.exec("UPDATE devices SET last_seen_at=now(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", device.id, device.credentialHash);
+    }
     tx.commit();
     return true;
 }
 std::vector<DeviceInfo> DeviceService::list(std::string_view userId, bool administration) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId, administration, administration);
+    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username,d.agent_version FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId, administration, administration);
     std::vector<DeviceInfo> result;
     for (const auto& row : rows) {
-        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::optional<std::string>>(), row[3].as<bool>(), row[4].as<bool>(), row[5].as<bool>(), row[6].as<bool>(), row[7].as<std::string>(), row[8].as<bool>(), row[9].as<std::string>()});
+        result.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::optional<std::string>>(), row[3].as<bool>(), row[4].as<bool>(), row[5].as<bool>(), row[6].as<bool>(), row[7].as<std::string>(), row[8].as<bool>(), row[9].as<std::string>(), row[10].as<std::optional<std::string>>()});
     }
     return result;
 }
@@ -311,11 +317,11 @@ void DeviceService::auditWindowsLogin(std::string_view userId, std::string_view 
 std::optional<DeviceInfo> DeviceService::find(std::string_view userId, std::string_view deviceId, bool administration) const {
     auto connection = openDatabase(database_);
     DatabaseTransaction tx(connection);
-    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, administration, administration, deviceId);
+    const auto rows = tx.exec("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username,d.agent_version FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, administration, administration, deviceId);
     if (rows.empty()) {
         return std::nullopt;
     }
-    return DeviceInfo{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::optional<std::string>>(), rows[0][3].as<bool>(), rows[0][4].as<bool>(), rows[0][5].as<bool>(), rows[0][6].as<bool>(), rows[0][7].as<std::string>(), rows[0][8].as<bool>(), rows[0][9].as<std::string>()};
+    return DeviceInfo{rows[0][0].as<std::string>(), rows[0][1].as<std::string>(), rows[0][2].as<std::optional<std::string>>(), rows[0][3].as<bool>(), rows[0][4].as<bool>(), rows[0][5].as<bool>(), rows[0][6].as<bool>(), rows[0][7].as<std::string>(), rows[0][8].as<bool>(), rows[0][9].as<std::string>(), rows[0][10].as<std::optional<std::string>>()};
 }
 std::optional<std::vector<DeviceGrant>> DeviceService::grants(std::string_view actorId, std::string_view deviceId) const {
     auto connection = openDatabase(database_);
