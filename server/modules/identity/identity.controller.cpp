@@ -1,5 +1,8 @@
 #include "identity.controller.h"
 
+#include <array>
+#include <chrono>
+
 #include "config/request.schema.h"
 #include "features/desktop/access.runtime.h"
 #include "middleware/json.transport.h"
@@ -14,16 +17,15 @@ ruvia::task<ruvia::http_response> IdentityController::login(ruvia::context& cont
         }
         co_return context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "invalid_login", .message_ = "Invalid credentials"});
     }
-    const auto cookie = "__Host-ultraterimal=" + session->token + "; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=28800";
-    const std::array<ruvia::http_header_view, 1> headers{{{"Set-Cookie", cookie}}};
-    co_return jsonResponse(context, {{"id", session->user.id}, {"username", session->user.username}, {"role", session->user.role}}, {.headers_ = headers});
+    const std::array<ruvia::set_cookie_options, 1> cookies{{{.name_ = "ultraterimal", .value_ = session->token, .attributes_ = {.path_ = "/", .same_site_ = ruvia::cookie_same_site::strict, .max_age_ = std::chrono::seconds(28800), .prefix_ = ruvia::cookie_prefix::host, .http_only_ = ruvia::cookie_attribute_policy::emit, .secure_ = ruvia::cookie_attribute_policy::emit}}}};
+    co_return jsonResponse(context, {{"id", session->user.id}, {"username", session->user.username}, {"role", session->user.role}}, {.cookies_ = cookies});
 }
 ruvia::task<ruvia::http_response> IdentityController::logout(ruvia::context& context) {
     (void)requestObject(co_await context.request().body_text(), {});
     ((co_await context.run_blocking([service = context.worker_state<ServerRuntime>().identities, token = std::string(context.request().cookie("__Host-ultraterimal").value_or(""))] { service.logout(token); })).take_value());
     co_await revalidateAccess(context, context.request_state<UserIdentity>().id);
-    const std::array<ruvia::http_header_view, 1> headers{{{"Set-Cookie", "__Host-ultraterimal=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"}}};
-    co_return jsonResponse(context, {{"ok", true}}, {.headers_ = headers});
+    const std::array<ruvia::set_cookie_options, 1> cookies{{{.name_ = "ultraterimal", .value_ = "", .attributes_ = {.path_ = "/", .same_site_ = ruvia::cookie_same_site::strict, .max_age_ = std::chrono::seconds(0), .prefix_ = ruvia::cookie_prefix::host, .http_only_ = ruvia::cookie_attribute_policy::emit, .secure_ = ruvia::cookie_attribute_policy::emit}}}};
+    co_return jsonResponse(context, {{"ok", true}}, {.cookies_ = cookies});
 }
 ruvia::task<ruvia::http_response> IdentityController::me(ruvia::context& context) {
     const auto& user = context.request_state<UserIdentity>();

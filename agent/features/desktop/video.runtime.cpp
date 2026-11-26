@@ -1,7 +1,6 @@
 #include "video.runtime.h"
 
 #include <algorithm>
-#include <asio/post.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/use_awaitable.hpp>
 #include <asio_bridge.h>
@@ -87,9 +86,9 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     std::shared_ptr<DesktopVideoWorker> worker = std::make_shared<DesktopVideoWorker>();
     std::optional<ruvia::one_shot_receiver<PoolOutcome<PrefetchedCapture>>> pendingPrefetch;
     std::shared_future<void> pendingPrefetchDone;
+    std::optional<ruvia::one_shot_receiver<PoolOutcome<std::pair<DesktopVideoDiagnostics, bool>>>> pendingRelease;
+    std::shared_future<void> pendingReleaseDone;
     WindowsDeadlineTimer pace;
-    WindowsDeadlineTimer releaseWait;
-    std::shared_future<std::pair<DesktopVideoDiagnostics, bool>> releaseCompletion;
     std::chrono::steady_clock::time_point nextFrameAt{};
     std::uint32_t display;
     const std::uint32_t serverOptimizationContract;
@@ -129,7 +128,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         diagnostics.rejectedPrivateJobs = rejectedPrivateJobs;
         diagnostics.rejectedPrivateVideoFrames = rejectedPrivateVideoFrames;
     }
-    State(ruvia::event_loop owner, ruvia::blocking_pool& blocking, std::uint32_t index, std::uint32_t serverContract, bool continuous) : loop(std::move(owner)), pool(blocking), pace(loop.executor()), releaseWait(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
+    State(ruvia::event_loop owner, ruvia::blocking_pool& blocking, std::uint32_t index, std::uint32_t serverContract, bool continuous) : loop(std::move(owner)), pool(blocking), pace(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
         if (display >= 64) {
             throw std::invalid_argument("Desktop display index exceeds limit");
         }
@@ -139,8 +138,9 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         if (pendingPrefetchDone.valid()) {
             pendingPrefetchDone.wait(); // Shutdown only: ensure DXGI capture is idle before releasing worker.
         }
-        if (releaseCompletion.valid()) {
-            releaseCompletion.wait(); // Shutdown only, never the event-loop hot path.
+        pendingRelease.reset();
+        if (pendingReleaseDone.valid()) {
+            pendingReleaseDone.wait(); // Shutdown only, never the event-loop hot path.
         }
         // A final owned job releases the thread-affine capture/codec objects;
         // join ensures no encoding worker survives the runtime.
@@ -171,39 +171,35 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             // is in flight, nextOwned/resizeOwned or ~State() joins it first.
             return;
         }
-        if (releaseCompletion.valid() && releaseCompletion.wait_for(std::chrono::seconds::zero()) != std::future_status::ready) {
+        if (pendingRelease) {
             return;
         }
-        std::promise<std::pair<DesktopVideoDiagnostics, bool>> released;
-        releaseCompletion = released.get_future().share();
-        if (!pool.post([owned = worker, released = std::move(released), owner = weak_from_this(), executor = loop.executor()]() mutable {
-                     owned->discard();
-                     released.set_value({owned->diagnostics, !owned->encoder});
-                     asio::post(executor, [owner] {
-                         if (const auto self = owner.lock()) {
-                             self->releaseWait.cancel();
-                         }
-                     });
-                 })
-                 .accepted()) {
+        std::promise<void> doneSignal;
+        pendingReleaseDone = doneSignal.get_future().share();
+        try {
+            pendingRelease.emplace(startOnPool(loop.worker(), pool, [owned = worker, doneSignal = std::move(doneSignal)]() mutable {
+                struct SignalGuard {
+                    std::promise<void>& signal;
+                    ~SignalGuard() { signal.set_value(); }
+                } guard{doneSignal};
+                owned->discard();
+                return std::pair{owned->diagnostics, !owned->encoder};
+            }));
+        } catch (...) {
+            pendingReleaseDone = {};
             throw std::logic_error("Desktop timer release could not be queued");
         }
     }
     static asio::awaitable<void> awaitCaptureRelease(std::shared_ptr<State> self) {
-        while (self->releaseCompletion.valid() && self->releaseCompletion.wait_for(std::chrono::seconds::zero()) != std::future_status::ready) {
-            self->releaseWait.expiresAt(VideoClock::time_point::max());
-            std::error_code error;
-            co_await self->releaseWait.asyncWait(asio::redirect_error(asio::use_awaitable, error));
-            if (error && error != asio::error::operation_aborted) {
-                throw std::system_error(error);
-            }
+        if (!self->pendingRelease) {
+            co_return;
         }
-        if (self->releaseCompletion.valid()) {
-            const auto& released = self->releaseCompletion.get();
-            self->takeWorkerDiagnostics(released.first);
-            self->baselineRequired = released.second;
-            self->releaseCompletion = {};
-        }
+        auto receiver = std::move(*self->pendingRelease);
+        self->pendingRelease.reset();
+        const auto released = co_await ruvia::as_awaitable(awaitPoolReceiver(std::move(receiver)));
+        self->pendingReleaseDone = {};
+        self->takeWorkerDiagnostics(released.first);
+        self->baselineRequired = released.second;
     }
     bool requestsOptimization() const {
         return serverOptimizationContract == 2 && pendingOptimizationContract == 2 && capabilities.desktop_optimization_contract() == 2;
@@ -268,12 +264,12 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
-        auto prepareReceiver = startOnPool(self->loop.worker(), self->pool, [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt]() mutable {
+        auto prepareOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt]() mutable {
             const auto computeStarted = VideoClock::now();
             initialStages.workerQueue = DesktopVideoStages::microseconds(queuedAt, computeStarted);
             return owned->prepare(display, refresh, reset, rate, flowWidth, flowHeight, allowEncode, capabilities, requestedV2, requestedContinuous, revision, initialStages, computeStarted);
         });
-        auto step = co_await ruvia::as_awaitable(awaitPoolReceiver(std::move(prepareReceiver)));
+        auto step = ((co_await ruvia::as_awaitable(std::move(prepareOperation))).take_value());
         if (step.deferredEncode) {
             auto deferred = std::move(*step.deferredEncode);
             bool preconverted = false;
@@ -313,10 +309,10 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                     return owned->prefetchNext(instance);
                 }));
             }
-            auto encodeReceiver = startOnPool(self->loop.worker(), self->pool, [owned = self->worker, deferred = std::move(deferred), preconverted]() mutable {
+            auto encodeOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, deferred = std::move(deferred), preconverted]() mutable {
                 return owned->encodeDeferred(std::move(deferred), preconverted);
             });
-            step = co_await ruvia::as_awaitable(awaitPoolReceiver(std::move(encodeReceiver)));
+            step = ((co_await ruvia::as_awaitable(std::move(encodeOperation))).take_value());
         }
         auto result = std::move(step.immediate);
         const auto retryAt = step.retryAt;

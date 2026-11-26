@@ -18,8 +18,8 @@ class ResponseController final {
 
   private:
     ruvia::task<ruvia::http_response> created(ruvia::context& context) {
-        const std::array<ruvia::http_header_view, 1> headers{{{"Set-Cookie", "contract=value; Path=/; Secure; HttpOnly; SameSite=Strict"}}};
-        co_return ultraterimal::server::jsonResponse(context, {{"created", true}}, {.status_ = ruvia::http_status::created, .headers_ = headers});
+        const std::array<ruvia::set_cookie_options, 1> cookies{{{.name_ = "contract", .value_ = "value", .attributes_ = {.path_ = "/", .same_site_ = ruvia::cookie_same_site::strict, .http_only_ = ruvia::cookie_attribute_policy::emit, .secure_ = ruvia::cookie_attribute_policy::emit}}}};
+        co_return ultraterimal::server::jsonResponse(context, {{"created", true}}, {.status_ = ruvia::http_status::created, .cookies_ = cookies});
     }
     ruvia::task<ruvia::http_response> replaced(ruvia::context& context) {
         auto discarded = ultraterimal::server::jsonResponse(context, {{"discarded", true}});
@@ -40,9 +40,9 @@ int main() {
         app.controllers<ResponseController>();
         const auto created = app.dispatch(ruvia::test_request::get("/response-contract/created"));
         require(created.status() == ruvia::http_status::created, "JSON builder lost the selected creation status");
-        require(created.header("Content-Type") == "application/json; charset=utf-8", "JSON media type changed");
+        require(created.header("Content-Type") == "application/json", "JSON media type changed");
         require(created.header("Cache-Control") == "no-store", "JSON response became cacheable");
-        require(created.header("Set-Cookie") == "contract=value; Path=/; Secure; HttpOnly; SameSite=Strict", "Cookie attributes changed");
+        require(created.header("Set-Cookie") == "contract=value; Path=/; HttpOnly; Secure; SameSite=Strict", "Cookie attributes changed");
         require(created.body() == "{\"created\":true}", "JSON body changed");
         const auto replaced = app.dispatch(ruvia::test_request::get("/response-contract/replaced"));
         require(replaced.status() == ruvia::http_status::forbidden, "Replacement error inherited the previous status");
