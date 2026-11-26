@@ -94,6 +94,7 @@ export function Choice({
   return (
     <Select
       aria-label={compact ? label : undefined}
+      variant={compact ? "secondary" : undefined}
       value={value || null}
       onChange={(key) => {
         if (typeof key === "string") onChange(key);
@@ -103,7 +104,7 @@ export function Choice({
       className={compact ? "w-fit max-w-full" : "w-full"}
     >
       {!compact && <Label>{label}</Label>}
-      <Select.Trigger>
+      <Select.Trigger className={compact ? "border-transparent" : undefined}>
         <Select.Value />
         {!compact && <Select.Indicator />}
       </Select.Trigger>
