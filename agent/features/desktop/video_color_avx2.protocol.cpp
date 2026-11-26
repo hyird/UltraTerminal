@@ -35,12 +35,12 @@ __m128i chromaBytes(__m256i pixels, __m256i coefficients) {
 }
 } // namespace
 // Keep the ISA-specific body out of baseline callers, including under LTCG.
-__declspec(noinline) void convertVideoPixelsAvx2(const std::uint8_t* bgra, std::size_t stride, std::uint32_t width, std::uint32_t height, VideoPixelFormat format, std::uint8_t* output) {
+__declspec(noinline) void convertVideoPixelRowsAvx2(const std::uint8_t* bgra, std::size_t stride, std::uint32_t width, std::uint32_t height, std::uint32_t rowBegin, std::uint32_t rowEnd, VideoPixelFormat format, std::uint8_t* output) {
     const auto pixels = static_cast<std::size_t>(width) * height;
     auto* uPlane = output + pixels;
     auto* vPlane = uPlane + (format == VideoPixelFormat::kI420 ? pixels / 4 : 1);
     const std::size_t chromaStep = format == VideoPixelFormat::kI420 ? 1 : 2;
-    for (std::size_t y = 0; y < height; y += 2) {
+    for (std::size_t y = rowBegin; y < rowEnd; y += 2) {
         const auto* top = bgra + y * stride;
         const auto* bottom = top + stride;
         auto* topLuma = output + y * width;

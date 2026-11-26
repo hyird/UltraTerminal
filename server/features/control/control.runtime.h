@@ -1,13 +1,13 @@
 #pragma once
+#include <channel.h>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <one_shot.h>
 #include <optional>
 #include <string>
+#include <task.h>
 #include <vector>
-
-#include <ruvia/core/task.h>
-#include <ruvia/core/worker_wait.h>
 
 #include "ultraterimal/protocol/message.protocol.h"
 

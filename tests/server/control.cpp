@@ -1,11 +1,10 @@
 #include <chrono>
+#include <event_loop.h>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+#include <task_scope.h>
 #include <utility>
-
-#include <ruvia/core/event_loop.h>
-#include <ruvia/core/task_scope.h>
 
 #include "features/control/control.runtime.h"
 
@@ -238,8 +237,9 @@ int main() {
     try {
         ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
-        auto task = pool.loop(0).start(exercise(pool.loop(0).worker()));
-        std::move(task).get();
+        const auto loop = pool.loop(0);
+        auto task = loop.submit(exercise(loop.worker())).take_value();
+        std::move(task).take_value();
         pool.join();
         std::cout << "Control readiness, queue count/bytes, FIFO sequencing, cancellation and close passed\n";
         return 0;

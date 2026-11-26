@@ -1,7 +1,6 @@
 #pragma once
 #include <memory>
-
-#include <ruvia/core/task.h>
+#include <task.h>
 
 #include "modules/devices/update.service.h"
 
@@ -13,7 +12,7 @@ ruvia::task<void> serveAgentUpdate(Context& context, Connection& socket) {
     if (!first || first->payload().size() > 1024 || !requested.ParseFromArray(first->payload().data(), static_cast<int>(first->payload().size())) || !protocol::validUpdate(requested)) {
         co_return;
     }
-    const auto release = ((co_await context.run_blocking([root = (*context.template worker_state<std::shared_ptr<ServerRuntime>>()).config.webRoot] { return agentRelease(root); })).take_value());
+    const auto release = ((co_await context.run_blocking([root = context.template worker_state<ServerRuntime>().config.webRoot] { return agentRelease(root); })).take_value());
     if (!release || release->update.SerializeAsString() != requested.SerializeAsString()) {
         co_return;
     }

@@ -1,10 +1,9 @@
 #pragma once
 #include <atomic>
+#include <blocking_pool.h>
 #include <memory>
 #include <stop_token>
 #include <string>
-
-#include <ruvia/core/blocking_pool.h>
 
 #include "modules/database/database.config.h"
 #include "modules/database/database.service.h"

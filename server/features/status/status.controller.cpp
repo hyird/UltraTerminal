@@ -4,16 +4,15 @@
 #include <exception>
 #include <set>
 #include <stdexcept>
+#include <streaming.h>
+#include <task_scope.h>
 
 #include <boost/json.hpp>
-#include <ruvia/core/task_scope.h>
-#include <ruvia/web/streaming.h>
 
 namespace ultraterimal::server {
 namespace {
-boost::json::object deviceJson(const DeviceInfo& device, const ServerRuntime& runtime) {
-    const auto connection = runtime.controlConnections.find(device.id);
-    return {{"agent_version", connection != runtime.controlConnections.end() && connection->second->ready ? boost::json::value(connection->second->agentVersion) : boost::json::value(nullptr)}, {"id", device.id}, {"name", device.name}, {"owner_username", device.ownerUsername}, {"online", connection != runtime.controlConnections.end() && connection->second->ready}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"last_seen", device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr)}};
+boost::json::object deviceJson(const DeviceInfo& device, const DeviceOnlineState& state) {
+    return {{"agent_version", state.online ? boost::json::value(state.agentVersion) : boost::json::value(nullptr)}, {"id", device.id}, {"name", device.name}, {"owner_username", device.ownerUsername}, {"online", state.online}, {"enrolled", device.enrolled}, {"can_manage", device.canManage}, {"desktop", device.desktop}, {"write_control", device.writeControl}, {"verification_method", device.verificationMethod}, {"manage_credentials", device.manageCredentials}, {"last_seen", device.lastSeen ? boost::json::value(*device.lastSeen) : boost::json::value(nullptr)}};
 }
 ruvia::task<void> send(ruvia::context& context, boost::json::object event) {
     const auto bytes = boost::json::serialize(event);
@@ -23,7 +22,7 @@ ruvia::task<void> send(ruvia::context& context, boost::json::object event) {
     co_await context.websocket().text(bytes);
 }
 ruvia::task<void> sendAccount(ruvia::context& context, const UserIdentity& user) {
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto telegram = ((co_await context.run_blocking([service = runtime.telegram, user] { return service.state(user.id); })).take_value());
     const auto approvals = ((co_await context.run_blocking([service = runtime.telegram, user] { return service.approvals(user); })).take_value());
     boost::json::array items;
@@ -34,18 +33,25 @@ ruvia::task<void> sendAccount(ruvia::context& context, const UserIdentity& user)
 }
 ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subscription, ruvia::task_scope& scope, bool& awaitingPong) {
     try {
-        auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
-        const auto token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""));
-        const bool administration = context.req().query("scope").value_or("") == "administration";
+        auto& runtime = context.worker_state<ServerRuntime>();
+        const auto token = std::string(context.request().cookie("__Host-ultraterimal").value_or(""));
+        const bool administration = context.request().query("scope").value_or("") == "administration";
         if (administration && context.request_state<UserIdentity>().role != "admin") {
             throw std::runtime_error("Administrator required");
         }
         const auto devices = ((co_await context.run_blocking([service = runtime.devices, user = subscription.userId, administration] { return service.list(user, administration); })).take_value());
+        std::vector<std::string> deviceIds;
+        deviceIds.reserve(devices.size());
+        for (const auto& device : devices) {
+            deviceIds.push_back(device.id);
+        }
+        const auto onlineStates = co_await queryDeviceOnlineStates(context.worker(), runtime, deviceIds);
         std::set<std::string> visible;
         boost::json::array snapshot;
         for (const auto& device : devices) {
             visible.insert(device.id);
-            snapshot.push_back(deviceJson(device, runtime));
+            const auto foundState = onlineStates.find(device.id);
+            snapshot.push_back(deviceJson(device, foundState != onlineStates.end() ? foundState->second : DeviceOnlineState{}));
         }
         co_await send(context, {{"type", "snapshot"}, {"devices", std::move(snapshot)}});
         co_await sendAccount(context, context.request_state<UserIdentity>());
@@ -74,7 +80,8 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
                         break;
                     }
                     visible.insert(id);
-                    co_await send(context, {{"type", "upsert"}, {"device", deviceJson(*device, runtime)}});
+                    const auto state = co_await queryDeviceOnlineState(context.worker(), runtime, id);
+                    co_await send(context, {{"type", "upsert"}, {"device", deviceJson(*device, state)}});
                 } else if (visible.erase(id)) {
                     co_await send(context, {{"type", "remove"}, {"id", id}});
                 }
@@ -86,7 +93,7 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
     context.websocket().abort();
 }
 ruvia::task<void> watchStatus(ruvia::context& context, StatusSubscription& subscription, ruvia::task_scope& scope, bool& awaitingPong) {
-    while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(15), scope.token()) == ruvia::timer_sleep_result::elapsed) {
+    while (co_await ruvia::sleep_for(context.worker(), std::chrono::seconds(15), scope.token()) == ruvia::sleep_status::elapsed) {
         if (awaitingPong || !subscription.enqueue("h")) {
             subscription.close();
             context.websocket().abort();
@@ -96,9 +103,9 @@ ruvia::task<void> watchStatus(ruvia::context& context, StatusSubscription& subsc
 }
 } // namespace
 ruvia::task<void> StatusController::events(ruvia::context& context) {
-    auto subscription = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).status.subscribe(context.worker(), context.request_state<UserIdentity>().id);
+    auto subscription = context.worker_state<ServerRuntime>().status.subscribe(context.worker(), context.request_state<UserIdentity>().id);
     if (!subscription) {
-        co_await context.websocket().close({.code_ = ruvia::websocket_close_code::from_value(1008), .reason_ = "Status subscription limit"});
+        co_await context.websocket().close({.code_ = ruvia::websocket_close_code(1008), .reason_ = "Status subscription limit"});
         co_return;
     }
     {

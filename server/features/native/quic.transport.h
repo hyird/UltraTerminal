@@ -1,9 +1,8 @@
 #pragma once
 
+#include <event_loop.h>
 #include <functional>
 #include <memory>
-
-#include <ruvia/core/event_loop.h>
 
 #include "config/server.config.h"
 #include "stream.transport.h"

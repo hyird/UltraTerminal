@@ -2,8 +2,6 @@
 
 #include <memory>
 
-#include <ruvia/web/middleware.h>
-
 #include "config/server.config.h"
 
 namespace ultraterimal::server {
@@ -13,7 +11,7 @@ class NativeServer {
     ~NativeServer();
     NativeServer(const NativeServer&) = delete;
     NativeServer& operator=(const NativeServer&) = delete;
-    void start(ruvia::web_worker_ref businessWorker);
+    void start();
     void stop();
 
   private:

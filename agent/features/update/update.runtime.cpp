@@ -4,13 +4,13 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
+#include <blocking_pool.h>
+#include <event_loop.h>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 
 #include <openssl/evp.h>
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "features/connection/connection.transport.h"
 #include "platform/windows/credential.transport.h"
@@ -75,9 +75,9 @@ int runAgentUpdate() {
     try {
         asio::io_context io;
         ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
         std::exception_ptr failure;
-        asio::co_spawn(attachment.loop().executor(), download(attachment.loop(), update.root(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.stop(); });
+        asio::co_spawn(attachment.loop().executor(), download(attachment.loop(), update.root(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.request_stop(); });
         attachment.run();
         if (failure) {
             std::rethrow_exception(failure);

@@ -6,7 +6,7 @@ target_compile_options(server-control-tests PRIVATE
 add_test(NAME server.control COMMAND server-control-tests)
 set_tests_properties(server.control PROPERTIES TIMEOUT 15)
 add_executable(server-desktop-tests desktop.cpp)
-target_link_libraries(server-desktop-tests PRIVATE ultraterimal-desktop-runtime)
+target_link_libraries(server-desktop-tests PRIVATE ultraterimal-desktop-runtime ruvia::web)
 target_compile_options(server-desktop-tests PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")

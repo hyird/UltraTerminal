@@ -26,22 +26,21 @@ std::int64_t idAt(const boost::json::object& object) {
 }
 } // namespace
 ruvia::task<ruvia::http_response> TelegramController::state(ruvia::context& context) {
-    const auto result = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).telegram, user = context.request_state<UserIdentity>().id] { return service.state(user); })).take_value());
+    const auto result = ((co_await context.run_blocking([service = context.worker_state<ServerRuntime>().telegram, user = context.request_state<UserIdentity>().id] { return service.state(user); })).take_value());
     co_return jsonResponse(context, {{"bot_username", result.botUsername}, {"telegram_id", result.telegramId}});
 }
 ruvia::task<ruvia::http_response> TelegramController::configure(ruvia::context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"token", "password", "code", "disable", "telegram_proof"});
+    const auto body = requestObject(co_await context.request().body_text(), {"token", "password", "code", "disable", "telegram_proof"});
     const auto user = context.request_state<UserIdentity>();
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    auto& runtime = context.worker_state<ServerRuntime>();
     const bool allowed = ((co_await context.run_blocking([service = runtime.identities, user, password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)] { return user.role == "admin" && service.reauthenticate(user, password, code, telegramProof); })).take_value());
-    if (!allowed || runtime.telegramConfiguring) {
+    if (!allowed || runtime.shared->telegramConfiguring->exchange(true, std::memory_order_acq_rel)) {
         co_return rejected(context);
     }
-    runtime.telegramConfiguring = true;
     struct Guard {
-        bool& flag;
-        ~Guard() { flag = false; }
-    } guard{runtime.telegramConfiguring};
+        std::atomic_bool& flag;
+        ~Guard() { flag.store(false, std::memory_order_release); }
+    } guard{*runtime.shared->telegramConfiguring};
     const bool disabling = requestBool(body, "disable");
     if (disabling) {
         const auto previous = ((co_await context.run_blocking([service = runtime.telegram] { return service.configuration(); })).take_value());
@@ -55,7 +54,7 @@ ruvia::task<ruvia::http_response> TelegramController::configure(ruvia::context& 
         if (!disabled) {
             co_return rejected(context);
         }
-        runtime.status.publish("u:*");
+        publishClusterStatus(runtime, "u:*");
         co_return jsonResponse(context, {{"ok", true}});
     }
     TelegramConfig config{requestText(body, "token", 160), {}, randomToken(), randomToken()};
@@ -80,13 +79,13 @@ ruvia::task<ruvia::http_response> TelegramController::configure(ruvia::context& 
     if (!saved) {
         co_return rejected(context);
     }
-    runtime.status.publish("u:*");
+    publishClusterStatus(runtime, "u:*");
     co_return jsonResponse(context, {{"ok", true}});
 }
 ruvia::task<ruvia::http_response> TelegramController::bind(ruvia::context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"password", "code", "telegram_proof"});
+    const auto body = requestObject(co_await context.request().body_text(), {"password", "code", "telegram_proof"});
     const auto user = context.request_state<UserIdentity>();
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto link = ((co_await context.run_blocking([identities = runtime.identities, service = runtime.telegram, user, password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)]() -> std::optional<std::string> { if(!identities.reauthenticate(user,password,code,telegramProof)) { return std::nullopt; } return service.beginBinding(user); })).take_value());
     if (!link) {
         co_return rejected(context);
@@ -94,19 +93,19 @@ ruvia::task<ruvia::http_response> TelegramController::bind(ruvia::context& conte
     co_return jsonResponse(context, {{"url", *link}, {"expires_in", 600}});
 }
 ruvia::task<ruvia::http_response> TelegramController::unbind(ruvia::context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"password", "code", "telegram_proof"});
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    const auto body = requestObject(co_await context.request().body_text(), {"password", "code", "telegram_proof"});
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto user = context.request_state<UserIdentity>();
     const bool ok = ((co_await context.run_blocking([identities = runtime.identities, service = runtime.telegram, user, password = optionalText(body, "password", 1024), telegramProof = optionalText(body, "telegram_proof", 32), code = optionalText(body, "code", 32)] { if(!identities.reauthenticate(user,password,code,telegramProof)) { return false; } service.unbind(user); return true; })).take_value());
     if (!ok) {
         co_return rejected(context);
     }
-    runtime.status.publish("u:*");
+    publishClusterStatus(runtime, "u:*");
     co_return jsonResponse(context, {{"ok", true}});
 }
 ruvia::task<ruvia::http_response> TelegramController::verify(ruvia::context& context) {
-    (void)requestObject(co_await context.req().text(), {});
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    (void)requestObject(co_await context.request().body_text(), {});
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto user = context.request_state<UserIdentity>();
     const auto config = ((co_await context.run_blocking([service = runtime.telegram] { return service.configuration(); })).take_value());
     if (!config) {
@@ -125,10 +124,10 @@ ruvia::task<ruvia::http_response> TelegramController::verify(ruvia::context& con
     co_return jsonResponse(context, {{"id", proof->id}});
 }
 ruvia::task<ruvia::http_response> TelegramController::webhook(ruvia::context& context) {
-    const auto bytes = co_await context.req().text();
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    const auto bytes = co_await context.request().body_text();
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto config = ((co_await context.run_blocking([service = runtime.telegram] { return service.configuration(); })).take_value());
-    if (!config || !constantEqual(context.req().header("X-Telegram-Bot-Api-Secret-Token").value_or(""), config->webhookSecret)) {
+    if (!config || !constantEqual(context.request().header("X-Telegram-Bot-Api-Secret-Token").value_or(""), config->webhookSecret)) {
         co_return rejected(context);
     }
     boost::system::error_code parseError;
@@ -156,7 +155,7 @@ ruvia::task<ruvia::http_response> TelegramController::webhook(ruvia::context& co
             }
             const auto user = ((co_await context.run_blocking([service = runtime.telegram, generation = config->generation, token = text.substr(7), id] { return service.bind(generation, token, id); })).take_value());
             if (user) {
-                runtime.status.publish("u:" + *user);
+                publishClusterStatus(runtime, "u:" + *user);
             }
             co_return jsonResponse(context, {{"method", "sendMessage"}, {"chat_id", id}, {"text", user ? "Telegram 已绑定到平台账号。" : "绑定未成功：链接已过期、已使用或 Telegram 已绑定其他账号，请回平台重新操作。"}});
         }
@@ -181,7 +180,7 @@ ruvia::task<ruvia::http_response> TelegramController::webhook(ruvia::context& co
             }
             const auto user = ((co_await context.run_blocking([service = runtime.telegram, generation = config->generation, approval = data.substr(2), id, accept = data[0] == 'y'] { return service.decide(generation, approval, id, accept); })).take_value());
             if (user) {
-                runtime.status.publish("u:" + *user);
+                publishClusterStatus(runtime, "u:" + *user);
             }
             co_return jsonResponse(context, {{"method", "answerCallbackQuery"}, {"callback_query_id", requestText(callback, "id", 256)}, {"text", user ? (data[0] == 'y' ? "已允许本次连接" : "已拒绝连接") : "申请已失效或已处理"}});
         }
@@ -191,8 +190,8 @@ ruvia::task<ruvia::http_response> TelegramController::webhook(ruvia::context& co
     co_return jsonResponse(context, {{"ok", true}});
 }
 ruvia::task<ruvia::http_response> TelegramController::request(ruvia::context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"device_id", "write_control"});
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    const auto body = requestObject(co_await context.request().body_text(), {"device_id", "write_control"});
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto user = context.request_state<UserIdentity>();
     const auto dispatch = ((co_await context.run_blocking([service = runtime.telegram, user, device = requestText(body, "device_id", 128), write = requestBool(body, "write_control")] { return service.requestApproval(user, device, write); })).take_value());
     if (!dispatch) {
@@ -204,15 +203,15 @@ ruvia::task<ruvia::http_response> TelegramController::request(ruvia::context& co
         const auto sent = co_await telegramCall(context, dispatch->botToken, "sendMessage", {{"chat_id", dispatch->requesterTelegramId}, {"text", text}, {"reply_markup", boost::json::object{{"inline_keyboard", buttons}}}});
         if (!sent) {
             ((co_await context.run_blocking([service = runtime.telegram, id = dispatch->approval.id] { service.deliveryFailed(id); })).take_value());
-            runtime.status.publish("u:" + user.id);
+            publishClusterStatus(runtime, "u:" + user.id);
             co_return rejected(context);
         }
     }
-    runtime.status.publish("u:" + user.id);
+    publishClusterStatus(runtime, "u:" + user.id);
     co_return jsonResponse(context, {{"id", dispatch->approval.id}, {"expires_at", dispatch->approval.expiresAt}, {"write_control", dispatch->approval.writeControl}});
 }
 ruvia::task<ruvia::http_response> TelegramController::approvals(ruvia::context& context) {
-    const auto approvals = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).telegram, user = context.request_state<UserIdentity>()] { return service.approvals(user); })).take_value());
+    const auto approvals = ((co_await context.run_blocking([service = context.worker_state<ServerRuntime>().telegram, user = context.request_state<UserIdentity>()] { return service.approvals(user); })).take_value());
     boost::json::array result;
     for (const auto& a : approvals) {
         result.push_back(boost::json::object{{"id", a.id}, {"device_id", a.deviceId}, {"state", a.state}, {"write_control", a.writeControl}, {"expires_at", a.expiresAt}});
@@ -220,11 +219,11 @@ ruvia::task<ruvia::http_response> TelegramController::approvals(ruvia::context& 
     co_return jsonResponse(context, result);
 }
 ruvia::task<ruvia::http_response> TelegramController::cancel(ruvia::context& context) {
-    const auto body = requestObject(co_await context.req().text(), {"id"});
-    auto& runtime = (*context.worker_state<std::shared_ptr<ServerRuntime>>());
+    const auto body = requestObject(co_await context.request().body_text(), {"id"});
+    auto& runtime = context.worker_state<ServerRuntime>();
     const auto user = context.request_state<UserIdentity>();
     ((co_await context.run_blocking([service = runtime.telegram, user, id = requestText(body, "id", 32)] { service.cancel(user, id); })).take_value());
-    runtime.status.publish("u:" + user.id);
+    publishClusterStatus(runtime, "u:" + user.id);
     co_return jsonResponse(context, {{"ok", true}});
 }
 } // namespace ultraterimal::server

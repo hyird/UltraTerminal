@@ -51,6 +51,7 @@ target_compile_options(ultraterimal-desktop-runtime PRIVATE
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
 target_link_libraries(ultraterimal-desktop-runtime PUBLIC ruvia::core ultraterimal::protocol PRIVATE spdlog::spdlog)
 add_executable(ultraterimal-server main.cpp
+    config/server.runtime.cpp
     features/native/native.runtime.cpp
     features/native/stream.transport.cpp
     features/native/quic.transport.cpp

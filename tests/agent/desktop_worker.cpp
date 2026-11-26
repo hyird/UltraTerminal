@@ -3,10 +3,12 @@
 #include <asio/post.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
+#include <blocking_pool.h>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cwchar>
+#include <event_loop.h>
 #include <exception>
 #include <iostream>
 #include <optional>
@@ -17,9 +19,6 @@
 #include <vector>
 
 #include <windows.h>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "desktop_process.fixture.h"
 #include "features/desktop/optimization.runtime.h"
@@ -303,7 +302,7 @@ void run(const std::wstring& executable, const std::string& mode) {
     require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session != 0, "Interactive test session required");
     asio::io_context io;
     ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-    auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+    ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
     agent::NamedPipeTransport pipe(io.get_executor(), agent::currentLogonSid());
     Child child(executable, pipe.name(), mode == "process_session" ? session + 1 : session);
     if (mode == "process_session") {
@@ -321,7 +320,7 @@ void run(const std::wstring& executable, const std::string& mode) {
         failure = error;
         deadline.cancel();
         pipe.cancel();
-        attachment.stop();
+        attachment.request_stop();
     });
     attachment.run();
     if (failure) {

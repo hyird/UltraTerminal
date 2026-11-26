@@ -1,14 +1,15 @@
+#include <algorithm>
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
+#include <blocking_pool.h>
 #include <chrono>
+#include <event_loop.h>
 #include <exception>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 
 #include <windows.h>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "features/desktop/video.runtime.h"
 
@@ -57,14 +58,15 @@ asio::awaitable<void> measure(ultraterimal::agent::DesktopVideoRuntime& video) {
 int main() {
     try {
         asio::io_context io;
-        ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+        ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
+        ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
         ultraterimal::agent::DesktopVideoRuntime video(attachment.loop(), blockingPool, 0);
         std::exception_ptr failure;
         asio::co_spawn(attachment.loop().executor(), measure(video), [&](std::exception_ptr error) {
             failure = error;
             video.stop();
-            attachment.stop();
+            attachment.request_stop();
         });
         attachment.run();
         if (failure) {

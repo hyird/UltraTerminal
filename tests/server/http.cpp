@@ -1,8 +1,9 @@
+#include <app.h>
+#include <array>
+#include <controller.h>
 #include <iostream>
 #include <stdexcept>
-
-#include <ruvia/web/app.h>
-#include <ruvia/web/controller.h>
+#include <test_app.h>
 
 #include "middleware/json.transport.h"
 
@@ -17,9 +18,8 @@ class ResponseController final {
 
   private:
     ruvia::task<ruvia::http_response> created(ruvia::context& context) {
-        context.draft().status(ruvia::http_status::created);
-        context.draft().header("Set-Cookie", "contract=value; Path=/; Secure; HttpOnly; SameSite=Strict");
-        co_return ultraterimal::server::jsonResponse(context, {{"created", true}});
+        const std::array<ruvia::http_header_view, 1> headers{{{"Set-Cookie", "contract=value; Path=/; Secure; HttpOnly; SameSite=Strict"}}};
+        co_return ultraterimal::server::jsonResponse(context, {{"created", true}}, {.status_ = ruvia::http_status::created, .headers_ = headers});
     }
     ruvia::task<ruvia::http_response> replaced(ruvia::context& context) {
         auto discarded = ultraterimal::server::jsonResponse(context, {{"discarded", true}});
@@ -37,13 +37,14 @@ void require(bool condition, const char* message) {
 int main() {
     try {
         ruvia::test_app app;
-        const auto created = app.request(ruvia::test_request::get("/response-contract/created"));
+        app.controllers<ResponseController>();
+        const auto created = app.dispatch(ruvia::test_request::get("/response-contract/created"));
         require(created.status() == ruvia::http_status::created, "JSON builder lost the selected creation status");
         require(created.header("Content-Type") == "application/json; charset=utf-8", "JSON media type changed");
         require(created.header("Cache-Control") == "no-store", "JSON response became cacheable");
         require(created.header("Set-Cookie") == "contract=value; Path=/; Secure; HttpOnly; SameSite=Strict", "Cookie attributes changed");
         require(created.body() == "{\"created\":true}", "JSON body changed");
-        const auto replaced = app.request(ruvia::test_request::get("/response-contract/replaced"));
+        const auto replaced = app.dispatch(ruvia::test_request::get("/response-contract/replaced"));
         require(replaced.status() == ruvia::http_status::forbidden, "Replacement error inherited the previous status");
         require(replaced.header("Cache-Control") == "no-store", "Replacement error lost the cache policy");
         require(!replaced.header("Set-Cookie"), "Response draft leaked between requests");

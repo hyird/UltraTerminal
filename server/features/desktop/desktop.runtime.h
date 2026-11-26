@@ -1,16 +1,17 @@
 #pragma once
 #include <array>
+#include <atomic>
+#include <channel.h>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <one_shot.h>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <task.h>
 #include <utility>
-
-#include <ruvia/core/task.h>
-#include <ruvia/core/worker_wait.h>
 
 #include "desktop_diagnostics.types.h"
 #include "modules/sessions/session.types.h"
@@ -46,11 +47,23 @@ enum class DesktopCloseOrigin { kServer,
                                 kAgentInput,
                                 kBrowserVideo,
                                 kAgentVideo };
-// Owned and accessed on one Worker. Frame ownership includes the pending socket write.
+// Cross-worker lock-free byte budget. Frame ownership includes the pending socket write.
 struct DesktopBudget {
     explicit DesktopBudget(std::size_t maximum) : limit(maximum) {}
+    bool tryReserve(std::size_t bytes) noexcept {
+        auto current = used.load(std::memory_order_relaxed);
+        while (bytes <= limit && current <= limit - bytes) {
+            if (used.compare_exchange_weak(current, current + bytes, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    void release(std::size_t bytes) noexcept {
+        used.fetch_sub(bytes, std::memory_order_acq_rel);
+    }
     const std::size_t limit;
-    std::size_t used = 0;
+    std::atomic<std::size_t> used{0};
 };
 class DesktopDelivery {
   public:
@@ -77,13 +90,20 @@ class DesktopEndpoint {
 
   private:
     friend class DesktopSession;
-    DesktopEndpoint(ruvia::worker_ref worker, protocol::DesktopChannelBinding binding);
+    DesktopEndpoint(ruvia::worker_ref sessionWorker, ruvia::worker_ref ioWorker, protocol::DesktopChannelBinding binding);
     void close();
-    bool closed_ = false;
-    bool waiting_ = false;
+    std::atomic_bool closed_{false};
+    std::atomic_bool waiting_{false};
     protocol::DesktopChannelValidator validator_;
     std::pair<ruvia::channel_sender<std::unique_ptr<DesktopDelivery>>, ruvia::channel_receiver<std::unique_ptr<DesktopDelivery>>> queue_;
     std::pair<ruvia::channel_sender<bool>, ruvia::channel_receiver<bool>> space_;
+};
+struct DesktopWriteTiming {
+    std::chrono::steady_clock::time_point enqueued{};
+    std::chrono::steady_clock::time_point received{};
+    std::chrono::steady_clock::duration elapsed{};
+    bool browserVideo = false;
+    bool primaryVideo = false;
 };
 class DesktopSession {
   public:
@@ -92,18 +112,20 @@ class DesktopSession {
     DesktopSession(const DesktopSession&) = delete;
     DesktopSession& operator=(const DesktopSession&) = delete;
     // Authorization is obtained from SessionService before attaching; no ticket is stored here.
-    std::shared_ptr<DesktopEndpoint> attach(const ChannelAuthorization& authorization, protocol::ChannelSource source);
+    std::shared_ptr<DesktopEndpoint> attach(const ChannelAuthorization& authorization, protocol::ChannelSource source, ruvia::worker_ref ioWorker = {});
     // One reader per endpoint awaits admission before reading its next message.
     ruvia::task<bool> forward(std::shared_ptr<DesktopEndpoint> sender, const wire::Envelope& message, ruvia::stop_token stop = {});
-    bool ready() const { return ready_ && !closed_; }
-    bool closed() const { return closed_; }
+    bool ready() const { return ready_.load(std::memory_order_acquire) && !closed_.load(std::memory_order_acquire); }
+    bool closed() const { return closed_.load(std::memory_order_acquire); }
     void close(DesktopCloseReason reason = DesktopCloseReason::kServerStopped, DesktopCloseOrigin origin = DesktopCloseOrigin::kServer);
     DesktopCloseReason closeReason() const { return closeReason_; }
     DesktopCloseOrigin closeOrigin() const { return closeOrigin_; }
     const DesktopDiagnostics& diagnostics() const { return diagnostics_; }
     void logHealth();
+    static DesktopWriteTiming captureWriteTiming(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed);
     // Only completed browser video writes are sampled; never diagnostics/control.
     void writeCompleted(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed);
+    void writeCompleted(const DesktopWriteTiming& timing);
 
   private:
     void logDiagnostics(std::string_view event) const;
@@ -135,8 +157,8 @@ class DesktopSession {
     std::array<std::string, 2> channels_;
     ChannelAuthorization identity_{};
     bool bound_ = false;
-    bool ready_ = false;
-    bool closed_ = false;
+    std::atomic_bool ready_{false};
+    std::atomic_bool closed_{false};
     DesktopCloseReason closeReason_ = DesktopCloseReason::kServerStopped;
     DesktopCloseOrigin closeOrigin_ = DesktopCloseOrigin::kServer;
     DesktopDiagnostics diagnostics_;

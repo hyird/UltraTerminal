@@ -2,9 +2,8 @@
 
 #include <asio/awaitable.hpp>
 #include <cstdint>
+#include <event_loop.h>
 #include <memory>
-
-#include <ruvia/core/event_loop.h>
 
 #include "send_queue.runtime.h"
 #include "ultraterimal/protocol/message.protocol.h"

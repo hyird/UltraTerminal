@@ -103,6 +103,12 @@ VideoEncoder::VideoEncoder(VideoEncoderConfig config, ID3D11Device* device) : st
 VideoEncoder::~VideoEncoder() = default;
 bool VideoEncoder::hardware() const { return state_->media != nullptr; }
 bool VideoEncoder::gpu() const { return state_->media && state_->media->gpu(); }
+std::optional<VideoPixelFormat> VideoEncoder::preferredPixelFormat() const {
+    if (gpu()) {
+        return std::nullopt;
+    }
+    return state_->media ? VideoPixelFormat::kNv12 : VideoPixelFormat::kI420;
+}
 std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodeTexture(ID3D11Texture2D* bgra, std::uint64_t timestamp, bool forceKeyFrame) {
     auto& state = *state_;
     if (!gpu()) {
@@ -162,6 +168,60 @@ void VideoEncoder::setDetail(bool sharp) {
     if (state_->software) {
         state_->software->setDetail(sharp);
     }
+}
+std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodePreconverted(std::span<const std::uint8_t> bgra, std::size_t stride, std::span<const std::uint8_t> yuv, VideoPixelFormat format, std::uint64_t timestampMicroseconds, bool forceKeyFrame) {
+    auto& state = *state_;
+    const auto yuvBytes = static_cast<std::size_t>(state.config.width) * state.config.height * 3 / 2;
+    if (yuv.size() < yuvBytes || stride < static_cast<std::size_t>(state.config.width) * 4 || stride > 64 * 1024 * 1024 / state.config.height || bgra.size() < stride * state.config.height) {
+        return std::unexpected(VideoEncodeError::kInvalidPixels);
+    }
+    if (timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<long long>::max()) / 10 ||
+        (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
+        return std::unexpected(VideoEncodeError::kInvalidTimestamp);
+    }
+    if (state.media) {
+        std::span<const std::uint8_t> nv12Input = yuv;
+        if (format != VideoPixelFormat::kNv12) {
+            if (!convertVideoPixels(bgra, stride, state.config.width, state.config.height, VideoPixelFormat::kNv12, state.nv12)) {
+                return std::unexpected(VideoEncodeError::kInvalidPixels);
+            }
+            nv12Input = state.nv12;
+        }
+        const bool keyRequired = forceKeyFrame || state.codec.empty() || state.baselinePending;
+        const auto started = std::chrono::steady_clock::now();
+        auto encoded = state.media->encode(nv12Input, timestampMicroseconds, keyRequired);
+        if (state.withinLatencyBudget(started)) {
+            if (auto result = state.acceptHardware(std::move(encoded), timestampMicroseconds, keyRequired)) {
+                return std::move(*result);
+            }
+        }
+        if (state.fallbackHardware(false)) {
+            if (auto result = state.acceptHardware(state.media->encode(nv12Input, timestampMicroseconds, true), timestampMicroseconds, true)) {
+                return std::move(*result);
+            }
+        }
+        if (!state.software) {
+            state.fallback();
+        }
+        auto result = state.software->encode(bgra, stride, timestampMicroseconds, true);
+        if (result) {
+            result->baselineReset = state.baselinePending;
+            state.baselinePending = false;
+            state.codec = result->codec;
+            state.lastTimestamp = timestampMicroseconds;
+        }
+        return result;
+    }
+    auto result = format == VideoPixelFormat::kI420
+                      ? state.software->encodeI420(yuv, timestampMicroseconds, forceKeyFrame || state.baselinePending)
+                      : state.software->encode(bgra, stride, timestampMicroseconds, forceKeyFrame || state.baselinePending);
+    if (result) {
+        result->baselineReset = state.baselinePending;
+        state.baselinePending = false;
+        state.codec = result->codec;
+        state.lastTimestamp = timestampMicroseconds;
+    }
+    return result;
 }
 std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encode(std::span<const std::uint8_t> bgra, std::size_t stride, std::uint64_t timestampMicroseconds, bool forceKeyFrame) {
     auto& state = *state_;

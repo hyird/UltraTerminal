@@ -1,15 +1,15 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
+#include <blocking_pool.h>
 #include <chrono>
+#include <event_loop.h>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
 
 #include <d3d11.h>
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "capture.fixture.h"
 #include "config/command_line.config.h"
@@ -177,10 +177,10 @@ int wmain(int argc, wchar_t** argv) {
         }
         asio::io_context io;
         ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
         std::exception_ptr failure;
         asio::co_spawn(attachment.loop().executor(), argc == 1 ? parent(attachment.loop(), std::filesystem::absolute(argv[0])) : child(attachment.loop(), *options),
-                       [&](std::exception_ptr error) { failure = error; attachment.stop(); });
+                       [&](std::exception_ptr error) { failure = error; attachment.request_stop(); });
         attachment.run();
         if (failure) {
             std::rethrow_exception(failure);

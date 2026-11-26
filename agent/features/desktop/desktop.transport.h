@@ -3,10 +3,9 @@
 #include <asio/awaitable.hpp>
 #include <chrono>
 #include <cstdint>
+#include <event_loop.h>
 #include <memory>
 #include <string>
-
-#include <ruvia/core/event_loop.h>
 
 #include "features/connection/connection.config.h"
 #include "ultraterimal/protocol/message.protocol.h"
@@ -17,7 +16,7 @@ namespace ultraterimal::agent {
 // and one video disconnect observer; callers join outstanding operations after cancel().
 class DesktopTransport {
   public:
-    DesktopTransport(ruvia::event_loop loop, ConnectionConfig config, wire::Envelope sessionOpen);
+    DesktopTransport(ruvia::event_loop ownerLoop, ConnectionConfig config, wire::Envelope sessionOpen, ruvia::event_loop inputLoop = {}, ruvia::event_loop videoLoop = {});
     ~DesktopTransport();
     DesktopTransport(const DesktopTransport&) = delete;
     DesktopTransport& operator=(const DesktopTransport&) = delete;

@@ -1,12 +1,11 @@
 #pragma once
 #include <asio/awaitable.hpp>
+#include <blocking_pool.h>
 #include <chrono>
 #include <cstdint>
+#include <event_loop.h>
 #include <memory>
 #include <optional>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "video.types.h"
 

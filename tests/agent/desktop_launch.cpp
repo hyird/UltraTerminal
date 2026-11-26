@@ -3,14 +3,13 @@
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
 #include <asio/windows/object_handle.hpp>
+#include <blocking_pool.h>
 #include <chrono>
+#include <event_loop.h>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/pipe.transport.h"
@@ -73,11 +72,11 @@ int wmain(int argc, wchar_t** argv) {
     try {
         asio::io_context io;
         ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
         std::exception_ptr failure;
         asio::co_spawn(attachment.loop().executor(), exercise(attachment.loop(), argv[1]), [&](std::exception_ptr error) {
             failure = error;
-            attachment.stop();
+            attachment.request_stop();
         });
         attachment.run();
         if (failure) {

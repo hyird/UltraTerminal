@@ -1,7 +1,7 @@
 #pragma once
-#include <ruvia/core/task.h>
-#include <ruvia/web/controller.h>
-#include <ruvia/web/middleware.h>
+#include <controller.h>
+#include <middleware.h>
+#include <task.h>
 
 #include "middleware/authentication.h"
 

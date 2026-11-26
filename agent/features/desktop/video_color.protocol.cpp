@@ -43,9 +43,12 @@ bool videoPixelAvx2Available() {
     return available;
 }
 // BT.601 limited-range matrix; codec adapters own color signaling.
-bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
-                        std::uint32_t width, std::uint32_t height, VideoPixelFormat format, std::span<std::uint8_t> output, VideoPixelBackend backend) {
+bool convertVideoPixelRows(std::span<const std::uint8_t> bgra, std::size_t stride,
+                           std::uint32_t width, std::uint32_t height,
+                           std::uint32_t rowBegin, std::uint32_t rowEnd,
+                           VideoPixelFormat format, std::span<std::uint8_t> output, VideoPixelBackend backend) {
     if (!width || !height || width % 2 || height % 2 || width > 4096 || height > 4096 ||
+        rowBegin > rowEnd || rowEnd > height || rowBegin % 2 || rowEnd % 2 ||
         static_cast<std::uint64_t>(width) * height > 4096 * 2160 ||
         stride < static_cast<std::size_t>(width) * 4 || stride > 64 * 1024 * 1024 / height ||
         bgra.size() < stride * height || output.size() < static_cast<std::size_t>(width) * height * 3 / 2 ||
@@ -55,12 +58,17 @@ bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
     }
     if (backend != VideoPixelBackend::kSse2) {
         if (videoPixelAvx2Available()) {
-            detail::convertVideoPixelsAvx2(bgra.data(), stride, width, height, format, output.data());
+            if (rowBegin < rowEnd) {
+                detail::convertVideoPixelRowsAvx2(bgra.data(), stride, width, height, rowBegin, rowEnd, format, output.data());
+            }
             return true;
         }
         if (backend == VideoPixelBackend::kAvx2) {
             return false;
         }
+    }
+    if (rowBegin == rowEnd) {
+        return true;
     }
     const auto pixels = static_cast<std::size_t>(width) * height;
     auto* yPlane = output.data();
@@ -69,7 +77,7 @@ bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
     const std::size_t chromaStep = format == VideoPixelFormat::kI420 ? 1 : 2;
     // Keep luma linear so the compiler can vectorize it independently of the
     // 2x2 chroma reduction. The matrix and rounding remain identical.
-    for (std::size_t y = 0; y < height; ++y) {
+    for (std::size_t y = rowBegin; y < rowEnd; ++y) {
         const auto* row = bgra.data() + y * stride;
         auto* luma = yPlane + y * width;
         std::size_t x = 0;
@@ -90,7 +98,7 @@ bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
             luma[x] = static_cast<std::uint8_t>(((66 * pixel[2] + 129 * pixel[1] + 25 * pixel[0] + 128) >> 8) + 16);
         }
     }
-    for (std::size_t y = 0; y < height; y += 2) {
+    for (std::size_t y = rowBegin; y < rowEnd; y += 2) {
         const auto* first = bgra.data() + y * stride;
         const auto* second = first + stride;
         std::size_t x = 0;
@@ -123,5 +131,9 @@ bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
         }
     }
     return true;
+}
+bool convertVideoPixels(std::span<const std::uint8_t> bgra, std::size_t stride,
+                        std::uint32_t width, std::uint32_t height, VideoPixelFormat format, std::span<std::uint8_t> output, VideoPixelBackend backend) {
+    return convertVideoPixelRows(bgra, stride, width, height, 0, height, format, output, backend);
 }
 } // namespace ultraterimal::agent

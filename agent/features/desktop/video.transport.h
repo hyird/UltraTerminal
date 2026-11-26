@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <span>
 
 #include "video.types.h"
+#include "video_color.protocol.h"
 
 struct ID3D11Device;
 struct ID3D11Texture2D;
@@ -23,7 +25,9 @@ class VideoEncoder {
     void setDetail(bool sharp);
     bool hardware() const;
     bool gpu() const;
+    std::optional<VideoPixelFormat> preferredPixelFormat() const;
     std::expected<EncodedVideoFrame, VideoEncodeError> encodeTexture(ID3D11Texture2D* bgra, std::uint64_t timestampMicroseconds, bool forceKeyFrame = false);
+    std::expected<EncodedVideoFrame, VideoEncodeError> encodePreconverted(std::span<const std::uint8_t> bgra, std::size_t stride, std::span<const std::uint8_t> yuv, VideoPixelFormat format, std::uint64_t timestampMicroseconds, bool forceKeyFrame = false);
     std::expected<EncodedVideoFrame, VideoEncodeError> encode(std::span<const std::uint8_t> bgra, std::size_t stride, std::uint64_t timestampMicroseconds, bool forceKeyFrame = false);
 
   private:

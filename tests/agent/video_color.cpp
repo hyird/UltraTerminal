@@ -167,6 +167,16 @@ int main() {
             }
             for (const auto format : {VideoPixelFormat::kI420, VideoPixelFormat::kNv12}) {
                 require(convertVideoPixels(source, stride, width, height, format, converted, backend));
+                std::vector<std::uint8_t> sliced(converted.size(), 0xcc);
+                for (std::uint32_t slice = 0; slice < 8; ++slice) {
+                    const auto rowBegin = (height / 2 * slice / 8) * 2;
+                    const auto rowEnd = (height / 2 * (slice + 1) / 8) * 2;
+                    require(convertVideoPixelRows(source, stride, width, height, static_cast<std::uint32_t>(rowBegin), static_cast<std::uint32_t>(rowEnd), format, sliced, backend));
+                }
+                require(sliced == converted);
+                require(!convertVideoPixelRows(source, stride, width, height, 1, 4, format, sliced, backend));
+                require(!convertVideoPixelRows(source, stride, width, height, 4, 2, format, sliced, backend));
+                require(!convertVideoPixelRows(source, stride, width, height, 0, height + 2, format, sliced, backend));
                 for (int blue = 0; blue < 256; ++blue) {
                     for (int green = 0; green < 256; ++green) {
                         const auto luma = saturated(((66 * red + 129 * green + 25 * blue + 128) >> 8) + 16);

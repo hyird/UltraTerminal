@@ -5,13 +5,13 @@
 #include <asio/redirect_error.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/this_coro.hpp>
+#include <asio_bridge.h>
+#include <blocking_pool.h>
 #include <chrono>
+#include <event_loop.h>
 #include <exception>
 #include <stdexcept>
 #include <utility>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "bridge.runtime.h"
 #include "desktop.transport.h"
@@ -51,8 +51,10 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     std::exception_ptr bridgeFailure;
 
     State(ruvia::event_loop owner, ConnectionConfig config, wire::Envelope grant,
-          std::filesystem::path path, std::uint32_t selected, ConsoleSessionEvents* events)
-        : loop(owner), remote(owner, config, grant), relay(owner, remote), grace(owner.executor()), transition(owner.executor()),
+          std::filesystem::path path, std::uint32_t selected, ConsoleSessionEvents* events, ruvia::event_loop_pool* loopPool)
+        : loop(owner),
+          remote(owner, config, grant, loopPool ? loopPool->next_loop() : owner, loopPool ? loopPool->next_loop() : owner),
+          relay(owner, remote), grace(owner.executor()), transition(owner.executor()),
           executable(std::move(path)), loginCredential(config.credentialFile.parent_path() / "windows_login.credential"), session(grant.session_id()), binding(selected),
           writeControl(grant.session_open().write_control()), desktopInputContract(grant.session_open().desktop_input_contract()) {
         if ((writeControl && desktopInputContract != 2) || (!writeControl && desktopInputContract != 0)) {
@@ -342,9 +344,16 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     }
 };
 DesktopSession::DesktopSession(ruvia::event_loop loop, ConnectionConfig config, wire::Envelope grant,
-                               std::filesystem::path executable, std::uint32_t windowsSession, ConsoleSessionEvents* consoleEvents)
-    : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(grant), std::move(executable), windowsSession, consoleEvents)) {}
+                               std::filesystem::path executable, std::uint32_t windowsSession, ConsoleSessionEvents* consoleEvents,
+                               ruvia::event_loop_pool* loopPool)
+    : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(grant), std::move(executable), windowsSession, consoleEvents, loopPool)) {}
 DesktopSession::~DesktopSession() { stop(); }
 asio::awaitable<DesktopSessionResult> DesktopSession::run(std::string credential) { return State::runOwned(state_, std::move(credential)); }
-void DesktopSession::stop() { state_->stop(); }
+void DesktopSession::stop() {
+    if (!state_->loop.valid() || state_->loop.worker().is_current()) {
+        state_->stop();
+    } else {
+        (void)state_->loop.defer_cleanup([state = state_] { state->stop(); });
+    }
+}
 } // namespace ultraterimal::agent

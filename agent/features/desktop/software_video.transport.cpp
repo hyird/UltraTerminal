@@ -1,6 +1,7 @@
 #include "software_video.transport.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -164,21 +165,18 @@ void SoftwareVideoEncoder::setRate(std::uint32_t framesPerSecond, std::uint32_t 
     state_->config.framesPerSecond = framesPerSecond;
     state_->config.bitrate = bitrate;
 }
-std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(std::span<const std::uint8_t> bgra,
-                                                                                std::size_t stride,
-                                                                                std::uint64_t timestampMicroseconds,
-                                                                                bool forceKeyFrame) {
+std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encodeI420(std::span<const std::uint8_t> i420,
+                                                                                    std::uint64_t timestampMicroseconds,
+                                                                                    bool forceKeyFrame) {
     auto& state = *state_;
     const auto width = state.config.width, height = state.config.height;
-    if (stride < static_cast<std::size_t>(width) * 4 || stride > 64 * 1024 * 1024 / height || bgra.size() < stride * height) {
+    const auto expectedBytes = static_cast<std::size_t>(width) * height * 3 / 2;
+    if (i420.size() < expectedBytes) {
         return std::unexpected(VideoEncodeError::kInvalidPixels);
     }
     if (timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<long long>::max()) ||
         (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
         return std::unexpected(VideoEncodeError::kInvalidTimestamp);
-    }
-    if (!convertVideoPixels(bgra, stride, width, height, VideoPixelFormat::kI420, state.i420)) {
-        return std::unexpected(VideoEncodeError::kInvalidPixels);
     }
     const bool requireKeyFrame = forceKeyFrame || state.refreshRequired;
     if (requireKeyFrame && state.encoder->ForceIntraFrame(true) != cmResultSuccess) {
@@ -192,7 +190,7 @@ std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(
     picture.iPicHeight = static_cast<int>(height);
     picture.iStride[0] = static_cast<int>(width);
     picture.iStride[1] = picture.iStride[2] = static_cast<int>(width / 2);
-    picture.pData[0] = state.i420.data();
+    picture.pData[0] = const_cast<std::uint8_t*>(i420.data());
     picture.pData[1] = picture.pData[0] + static_cast<std::size_t>(width) * height;
     picture.pData[2] = picture.pData[1] + static_cast<std::size_t>(width) * height / 4;
     picture.uiTimeStamp = static_cast<long long>(timestampMicroseconds / 1000);
@@ -242,5 +240,23 @@ std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(
     frame.codec = state.codec;
     state.refreshRequired = false;
     return frame;
+}
+std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(std::span<const std::uint8_t> bgra,
+                                                                                std::size_t stride,
+                                                                                std::uint64_t timestampMicroseconds,
+                                                                                bool forceKeyFrame) {
+    auto& state = *state_;
+    const auto width = state.config.width, height = state.config.height;
+    if (stride < static_cast<std::size_t>(width) * 4 || stride > 64 * 1024 * 1024 / height || bgra.size() < stride * height) {
+        return std::unexpected(VideoEncodeError::kInvalidPixels);
+    }
+    if (timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+        (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
+        return std::unexpected(VideoEncodeError::kInvalidTimestamp);
+    }
+    if (!convertVideoPixels(bgra, stride, width, height, VideoPixelFormat::kI420, state.i420)) {
+        return std::unexpected(VideoEncodeError::kInvalidPixels);
+    }
+    return encodeI420(state.i420, timestampMicroseconds, forceKeyFrame);
 }
 } // namespace ultraterimal::agent

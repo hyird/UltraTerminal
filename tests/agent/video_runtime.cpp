@@ -1,7 +1,9 @@
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/steady_timer.hpp>
+#include <blocking_pool.h>
 #include <chrono>
+#include <event_loop.h>
 #include <exception>
 #include <functional>
 #include <iostream>
@@ -11,8 +13,6 @@
 
 #include <windows.h>
 
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 #include <wels/codec_api.h>
 
 #include "features/desktop/video.runtime.h"
@@ -369,8 +369,9 @@ int main(int argc, char** argv) {
         DisplayRestore displayRestore(changeResolution);
         require(SetThreadExecutionState(ES_DISPLAY_REQUIRED) != 0, "Cannot wake test display");
         asio::io_context io;
-        ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-        auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+        const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+        ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
+        ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
         agent::DesktopVideoRuntime video(attachment.loop(), blockingPool, 0, optimization ? 2 : 0);
         asio::steady_timer pulse(io);
         unsigned ticks = 0;
@@ -389,7 +390,7 @@ int main(int argc, char** argv) {
             failure = error;
             pulse.cancel();
             video.stop();
-            attachment.stop();
+            attachment.request_stop();
         });
         attachment.run();
         if (failure) {

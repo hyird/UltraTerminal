@@ -2,17 +2,16 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <event_loop.h>
 #include <exception>
 #include <iostream>
 #include <source_location>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <task_scope.h>
 #include <utility>
 #include <vector>
-
-#include <ruvia/core/event_loop.h>
-#include <ruvia/core/task_scope.h>
 
 #include "features/desktop/desktop.runtime.h"
 #include "features/desktop/desktop_exchange.runtime.h"
@@ -164,7 +163,7 @@ struct TestDesktopWriter {
         auto message = protocol::decodeMessage(bytes);
         require(bool(message));
         messages.push_back(std::move(*message));
-        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2)) == ruvia::timer_sleep_result::elapsed);
+        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2)) == ruvia::sleep_status::elapsed);
         require(worker.is_current());
     }
     void abort() { aborted = true; }
@@ -192,7 +191,7 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
             for (std::size_t slot = 0; slot < states.size(); ++slot) {
                 scope.spawn(server::writeChannel(writers[slot], states[slot], scope));
             }
-            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::timer_sleep_result::elapsed);
+            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::sleep_status::elapsed);
             for (std::size_t slot = 0; slot < writers.size(); ++slot) {
                 require(writers[slot].messages.size() == 1 && writers[slot].messages[0].has_channel_ready());
                 require(writers[slot].messages[0].channel_ready().desktop_optimization_contract() == 2);
@@ -203,7 +202,7 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
             require(co_await session.forward(states[0].endpoint, caps));
             require(co_await session.forward(states[3].endpoint, configuration()));
             require(co_await session.forward(states[3].endpoint, video(3, 1)));
-            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::timer_sleep_result::elapsed);
+            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::sleep_status::elapsed);
             const auto& pipeline = session.diagnostics().pipeline;
             const auto writes = pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary();
             require(writes.samples == 2 && writes.meanMicroseconds >= 1000); // Completion, not dequeue, measured by real writer code.
@@ -216,7 +215,7 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
             *dynamic.mutable_video_refinement()->mutable_stage_timing() = workerStages();
             require(co_await session.forward(states[3].endpoint, frame));
             require(co_await session.forward(states[3].endpoint, dynamic));
-            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::timer_sleep_result::elapsed);
+            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::sleep_status::elapsed);
             for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
                 require(pipeline.stages[index].summary().samples == 1);
             }
@@ -255,7 +254,7 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
             detail.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(128); // Not the already-refined dynamic tile.
             *detail.mutable_video_refinement()->mutable_stage_timing() = workerStages();
             require(co_await session.forward(states[3].endpoint, detail));
-            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::timer_sleep_result::elapsed);
+            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::sleep_status::elapsed);
             for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
                 require(pipeline.stages[index].summary().samples == 2);
             }
@@ -434,7 +433,7 @@ ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_ref worker) {
         require(bool(co_await endpoints[2]->receive({})));
         require(co_await session.forward(endpoints[3], configuration(5, 2)));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2100)) == ruvia::timer_sleep_result::elapsed);
+        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2100)) == ruvia::sleep_status::elapsed);
         require(co_await session.forward(endpoints[3], video(6, 1, 2)));
         require(bool(co_await endpoints[2]->receive({})));
         require(co_await session.forward(endpoints[3], configuration(7, 3)));
@@ -683,7 +682,7 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         require(bool(co_await endpoints[2]->receive({})));
         require(co_await session.forward(endpoints[3], refinement()));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2100)) == ruvia::timer_sleep_result::elapsed);
+        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2100)) == ruvia::sleep_status::elapsed);
         const auto messages = session.diagnostics().forwardedMessages;
         require(co_await session.forward(endpoints[0], refinementAck()));
         auto cleanup = co_await endpoints[1]->receive({});
@@ -834,7 +833,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
         require(inFlight && !inFlight->ready());
         const auto encoded = protocol::encodeMessage(refresh(2));
         require(encoded && inFlight->bytes() == *encoded);
-        const auto occupied = budget->used;
+        const std::size_t occupied = budget->used.load();
         require(occupied > inFlight->bytes().size());
         require(co_await session.forward(endpoints[0], refresh(10)));
         require(budget->used > occupied); // Receiving is not completion of a socket write.
@@ -870,7 +869,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
             std::exception_ptr scopeFailure;
             try {
                 scope.spawn(forwardBurst(session, endpoints[0], worker, finished));
-                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::timer_sleep_result::elapsed);
+                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::sleep_status::elapsed);
                 require(session.ready() && !finished);
                 require(budget->used == 9 * protocol::encodeMessage(refresh(2))->size());
                 for (std::uint64_t sequence = 2; sequence <= 100; ++sequence) {
@@ -922,7 +921,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
             std::exception_ptr scopeFailure;
             try {
                 scope.spawn(forwardVideoBurst(session, endpoints[3], configuration, finished));
-                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::timer_sleep_result::elapsed);
+                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::sleep_status::elapsed);
                 require(session.ready() && !finished && budget->used > 2 * kSimulatedFrameBytes && budget->used < 4 * kSimulatedFrameBytes);
                 // A backed-up video route must not hold the separate input route.
                 const auto control = refresh(2);
@@ -936,7 +935,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
                     const auto frame = delivery ? protocol::decodeMessage(delivery->bytes()) : std::unexpected(protocol::MessageError::kInvalidField);
                     require(frame && frame->frame_id() == index && frame->sequence() == index + 2 && frame->video_frame().timestamp_microseconds() == index * 33333 &&
                             frame->video_frame().key_frame() == (index == 1) && frame->video_frame().data() == expectedFrame);
-                    require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::timer_sleep_result::elapsed);
+                    require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::sleep_status::elapsed);
                 }
                 scopeJoined = true;
                 co_await scope.join();
@@ -978,7 +977,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
             try {
                 ruvia::stop_source stop;
                 scope.spawn(awaitRejected(session, endpoints[0], stop.token(), finished));
-                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::timer_sleep_result::elapsed);
+                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(10)) == ruvia::sleep_status::elapsed);
                 require(!finished && session.ready());
                 if (cancel) {
                     stop.request_stop();
@@ -1023,7 +1022,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
                 for (std::size_t i = 0; i < endpoints.size(); ++i) {
                     scope.spawn(awaitClose(*endpoints[i], finished[i]));
                 }
-                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(1)) == ruvia::timer_sleep_result::elapsed);
+                require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(1)) == ruvia::sleep_status::elapsed);
                 session.reset(); // Destruction must wake all four writers while endpoint handles survive.
                 scopeJoined = true;
                 co_await scope.join();
@@ -1210,15 +1209,97 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
         require(!session.ready());
     }
 }
+ruvia::task<void> attachCrossWorkerEndpoints(std::shared_ptr<server::DesktopSession> session, std::array<std::shared_ptr<server::DesktopEndpoint>, 4>* endpoints, std::array<ruvia::worker_ref, 4> ioWorkers) {
+    for (std::size_t i = 0; i < endpoints->size(); ++i) {
+        (*endpoints)[i] = session->attach(authorization(i >= 2), i % 2 ? protocol::ChannelSource::kAgent : protocol::ChannelSource::kBrowser, ioWorkers[i]);
+        require(bool((*endpoints)[i]));
+    }
+    require(session->ready());
+    co_return;
+}
+ruvia::task<void> awaitReadyEndpoint(std::shared_ptr<server::DesktopEndpoint> endpoint) {
+    auto ready = co_await endpoint->receive({});
+    require(ready && ready->ready());
+    co_return;
+}
+ruvia::task<void> runCrossWorkerProducer(std::shared_ptr<server::DesktopSession> session, std::shared_ptr<server::DesktopEndpoint> agentVideoEndpoint) {
+    require(co_await session->forward(agentVideoEndpoint, configuration()));
+    auto frame = video(3, 1);
+    frame.mutable_video_frame()->set_data(std::string(64 * 1024, 'x'));
+    for (std::uint64_t index = 1; index <= 20; ++index) {
+        frame.set_sequence(index + 2);
+        frame.set_frame_id(index);
+        frame.mutable_video_frame()->set_key_frame(index == 1);
+        frame.mutable_video_frame()->set_timestamp_microseconds(index * 16666);
+        require(co_await session->forward(agentVideoEndpoint, frame));
+    }
+    co_return;
+}
+ruvia::task<void> runCrossWorkerConsumer(std::shared_ptr<server::DesktopEndpoint> browserVideoEndpoint) {
+    auto deliveredConfig = co_await browserVideoEndpoint->receive({});
+    require(bool(deliveredConfig));
+    deliveredConfig.reset();
+    for (std::uint64_t index = 1; index <= 20; ++index) {
+        auto delivered = co_await browserVideoEndpoint->receive({});
+        require(bool(delivered));
+        const auto parsed = protocol::decodeMessage(delivered->bytes());
+        require(parsed && parsed->frame_id() == index);
+    }
+    co_return;
+}
+ruvia::task<void> closeCrossWorkerSession(std::shared_ptr<server::DesktopSession> session) {
+    session->close();
+    co_return;
+}
+ruvia::task<void> drainClosedEndpoint(std::shared_ptr<server::DesktopEndpoint> endpoint) {
+    require(!(co_await endpoint->receive({})));
+    co_return;
+}
+void exerciseCrossWorker() {
+    using namespace ultraterimal;
+    ruvia::event_loop_pool cluster({.loop_count_ = 4});
+    cluster.start();
+    const auto loop0 = cluster.loop(0);
+    const auto loop1 = cluster.loop(1);
+    const auto loop2 = cluster.loop(2);
+    const auto loop3 = cluster.loop(3);
+    const auto sessionWorker = loop0.worker();
+    const std::array<ruvia::worker_ref, 4> ioWorkers{
+        loop1.worker(), loop2.worker(), loop3.worker(), loop1.worker()};
+    auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
+    auto session = std::make_shared<server::DesktopSession>(sessionWorker, budget);
+    std::array<std::shared_ptr<server::DesktopEndpoint>, 4> endpoints;
+    auto startTask = loop0.submit(attachCrossWorkerEndpoints(session, &endpoints, ioWorkers)).take_value();
+    std::move(startTask).take_value();
+    for (std::size_t i = 0; i < endpoints.size(); ++i) {
+        auto readyTask = cluster.loop(i == 3 ? 1 : i + 1).submit(awaitReadyEndpoint(endpoints[i])).take_value();
+        std::move(readyTask).take_value();
+    }
+    // Concurrent cross-worker video burst exceeding channel queue capacity (=2) to verify backpressure wakeup across cores.
+    auto producer = loop0.submit(runCrossWorkerProducer(session, endpoints[3])).take_value();
+    auto consumer = loop3.submit(runCrossWorkerConsumer(endpoints[2])).take_value();
+    std::move(producer).take_value();
+    std::move(consumer).take_value();
+    require(budget->used.load() == 0);
+    auto closeTask = loop0.submit(closeCrossWorkerSession(session)).take_value();
+    std::move(closeTask).take_value();
+    for (std::size_t i = 0; i < endpoints.size(); ++i) {
+        auto drainTask = cluster.loop(i == 3 ? 1 : i + 1).submit(drainClosedEndpoint(endpoints[i])).take_value();
+        std::move(drainTask).take_value();
+    }
+    cluster.join();
+}
 } // namespace
 int main() {
     try {
         ruvia::event_loop_pool pool({.loop_count_ = 1});
         pool.start();
-        auto task = pool.loop(0).start(exercise(pool.loop(0).worker()));
-        std::move(task).get();
+        const auto loop0 = pool.loop(0);
+        auto task = loop0.submit(exercise(loop0.worker())).take_value();
+        std::move(task).take_value();
         pool.join();
-        std::cout << "Desktop four-endpoint pairing, binding, FIFO, replay, read-only access and bounded in-flight ownership passed\n";
+        exerciseCrossWorker();
+        std::cout << "Desktop four-endpoint pairing, cross-worker sharding, FIFO, replay, read-only access and bounded in-flight ownership passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

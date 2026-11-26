@@ -1,14 +1,16 @@
+#include <algorithm>
+#include <app.h>
 #include <chrono>
+#include <controller.h>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <string_view>
+#include <thread>
 #include <utility>
 
-#include <ruvia/web/app.h>
-#include <ruvia/web/controller.h>
 #include <spdlog/spdlog.h>
 
 #include "config/gateway.runtime.h"
@@ -54,7 +56,8 @@ int main(int argc, char** argv) {
         }
         const auto gateway = std::make_shared<GatewayRuntime>(config.database);
         const auto native = std::make_shared<NativeServer>(config);
-        const auto runtime = std::make_shared<ServerRuntime>(config);
+        const auto shared = std::make_shared<ServerSharedState>();
+        const auto workers = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
         ruvia::http_client_config telegramClient{};
         telegramClient.alias_ = "telegram";
         telegramClient.base_url_ = "https://api.telegram.org";
@@ -66,21 +69,22 @@ int main(int argc, char** argv) {
         if (!config.webRoot.empty()) {
             app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind::only, .extensions_ = {"html", "js", "css", "json", "svg", "ico", "png", "woff", "woff2", "txt", "md", "msi", "gz"}}}, .precompress_gzip_ = true});
         }
-        // Shared business state is confined to one application Worker.
+        // Homogeneous multi-core Ruvia workers; mutable state is strictly partitioned per worker.
         app.listen({.address_ = config.address, .http_ = config.port})
-            .server({.worker_count_ = 1, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install, .idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::seconds(10), .write_timeout_ = std::chrono::seconds(10), .max_connections_per_worker_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
-            .client(std::move(telegramClient))
-            .blocking_pool({.thread_count_ = 4, .queue_capacity_ = 64})
+            .workers({.worker_count_ = workers, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install})
+            .server({.idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::seconds(10), .write_timeout_ = std::chrono::seconds(10), .max_connections_per_worker_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
+            .http_client(std::move(telegramClient))
+            .blocking_pool({.thread_count_ = workers, .queue_capacity_ = std::max<std::size_t>(64u, workers * 16u)})
             .rate_limit({.rule_ = {.max_requests_ = 300, .window_ = std::chrono::minutes(1)}})
-            .use_worker_state<std::shared_ptr<ServerRuntime>>([runtime] { return runtime; })
+            .use_worker_state<ServerRuntime>([config, shared] { return ServerRuntime(config, shared); })
             .on_error([](ruvia::context& context, ruvia::http_error_info error) -> ruvia::task<ruvia::http_response> {
                 spdlog::warn("http_request_failed status={} code={}", error.status().value(), error.code());
                 co_return context.error({.status_ = error.status(), .code_ = "request_failed", .message_ = "Request failed"});
             })
-            .on_start([gateway, native] {
+            .on_start([gateway, native, workers] {
                 gateway->start();
-                native->start(ruvia::app().workers().at(0));
-                spdlog::info("Gateway listening with HTTP behind reverse proxy");
+                native->start();
+                spdlog::info("Gateway listening with HTTP behind reverse proxy workers={}", workers);
             })
             .on_stop([gateway, native] { native->stop(); gateway->stop(); })
             .run();

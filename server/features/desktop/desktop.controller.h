@@ -1,8 +1,7 @@
 #pragma once
 #include <chrono>
-
-#include <ruvia/core/task.h>
-#include <ruvia/web/controller.h>
+#include <controller.h>
+#include <task.h>
 
 #include "middleware/authentication.h"
 

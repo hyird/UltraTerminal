@@ -1,6 +1,6 @@
 #include "desktop.controller.h"
 
-#include <ruvia/web/streaming.h>
+#include <streaming.h>
 
 #include "desktop_exchange.runtime.h"
 

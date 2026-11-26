@@ -2,10 +2,9 @@
 
 #include <asio/awaitable.hpp>
 #include <cstddef>
+#include <event_loop.h>
 #include <memory>
 #include <string>
-
-#include <ruvia/core/event_loop.h>
 
 #include "connection.config.h"
 #include "ultraterimal/protocol/message.protocol.h"

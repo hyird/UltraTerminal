@@ -6,18 +6,18 @@
 #include <asio/steady_timer.hpp>
 #include <asio/this_coro.hpp>
 #include <asio/use_awaitable.hpp>
+#include <asio_bridge.h>
+#include <blocking_pool.h>
 #include <chrono>
 #include <deque>
+#include <event_loop.h>
 #include <exception>
 #include <limits>
 #include <map>
 #include <random>
 #include <stdexcept>
+#include <task_scope.h>
 #include <utility>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
-#include <ruvia/core/task_scope.h>
 
 #include "config/version.config.h"
 #include "connection.transport.h"
@@ -101,6 +101,7 @@ asio::awaitable<ControlCheck> checkControlConnection(ruvia::event_loop loop, con
 }
 struct ControlRuntime::State : std::enable_shared_from_this<State> {
     ruvia::event_loop loop;
+    ruvia::event_loop_pool* loopPool = nullptr;
     ruvia::stop_source stopSource;
     asio::any_io_executor executor;
     ConnectionConfig config;
@@ -125,8 +126,8 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     bool started = false, stopping = false, ended = false, heartbeatPending = false;
     unsigned heartbeatSeconds = 0;
 
-    State(ruvia::event_loop owner, ConnectionConfig settings, std::filesystem::path executable, ConsoleSessionEvents* events)
-        : loop(owner), executor(owner.executor()), config(std::move(settings)), writeReady(executor), heartbeatTimer(executor), deadline(executor), backoff(executor),
+    State(ruvia::event_loop owner, ConnectionConfig settings, std::filesystem::path executable, ConsoleSessionEvents* events, ruvia::event_loop_pool* pool)
+        : loop(owner), loopPool(pool), executor(owner.executor()), config(std::move(settings)), writeReady(executor), heartbeatTimer(executor), deadline(executor), backoff(executor),
           sessionsDone(executor), logTimer(executor), desktopExecutable(std::move(executable)), consoleEvents(events) {
         if (!desktopExecutable.empty() && !desktopExecutable.is_absolute()) {
             throw std::invalid_argument("Desktop executable must be absolute");
@@ -357,28 +358,36 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
             session.runtime->stop();
         }
         sessions.clear();
-        auto runtime = std::make_shared<DesktopSession>(loop, config, message, desktopExecutable, selected, consoleEvents);
+        auto sessionLoop = loopPool ? loopPool->loop_for(message.session_id()) : loop;
+        auto runtime = std::make_shared<DesktopSession>(sessionLoop, config, message, desktopExecutable, selected, consoleEvents, loopPool);
         sessions.emplace(message.session_id(), SessionEntry{runtime, writable});
         ++statistics.startedSessions;
         log(wire::AgentLog::DESKTOP_STARTED, message.session_id());
         try {
-            asio::co_spawn(executor, runtime->run(credential), [self = shared_from_this(), runtime, id = message.session_id()](std::exception_ptr failure, DesktopSessionResult result) {
-                self->sessions.erase(id);
-                ++self->statistics.completedSessions;
-                self->sessionsDone.cancel();
-                self->log(failure || result.terminal.has_session_error() ? wire::AgentLog::DESKTOP_FAILED : wire::AgentLog::DESKTOP_ENDED, id, result.exitCode, result.forcedExit, result.fault ? &*result.fault : nullptr);
-                if (!self->ended) {
-                    try {
-                        if (failure) {
-                            result.terminal.Clear();
-                            result.terminal.set_session_id(id);
-                            result.terminal.mutable_session_error()->set_code("desktop_failed");
-                            result.terminal.mutable_session_error()->set_message("Desktop session failed");
+            asio::co_spawn(sessionLoop.executor(), runtime->run(credential), [self = shared_from_this(), ownerLoop = loop, runtime, id = message.session_id()](std::exception_ptr failure, DesktopSessionResult result) mutable {
+                auto deliver = [self = std::move(self), id = std::move(id), failure = std::move(failure), result = std::move(result)]() mutable {
+                    self->sessions.erase(id);
+                    ++self->statistics.completedSessions;
+                    self->sessionsDone.cancel();
+                    self->log(failure || result.terminal.has_session_error() ? wire::AgentLog::DESKTOP_FAILED : wire::AgentLog::DESKTOP_ENDED, id, result.exitCode, result.forcedExit, result.fault ? &*result.fault : nullptr);
+                    if (!self->ended) {
+                        try {
+                            if (failure) {
+                                result.terminal.Clear();
+                                result.terminal.set_session_id(id);
+                                result.terminal.mutable_session_error()->set_code("desktop_failed");
+                                result.terminal.mutable_session_error()->set_message("Desktop session failed");
+                            }
+                            self->enqueue(std::move(result.terminal));
+                        } catch (...) {
+                            self->disconnect();
                         }
-                        self->enqueue(std::move(result.terminal));
-                    } catch (...) {
-                        self->disconnect();
                     }
+                };
+                if (ownerLoop.worker().is_current()) {
+                    deliver();
+                } else {
+                    (void)ownerLoop.defer_cleanup(std::move(deliver));
                 }
             });
         } catch (...) {
@@ -496,8 +505,8 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         co_await (runAndStop(self) && self->watchStop());
     }
 };
-ControlRuntime::ControlRuntime(ruvia::event_loop loop, ConnectionConfig config, std::filesystem::path desktopExecutable, ConsoleSessionEvents* consoleEvents)
-    : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(desktopExecutable), consoleEvents)) {}
+ControlRuntime::ControlRuntime(ruvia::event_loop loop, ConnectionConfig config, std::filesystem::path desktopExecutable, ConsoleSessionEvents* consoleEvents, ruvia::event_loop_pool* loopPool)
+    : state_(std::make_shared<State>(std::move(loop), std::move(config), std::move(desktopExecutable), consoleEvents, loopPool)) {}
 ControlRuntime::~ControlRuntime() { stop(); }
 asio::awaitable<void> ControlRuntime::run() { return State::runOwned(state_); }
 void ControlRuntime::stop() {

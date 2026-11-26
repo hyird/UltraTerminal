@@ -1,10 +1,9 @@
 #pragma once
 
 #include <asio/awaitable.hpp>
+#include <blocking_pool.h>
 #include <cstdint>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
+#include <event_loop.h>
 
 namespace ultraterimal::agent {
 class NamedPipeTransport;

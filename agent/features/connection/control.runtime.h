@@ -2,10 +2,9 @@
 #include <asio/any_io_executor.hpp>
 #include <asio/awaitable.hpp>
 #include <cstdint>
+#include <event_loop.h>
 #include <filesystem>
 #include <memory>
-
-#include <ruvia/core/event_loop.h>
 
 #include "connection.config.h"
 
@@ -29,7 +28,7 @@ class ConsoleSessionEvents;
 class ControlRuntime {
   public:
     // Empty executable disables desktop dispatch for connection-only probes.
-    ControlRuntime(ruvia::event_loop loop, ConnectionConfig config, std::filesystem::path desktopExecutable = {}, ConsoleSessionEvents* consoleEvents = nullptr);
+    ControlRuntime(ruvia::event_loop loop, ConnectionConfig config, std::filesystem::path desktopExecutable = {}, ConsoleSessionEvents* consoleEvents = nullptr, ruvia::event_loop_pool* loopPool = nullptr);
     ~ControlRuntime();
     ControlRuntime(const ControlRuntime&) = delete;
     ControlRuntime& operator=(const ControlRuntime&) = delete;

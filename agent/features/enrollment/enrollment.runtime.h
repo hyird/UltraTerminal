@@ -1,8 +1,7 @@
 #pragma once
 #include <asio/awaitable.hpp>
+#include <event_loop.h>
 #include <string>
-
-#include <ruvia/core/event_loop.h>
 
 #include "features/connection/connection.config.h"
 

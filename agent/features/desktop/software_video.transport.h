@@ -18,6 +18,9 @@ class SoftwareVideoEncoder {
     void setDetail(bool sharp);
     SoftwareVideoEncoder(const SoftwareVideoEncoder&) = delete;
     SoftwareVideoEncoder& operator=(const SoftwareVideoEncoder&) = delete;
+    std::expected<EncodedVideoFrame, VideoEncodeError> encodeI420(std::span<const std::uint8_t> i420,
+                                                                  std::uint64_t timestampMicroseconds,
+                                                                  bool forceKeyFrame = false);
     std::expected<EncodedVideoFrame, VideoEncodeError> encode(std::span<const std::uint8_t> bgra,
                                                               std::size_t stride,
                                                               std::uint64_t timestampMicroseconds,

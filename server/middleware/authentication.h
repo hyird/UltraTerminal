@@ -1,15 +1,15 @@
 #pragma once
-#include <ruvia/core/task.h>
-#include <ruvia/web/controller.h>
+#include <controller.h>
+#include <task.h>
 
 #include "config/server.runtime.h"
 namespace ultraterimal::server {
 class BrowserOrigin final {
   public:
     ruvia::task<void> invoke(ruvia::context& context, ruvia::next& next) {
-        if (context.req().header("Origin").value_or("") != (*context.worker_state<std::shared_ptr<ServerRuntime>>()).config.origin) {
+        if (context.request().header("Origin").value_or("") != context.worker_state<ServerRuntime>().config.origin) {
             // Finish the bounded request body before Ruvia closes a rejected request.
-            (void)co_await context.req().text();
+            (void)co_await context.request().body_text();
             context.respond(context.error({.status_ = ruvia::http_status::forbidden, .code_ = "origin_rejected", .message_ = "Origin rejected"}));
             co_return;
         }
@@ -19,9 +19,9 @@ class BrowserOrigin final {
 class UserAuthentication final {
   public:
     ruvia::task<void> invoke(ruvia::context& context, ruvia::next& next) {
-        const auto user = ((co_await context.run_blocking([service = (*context.worker_state<std::shared_ptr<ServerRuntime>>()).identities, token = std::string(context.req().cookie("__Host-ultraterimal").value_or(""))] { return service.authenticate(token); })).take_value());
+        const auto user = ((co_await context.run_blocking([service = context.worker_state<ServerRuntime>().identities, token = std::string(context.request().cookie("__Host-ultraterimal").value_or(""))] { return service.authenticate(token); })).take_value());
         if (!user) {
-            (void)co_await context.req().text();
+            (void)co_await context.request().body_text();
             context.respond(context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Authentication required"}));
             co_return;
         }

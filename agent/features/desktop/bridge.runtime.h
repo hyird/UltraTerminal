@@ -1,10 +1,9 @@
 #pragma once
 #include <asio/awaitable.hpp>
+#include <blocking_pool.h>
 #include <cstdint>
+#include <event_loop.h>
 #include <string>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "ultraterimal/protocol/message.protocol.h"
 

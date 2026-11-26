@@ -1,16 +1,16 @@
 #pragma once
 
 #include <atomic>
+#include <channel.h>
 #include <functional>
 #include <memory>
+#include <one_shot.h>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <task.h>
 #include <utility>
-
-#include <ruvia/core/task.h>
-#include <ruvia/core/worker_wait.h>
 
 #include "ultraterimal/protocol/native.protocol.h"
 

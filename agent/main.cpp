@@ -1,14 +1,16 @@
+#include <algorithm>
 #include <asio/co_spawn.hpp>
 #include <asio/io_context.hpp>
 #include <asio/signal_set.hpp>
+#include <blocking_pool.h>
 #include <csignal>
+#include <event_loop.h>
 #include <exception>
+#include <future>
 #include <iostream>
 #include <string_view>
+#include <thread>
 #include <vector>
-
-#include <ruvia/core/blocking_pool.h>
-#include <ruvia/core/event_loop.h>
 
 #include "config/command_line.config.h"
 #include "config/version.config.h"
@@ -67,19 +69,22 @@ int wmain(int argc, wchar_t** argv) {
             break;
         case Command::kDesktop: {
             DesktopParent parent(options->windowsSession, options->parentProcess);
-            asio::io_context io;
-            ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
-            auto pipe = NamedPipeTransport::connect(io.get_executor(), options->pipeName, options->parentProcess);
-            std::exception_ptr failure;
-            std::uint32_t exitCode = 1;
-            asio::co_spawn(attachment.loop().executor(), runDesktopWorker(attachment.loop(), blockingPool, *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
-                failure = error;
-                exitCode = result;
+            const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+            ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
+            ruvia::event_loop_pool loopPool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+            auto workerLoop = loopPool.next_loop();
+            auto pipe = NamedPipeTransport::connect(workerLoop.io_context().get_executor(), options->pipeName, options->parentProcess);
+            std::promise<std::pair<std::exception_ptr, std::uint32_t>> completed;
+            auto resultFuture = completed.get_future();
+            loopPool.start();
+            asio::co_spawn(workerLoop.executor(), runDesktopWorker(workerLoop, blockingPool, *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
                 pipe->cancel();
-                attachment.stop();
+                completed.set_value({std::move(error), result});
+                loopPool.request_stop();
             });
-            attachment.run();
+            const auto [failure, exitCode] = resultFuture.get();
+            loopPool.join();
+            blockingPool.join();
             if (failure) {
                 std::rethrow_exception(failure);
             }
@@ -92,13 +97,13 @@ int wmain(int argc, wchar_t** argv) {
             input.resize(static_cast<std::size_t>(std::cin.gcount()));
             asio::io_context io;
             ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+            ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
             ConnectionConfig result;
             std::exception_ptr failure;
             asio::co_spawn(attachment.loop().executor(), enrollDevice(attachment.loop(), config, std::move(input)), [&](std::exception_ptr error, ConnectionConfig value) {
                 failure = error;
                 result = std::move(value);
-                attachment.stop();
+                attachment.request_stop();
             });
             attachment.run();
             if (failure) {
@@ -111,13 +116,13 @@ int wmain(int argc, wchar_t** argv) {
             const auto config = loadConnectionConfig(options->configPath);
             asio::io_context io;
             ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
+            ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
             ControlCheck result;
             std::exception_ptr failure;
             asio::co_spawn(attachment.loop().executor(), checkControlConnection(attachment.loop(), config), [&](std::exception_ptr error, ControlCheck value) {
                 failure = error;
                 result = value;
-                attachment.stop();
+                attachment.request_stop();
             });
             attachment.run();
             if (failure) {
@@ -128,23 +133,28 @@ int wmain(int argc, wchar_t** argv) {
         }
         case Command::kConnect: {
             const auto config = loadConnectionConfig(options->configPath);
-            asio::io_context io;
-            ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-            auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
-            ControlRuntime runtime(attachment.loop(), config, agentExecutablePath());
-            asio::signal_set signals(io, SIGINT, SIGTERM);
+            const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+            ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
+            ruvia::event_loop_pool loopPool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+            auto controlLoop = loopPool.loop_for("control");
+            ControlRuntime runtime(controlLoop, config, agentExecutablePath(), nullptr, &loopPool);
+            asio::signal_set signals(controlLoop.io_context(), SIGINT, SIGTERM);
             signals.async_wait([&](std::error_code error, int) {
                 if (!error) {
                     runtime.stop();
                 }
             });
-            std::exception_ptr failure;
-            asio::co_spawn(attachment.loop().executor(), runtime.run(), [&](std::exception_ptr error) {
-                failure = error;
+            std::promise<std::exception_ptr> completed;
+            auto doneFuture = completed.get_future();
+            loopPool.start();
+            asio::co_spawn(controlLoop.executor(), runtime.run(), [&](std::exception_ptr error) {
                 signals.cancel();
-                attachment.stop();
+                completed.set_value(std::move(error));
+                loopPool.request_stop();
             });
-            attachment.run();
+            const auto failure = doneFuture.get();
+            loopPool.join();
+            blockingPool.join();
             if (failure) {
                 std::rethrow_exception(failure);
             }
@@ -170,14 +180,22 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kService:
             dispatchService([](std::stop_token stop, ConsoleSessionEvents& consoleEvents) {
                 const auto config = loadConnectionConfig(serviceConfigPath());
-                asio::io_context io;
-                ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
-                auto attachment = ruvia::attach_event_loop(io, {.blocking_pool_ = &blockingPool});
-                ControlRuntime runtime(attachment.loop(), config, agentExecutablePath(), &consoleEvents);
+                const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+                ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
+                ruvia::event_loop_pool loopPool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+                auto controlLoop = loopPool.loop_for("control");
+                ControlRuntime runtime(controlLoop, config, agentExecutablePath(), &consoleEvents, &loopPool);
                 std::stop_callback cancellation(stop, [&] { runtime.stop(); });
-                std::exception_ptr failure;
-                asio::co_spawn(attachment.loop().executor(), runtime.run(), [&](std::exception_ptr error) { failure = error; attachment.stop(); });
-                attachment.run();
+                std::promise<std::exception_ptr> completed;
+                auto doneFuture = completed.get_future();
+                loopPool.start();
+                asio::co_spawn(controlLoop.executor(), runtime.run(), [&](std::exception_ptr error) {
+                    completed.set_value(std::move(error));
+                    loopPool.request_stop();
+                });
+                const auto failure = doneFuture.get();
+                loopPool.join();
+                blockingPool.join();
                 if (failure) {
                     std::rethrow_exception(failure);
                 }

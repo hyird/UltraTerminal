@@ -97,13 +97,13 @@ DesktopCloseReason validationReason(protocol::DesktopMessageError error) {
 } // namespace
 DesktopDelivery::~DesktopDelivery() {
     if (local_) {
-        local_->used -= bytes_.size();
-        global_->used -= bytes_.size();
+        local_->release(bytes_.size());
+        global_->release(bytes_.size());
     }
 }
-DesktopEndpoint::DesktopEndpoint(ruvia::worker_ref worker, protocol::DesktopChannelBinding binding)
-    : validator_(binding), queue_(ruvia::make_channel<std::unique_ptr<DesktopDelivery>>(worker, {.capacity_ = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
-      space_(ruvia::make_channel<bool>(std::move(worker), {.capacity_ = 1})) {}
+DesktopEndpoint::DesktopEndpoint(ruvia::worker_ref sessionWorker, ruvia::worker_ref ioWorker, protocol::DesktopChannelBinding binding)
+    : validator_(binding), queue_(ruvia::make_channel<std::unique_ptr<DesktopDelivery>>(std::move(ioWorker), {.capacity_ = binding.purpose == wire::DESKTOP_VIDEO ? 2u : 8u})),
+      space_(ruvia::make_channel<bool>(std::move(sessionWorker), {.capacity_ = 1})) {}
 ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::stop_token stop) {
     auto result = co_await queue_.second.receive({.stop_token_ = std::move(stop)});
     if (!result.has_value()) {
@@ -111,10 +111,10 @@ ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::st
     }
     auto delivery = std::move(result).take_value();
     delivery->received_ = std::chrono::steady_clock::now();
-    if (waiting_) {
+    if (waiting_.load(std::memory_order_seq_cst)) {
         (void)space_.first.send(true);
     }
-    if (closed_) {
+    if (closed_.load(std::memory_order_acquire)) {
         delivery.reset();
         // close() wakes the single writer; release its remaining queue before it exits.
         while ((co_await queue_.second.receive()).has_value()) {
@@ -124,7 +124,7 @@ ruvia::task<std::unique_ptr<DesktopDelivery>> DesktopEndpoint::receive(ruvia::st
     co_return delivery;
 }
 void DesktopEndpoint::close() {
-    closed_ = true;
+    closed_.store(true, std::memory_order_release);
     queue_.first.close();
     space_.first.close();
 }
@@ -135,8 +135,11 @@ DesktopSession::DesktopSession(ruvia::worker_ref worker, std::shared_ptr<Desktop
     }
 }
 DesktopSession::~DesktopSession() { close(); }
-std::shared_ptr<DesktopEndpoint> DesktopSession::attach(const ChannelAuthorization& authorization, protocol::ChannelSource source) {
-    if (closed_ || authorization.kind != wire::DESKTOP || authorization.sessionId.empty() || authorization.channelId.empty() ||
+std::shared_ptr<DesktopEndpoint> DesktopSession::attach(const ChannelAuthorization& authorization, protocol::ChannelSource source, ruvia::worker_ref ioWorker) {
+    if (!worker_.is_current()) {
+        throw std::logic_error("Desktop session accessed outside its Worker");
+    }
+    if (closed_.load(std::memory_order_acquire) || authorization.kind != wire::DESKTOP || authorization.sessionId.empty() || authorization.channelId.empty() ||
         (authorization.purpose != wire::DESKTOP_INPUT && authorization.purpose != wire::DESKTOP_VIDEO) ||
         (source != protocol::ChannelSource::kBrowser && source != protocol::ChannelSource::kAgent)) {
         return {};
@@ -151,7 +154,8 @@ std::shared_ptr<DesktopEndpoint> DesktopSession::attach(const ChannelAuthorizati
         channels_[1 - channel] == authorization.channelId) {
         return {};
     }
-    auto endpoint = std::shared_ptr<DesktopEndpoint>(new DesktopEndpoint(worker_, {authorization.sessionId, authorization.channelId, authorization.purpose, source, authorization.writeControl}));
+    auto endpointWorker = ioWorker.valid() ? std::move(ioWorker) : worker_;
+    auto endpoint = std::shared_ptr<DesktopEndpoint>(new DesktopEndpoint(worker_, std::move(endpointWorker), {authorization.sessionId, authorization.channelId, authorization.purpose, source, authorization.writeControl}));
     if (!bound_) {
         identity_ = authorization;
         bound_ = true;
@@ -165,7 +169,7 @@ std::shared_ptr<DesktopEndpoint> DesktopSession::attach(const ChannelAuthorizati
                 return {};
             }
         }
-        ready_ = true;
+        ready_.store(true, std::memory_order_release);
         spdlog::info("desktop_session_ready session_id={} device_id={}", identity_.sessionId, identity_.deviceId);
     }
     return endpoint;
@@ -272,11 +276,13 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
         close(DesktopCloseReason::kMalformedMessage, origin);
         co_return false;
     }
-    if (bytes->size() > local_->limit - local_->used) {
+    const auto payloadBytes = bytes->size();
+    if (!local_->tryReserve(payloadBytes)) {
         close(DesktopCloseReason::kSessionBudgetExceeded, origin);
         co_return false;
     }
-    if (bytes->size() > global_->limit - global_->used) {
+    if (!global_->tryReserve(payloadBytes)) {
+        local_->release(payloadBytes);
         close(DesktopCloseReason::kGlobalBudgetExceeded, origin);
         co_return false;
     }
@@ -286,15 +292,29 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
     delivery->primaryVideo_ = message.has_video_frame() || message.has_desktop_region_update() || message.has_full_frame() || message.has_diff_batch();
     delivery->local_ = local_;
     delivery->global_ = global_;
-    local_->used += delivery->bytes_.size();
-    global_->used += delivery->bytes_.size();
-    diagnostics_.peakPendingBytes = std::max(diagnostics_.peakPendingBytes, local_->used);
+    diagnostics_.peakPendingBytes = std::max(diagnostics_.peakPendingBytes, local_->used.load(std::memory_order_relaxed));
     const auto target = endpoints_[slot ^ 1];
     while (ready() && !stop.stop_requested()) {
         const auto size = delivery->bytes_.size();
         delivery->enqueued_ = std::chrono::steady_clock::now();
-        auto sent = target->queue_.first.send(std::move(delivery));
-        if (sent.accepted()) {
+        bool admitted = false;
+        if (auto first = target->queue_.first.send(std::move(delivery)); first.accepted()) {
+            admitted = true;
+        } else if (first.status() == ruvia::channel_send_status::full) {
+            delivery = std::move(first).take_rejected();
+            target->waiting_.store(true, std::memory_order_seq_cst);
+            if (auto second = target->queue_.first.send(std::move(delivery)); second.accepted()) {
+                admitted = true;
+            } else if (second.status() == ruvia::channel_send_status::full) {
+                delivery = std::move(second).take_rejected();
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+        if (admitted) {
+            target->waiting_.store(false, std::memory_order_relaxed);
             const auto admittedAt = std::chrono::steady_clock::now();
             if (slot == 3) {
                 diagnostics_.pipeline.observe(DesktopStage::kServerVideoAdmission, static_cast<std::uint32_t>(std::min<std::int64_t>(60000000, std::chrono::duration_cast<std::chrono::microseconds>(admittedAt - admissionStarted).count())));
@@ -413,17 +433,12 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
             logCadence(admittedAt);
             co_return true;
         }
-        if (sent.status() != ruvia::channel_send_status::full) {
-            break;
-        }
         // Keep ownership and accounting while the downstream writer is busy.
         // Waiting suspends this channel's reader, so no input or frame is lost.
-        delivery = std::move(*sent.rejected());
         ++diagnostics_.backpressureEvents;
         const auto waitStarted = std::chrono::steady_clock::now();
-        target->waiting_ = true;
         const auto available = co_await target->space_.second.receive({.stop_token_ = stop});
-        target->waiting_ = false;
+        target->waiting_.store(false, std::memory_order_relaxed);
         diagnostics_.backpressureMilliseconds += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waitStarted).count();
         if (!available.has_value()) {
             break;
@@ -475,19 +490,34 @@ DesktopSession::RefinementAckResult DesktopSession::refinementAck(const wire::En
     }
     return RefinementAckResult::kInvalid;
 }
+DesktopWriteTiming DesktopSession::captureWriteTiming(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed) {
+    return DesktopWriteTiming{
+        .enqueued = delivery.enqueued_,
+        .received = delivery.received_,
+        .elapsed = elapsed,
+        .browserVideo = delivery.browserVideo_,
+        .primaryVideo = delivery.primaryVideo_,
+    };
+}
 void DesktopSession::writeCompleted(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed) {
-    if (!delivery.browserVideo_ || delivery.ready()) {
+    if (delivery.ready()) {
+        return;
+    }
+    writeCompleted(captureWriteTiming(delivery, elapsed));
+}
+void DesktopSession::writeCompleted(const DesktopWriteTiming& timing) {
+    if (!timing.browserVideo) {
         return;
     }
     const auto micros = [](auto value) {
         return static_cast<std::uint32_t>(std::clamp<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(value).count(), 0, 60000000));
     };
-    diagnostics_.pipeline.observe(DesktopStage::kServerVideoQueueWait, micros(delivery.received_ - delivery.enqueued_));
-    diagnostics_.pipeline.observe(DesktopStage::kServerVideoWsWrite, micros(elapsed));
-    if (delivery.primaryVideo_) {
+    diagnostics_.pipeline.observe(DesktopStage::kServerVideoQueueWait, micros(timing.received - timing.enqueued));
+    diagnostics_.pipeline.observe(DesktopStage::kServerVideoWsWrite, micros(timing.elapsed));
+    if (timing.primaryVideo) {
         cadence_.begin(std::chrono::steady_clock::now());
         ++cadence_.written;
-        cadence_.writes.observePresent(micros(elapsed));
+        cadence_.writes.observePresent(micros(timing.elapsed));
     }
 }
 void DesktopSession::logCadence(std::chrono::steady_clock::time_point now) {
@@ -507,10 +537,9 @@ void DesktopSession::logCadence(std::chrono::steady_clock::time_point now) {
     cadence_.clear(now);
 }
 void DesktopSession::close(DesktopCloseReason reason, DesktopCloseOrigin origin) {
-    if (closed_) {
+    if (closed_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
-    closed_ = true;
     closeReason_ = reason;
     closeOrigin_ = origin;
     logDiagnostics("desktop_session_end");
@@ -546,10 +575,10 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
     const auto encoder = !encoding.samples ? "unknown" : diagnostics_.latestHardwareEncoding ? "hardware"
                                                                                              : "software";
     spdlog::info("{} session_id={} device_id={} reason={} origin={} ready={} duration_ms={} messages={} bytes={} frames={} inputs={} feedback={} backpressure_events={} backpressure_ms={} pending_bytes={} peak_pending_bytes={} max_decode_us={} max_browser_queue_depth={} latest_browser_queue_depth={} background={} video_width={} video_height={} encoder={} encode_samples={} mean_encode_us={} p95_encode_us={} p99_encode_us={} max_encode_us={} last_keyframe_encode_us={} target_fps={} target_bps={}",
-                 event, identity_.sessionId, identity_.deviceId, closed_ ? closeReasonName(closeReason_) : "active", closed_ ? closeOriginName(closeOrigin_) : "server", ready_, duration,
+                 event, identity_.sessionId, identity_.deviceId, closed_.load(std::memory_order_relaxed) ? closeReasonName(closeReason_) : "active", closed_.load(std::memory_order_relaxed) ? closeOriginName(closeOrigin_) : "server", ready_.load(std::memory_order_relaxed), duration,
                  diagnostics_.forwardedMessages, diagnostics_.forwardedBytes, diagnostics_.videoFrames, diagnostics_.inputEvents,
                  diagnostics_.feedbackMessages, diagnostics_.backpressureEvents, diagnostics_.backpressureMilliseconds,
-                 local_->used, diagnostics_.peakPendingBytes, diagnostics_.maximumDecodeMicroseconds,
+                 local_->used.load(std::memory_order_relaxed), diagnostics_.peakPendingBytes, diagnostics_.maximumDecodeMicroseconds,
                  diagnostics_.maximumBrowserQueueDepth, diagnostics_.latestBrowserQueueDepth, diagnostics_.latestBackground,
                  diagnostics_.videoWidth, diagnostics_.videoHeight, encoder, encoding.samples, encoding.meanMicroseconds,
                  encoding.p95Microseconds, encoding.p99Microseconds, encoding.maximumMicroseconds, diagnostics_.latestKeyFrameEncodeMicroseconds,

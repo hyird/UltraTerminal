@@ -76,9 +76,9 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 - 服务复制自身主令牌并绑定当前控制台会话，启动前再次检查会话未改变；启动特权仅在线程作用域内启用。桌面进程核验父进程为 Session 0 的 LocalSystem，管道 ACL 限制为服务身份并校验双方 PID 与目标会话。
 - 高权限桌面工作进程只承担桌面功能。SSH/ConPTY 由 Agent 服务进程启动并继承其运行账户，不另做操作系统用户映射；LocalSystem 服务对应 SYSTEM 终端。
 
-服务和桌面工作进程各持有一个 standalone Asio `io_context`，通过 Ruvia `attach_event_loop()` 绑定事件循环，由 `event_loop_attachment::run()` 在单一线程驱动。连接、IPC、心跳和取消的协程在该事件循环启动；有界队列、定时器和阻塞任务使用事件循环导出的 `worker_ref`。退出先取消并等待原生 I/O，再调用 attachment 的 `stop()`，持续驱动到 Ruvia 托管任务及清理完成，不在退休后重新取得 executor。服务和桌面进程分别在装配入口拥有一个单线程、队列容量为 4 的有界阻塞池，通过 attachment 的 `blocking_pool_` 绑定给 Worker；池比 attachment 和所属运行组件存活更久。服务的设置、进程启动、登录准备与 `SendSAS` 通过同一 Worker 的公开 `run_blocking(worker, ...)` 串行卸载；桌面进程的池专用于采编与线程内资源释放，不与服务池共享。运行组件等待其卸载结果后才结束，采编对象的最终释放任务完成后才销毁线程池。阻塞卸载显式检查结果，失败由既有任务或请求边界处理。
+服务和桌面工作进程各持有一个与物理/逻辑 CPU 核心数一致的全核同构 `ruvia::event_loop_pool` 及其共用的全核有界 `ruvia::blocking_pool`；全部线程生命周期均由 `ruvia::core` 独占管理，不自建裸线程或专职异构池。连接、IPC、心跳、输入与视频通道通过 `next_loop()` / `loop_for(key)` 亲和绑定到同构 Worker，跨 Worker 通过 `make_one_shot` 与 `post` 传递自有数据；退出先取消并等待原生 I/O，再 `stop()` 与 `join()` 回收事件循环和阻塞池。服务的设置、进程启动、登录准备与 `SendSAS` 通过有界 `run_blocking` 卸载；桌面进程的阻塞卸载显式检查结果，由既定单飞状态保障 DXGI 采集和编码器的非并发访问。
 
-桌面工作进程在独占采编线程上依次执行 DXGI 采集、颜色转换和编码，采集与编码器对象也在该线程创建及销毁；事件循环继续处理输入与 IPC。OpenH264 仅对同一帧的切片并行，线程数按像素规模和逻辑 CPU 数限制为 1～4。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
+桌面工作进程中，CPU 侧的 `BGRA -> I420/NV12` 偶数行分片颜色转换通过事件循环协程向同构全核 `blocking_pool` 并行派发并由 `one_shot` 汇合，软件编码使用内嵌 OpenH264（同一帧按像素规模与 CPU 核心数使用 1～4 个切片并行），并将下一帧 DXGI 采编预取与当前编码、IPC/网络写出重叠执行；事件循环继续响应输入与 IPC。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
 
 ### 会话流程
 
@@ -127,7 +127,7 @@ Agent 1.0.41 起，桌面生产链路统一发送 VideoConfig、VideoFrame 和�
 
 阶段诊断只记录实际执行的采集、CPU 读回、编码、等待和传输耗时，保留字段 presence。普通帧的 flow_sample 保存帧/字节窗口、未确认量、路径时延、信用等待原因与 Worker 调度时间。Server 按授权会话和代次聚合有界样本。单机阶段、画布提交与软件 ACK 分别反映各自边界。
 
-浏览器将双通道配对、视频配置检查和首帧解码作为独立阶段。两个通道均 ready 后才显示配对完成，收到有效配置后立即更新状态。WebCodecs 配置支持检查和每代次首个已提交帧的解码输出各有 4 秒期限。HEVC/AV1 超时后禁用当前会话中的失败编码，并通过能力反馈和刷新请求协商新 generation；H.264 超时结束会话并允许重连。退出取消检查等待和解码期限。主画布请求 desynchronized 上下文。
+浏览器将双通道配对、视频配置检查和首帧解码作为独立阶段。两个通道均 ready 后才显示配对完成，收到有效配置后立即更新状态。WebCodecs 配置支持检查和每代次首个已提交帧的解码输出各有 4 秒期限。HEVC/AV1 超时后禁用当前会话中的失败编码，并通过能力反馈和刷新请求协商新 generation；H.264 超时结束会话并允许重连。退出取消检查等待和解码期限。主画布使用不透明合成上下文（`alpha: false`），不启用 `desynchronized` 以避免整帧异步绘制时的撕裂与白条闪烁。
 
 升级先部署 Server/Web，再升级 Agent，并结束旧桌面会话。部署保留完整回滚版本，核对实际版本和服务状态。真实 Windows 服务、登录/锁屏/UAC、缺少媒体组件的软件回退、弱网及物理呈现延迟需要专用环境验收。
 
@@ -179,7 +179,7 @@ Agent 1.0.41 起，桌面生产链路统一发送 VideoConfig、VideoFrame 和�
 - 消息包含版本、会话、通道、类型、序号和载荷；画面消息携带 `generation`、`frame_id`，差分另带 `base_frame_id`。
 - 原生桌面通道以序号 1 的 `CHANNEL_OPEN` 绑定票据，后续消息序号严格递增；输入、反馈与刷新请求由浏览器发送，光标和画面由 Agent 发送。平台仅创建控制会话；旧只读票据被拒绝。协议中的 write_control 字段保留防御性校验。
 - 浏览器桌面控制入口为 `/api/desktop/control`，画面入口为 `/api/desktop/video`，首消息用途必须与路由一致（登录 Cookie 与同源校验），Agent 桌面使用原生连接的 `DESKTOP_CHANNEL` 用途（设备凭据鉴权）；票据在 `CHANNEL_OPEN` 中提交，不进入 URL。首消息限时 10 秒，配对受 60 秒票据期限约束；配齐后各端点收到序号 1 的 `CHANNEL_READY`，随后才发送数据。活动会话按 5 秒周期复核权限，撤权或会话关闭后终止全部通道。
-- 浏览器和 Agent 的输入、画面四个端点全部配对后才允许转发；任一端点断开或协议校验失败即结束整会话。输入端点发送队列最多 8 条，视频端点最多 2 条，单会话待发送数据上限 32 MiB，单 Worker 合计上限 256 MiB；正在写出的数据仍计入额度，超限关闭会话，不静默丢弃画面。
+- 浏览器和 Agent 的输入、画面四个端点全部配对后才允许转发；任一端点断开或协议校验失败即结束整会话。Web 网关与 `NativeServer` 均运行全核同构 Ruvia Worker（`hardware_concurrency()`），严格遵守 Share-Nothing：`ControlConnection` 按 `device_id`、`DesktopSession` 按 `session_id` 通过 `worker_for(key)` 确定性分片亲和，`DesktopBudget` 使用原子 CAS 跨 Worker 无锁扣减；四路通道在各自接入的同构 `ioWorker` 上并行完成 WebSocket/Native 读写与 Protobuf 解码，跨 Worker 配对与转发通过有界 `channel` 与 `one_shot` 通信。输入端点发送队列最多 8 条，视频端点最多 2 条，单会话待发送数据上限 32 MiB，全局合计上限 256 MiB；正在写出的数据仍计入额度，超限关闭会话，不静默丢弃画面。
 - 浏览器 VNC 通道提供标准 RFB 字节流，由网关剥离内部封装；SSH 隧道提供可靠有序字节流，WebSocket 消息边界不作为协议包边界。
 - libssh、LibVNCServer 通过已授权传输适配器接入隧道；libssh2 使用非阻塞收发回调。适配器处理部分读写、背压、关闭和取消。
 

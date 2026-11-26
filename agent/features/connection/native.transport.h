@@ -1,10 +1,9 @@
 #pragma once
 
 #include <asio/awaitable.hpp>
+#include <event_loop.h>
 #include <memory>
 #include <string>
-
-#include <ruvia/core/event_loop.h>
 
 #include "quic.transport.h"
 #include "tls.transport.h"

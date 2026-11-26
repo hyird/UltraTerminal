@@ -113,15 +113,24 @@ function harness(
   };
   const viewport = { clientWidth: 800, clientHeight: 600 };
   const stage = { parentElement: viewport, style: { width: "", height: "" } };
-  const makeCanvas = () => ({
-    width: 256,
-    height: 128,
-    dataset: {} as Record<string, string>,
-    parentElement: stage,
-    getContext: () => context,
-    closest: () => null,
-    style: { removeProperty() {}, setProperty() {} },
-  });
+  const makeCanvas = () => {
+    let attributes: unknown;
+    return {
+      width: 256,
+      height: 128,
+      dataset: {} as Record<string, string>,
+      parentElement: stage,
+      get attributes() {
+        return attributes;
+      },
+      getContext: (_type: string, options?: unknown) => {
+        attributes = options;
+        return context;
+      },
+      closest: () => null,
+      style: { removeProperty() {}, setProperty() {} },
+    };
+  };
   const canvas = makeCanvas();
   const overlay = makeCanvas();
   let visibilityChanged: (() => void) | undefined;
@@ -263,6 +272,7 @@ function harness(
   };
   return {
     session,
+    canvas,
     stage,
     viewport,
     overlay,
@@ -320,6 +330,10 @@ async function fillDecodeSlots(h: ReturnType<typeof harness>) {
 test("DesktopSession only reports paired after both channels are ready", async () => {
   const h = harness();
   try {
+    expect(h.canvas.attributes).toEqual({
+      alpha: false,
+      desynchronized: false,
+    });
     h.control.push({ channelReady: { purpose: 2 } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(h.statuses.some((status) => status.includes("通道已配对"))).toBe(
