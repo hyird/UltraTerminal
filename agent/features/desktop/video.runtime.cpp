@@ -354,7 +354,8 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                               : result->frame.key_frame() ? DesktopFrameFlow::FrameType::kKeyFrame
                                                           : DesktopFrameFlow::FrameType::kVideo;
             self->flow.setFixedPictureCost(false);
-            self->flow.observeFrame(type, bytes, result->changedPixels, std::chrono::microseconds(result->frame.encode_microseconds()));
+            const auto frameProductionUs = std::max(result->productionMicroseconds, result->frame.encode_microseconds());
+            self->flow.observeFrame(type, bytes, result->changedPixels, std::chrono::microseconds(frameProductionUs));
             self->flow.sent(result->generation, result->frameId, std::chrono::steady_clock::now(), bytes, type);
             self->diagnostics.publishedVideoFrames = ++self->publishedVideoFrames;
         }

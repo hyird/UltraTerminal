@@ -23,13 +23,13 @@ class DesktopFrameFlow {
                            kRepeatedVideo,
                            kRepeatedKeyFrame };
     struct Rate {
-        std::uint32_t framesPerSecond = kMaximumFramesPerSecond;
+        std::uint32_t framesPerSecond = 30;
         std::uint32_t bitrate = kTargetVideoBitrate;
     };
     static constexpr std::size_t kMaximumInFlightFrames = 128;
     // Clarity budget, encode/decode cost, receiver credit and congestion still
     // decide the actual cadence below this ceiling.
-    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 25;
+    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
     static constexpr std::uint32_t kTargetVideoBitrate = 32000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;

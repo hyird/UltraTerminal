@@ -174,6 +174,7 @@ PreparedVideoStep DesktopVideoWorker::encodeDeferred(DeferredCpuEncode deferred,
     deferred.stages.sourceAge = sourceAge(lastPresentTicks);
     deferred.stages.videoEncode = update.frame.encode_microseconds();
     deferred.stages.coalescedCaptures = std::exchange(coalescedCaptures, 0);
+    update.productionMicroseconds = std::max(update.frame.encode_microseconds(), deferred.stages.productionMicroseconds());
     if (optimizationV2) {
         writeStages(*update.frame.mutable_stage_timing(), deferred.stages);
     }
@@ -432,6 +433,7 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
         stages.sourceAge = sourceAge(lastPresentTicks);
         stages.videoEncode = update.frame.encode_microseconds();
         stages.coalescedCaptures = std::exchange(coalescedCaptures, 0);
+        update.productionMicroseconds = std::max(update.frame.encode_microseconds(), stages.productionMicroseconds());
         if (optimizationV2) {
             writeStages(*update.frame.mutable_stage_timing(), stages);
         }

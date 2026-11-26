@@ -38,6 +38,12 @@ struct DesktopVideoStages {
     std::optional<std::uint32_t> workerQueue, acquireWait, sourceAge, pacingCreditWait;
     std::optional<std::uint32_t> gpuSyncWait, prepareCpu, videoEncode;
     std::uint32_t coalescedCaptures = 0;
+    std::uint32_t productionMicroseconds() const {
+        const auto total = static_cast<std::uint64_t>(gpuSyncWait.value_or(0)) +
+                           static_cast<std::uint64_t>(prepareCpu.value_or(0)) +
+                           static_cast<std::uint64_t>(videoEncode.value_or(0));
+        return static_cast<std::uint32_t>(std::min<std::uint64_t>(60000000u, total));
+    }
     static std::uint32_t microseconds(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
         return static_cast<std::uint32_t>(std::clamp<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count(), 0, 60000000));
     }
@@ -73,6 +79,7 @@ struct DesktopVideoUpdate {
     // Local-only QPC tick of the most recent pixel snapshot (not serialized).
     std::uint64_t sourcePresentTicks = 0;
     std::uint32_t workerDispatchMicroseconds = 0;
+    std::uint32_t productionMicroseconds = 0;
     std::int32_t desktopLeft = 0, desktopTop = 0;
 };
 } // namespace ultraterimal::agent
