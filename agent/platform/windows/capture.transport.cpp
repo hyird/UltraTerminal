@@ -92,9 +92,56 @@ struct DesktopCapture::State {
     std::uint64_t desktopGeneration = 0;
     const std::uint64_t captureEpoch = nextCaptureEpoch.fetch_add(1, std::memory_order_relaxed);
     std::uint64_t sourceSerial = 0;
+    std::uint64_t lastReadbackSerial = 0;
+    const std::uint8_t* lastReadbackData = nullptr;
+    std::vector<std::uint8_t> metadataBuffer;
+    std::vector<CapturePixelRect> dirtyRects;
     bool pixelsCaptured = false;
     std::uint32_t lastPixelsWidth = 0, lastPixelsHeight = 0;
-    void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing) {
+    bool extractDirtyRects(const DXGI_OUTDUPL_FRAME_INFO& info, std::uint32_t width, std::uint32_t height, std::uint64_t& totalArea) {
+        totalArea = 0;
+        dirtyRects.clear();
+        if (!info.TotalMetadataBufferSize || info.TotalMetadataBufferSize > 256 * 1024) {
+            return false;
+        }
+        metadataBuffer.resize(info.TotalMetadataBufferSize);
+        auto addClamped = [&](std::int64_t left, std::int64_t top, std::int64_t right, std::int64_t bottom) {
+            const auto l = static_cast<std::uint32_t>(std::clamp<std::int64_t>(left, 0, width));
+            const auto t = static_cast<std::uint32_t>(std::clamp<std::int64_t>(top, 0, height));
+            const auto r = static_cast<std::uint32_t>(std::clamp<std::int64_t>(right, 0, width));
+            const auto b = static_cast<std::uint32_t>(std::clamp<std::int64_t>(bottom, 0, height));
+            if (l < r && t < b) {
+                dirtyRects.push_back({l, t, r, b});
+                totalArea += static_cast<std::uint64_t>(r - l) * (b - t);
+            }
+        };
+        UINT moveBytes = 0;
+        if (FAILED(duplication->GetFrameMoveRects(static_cast<UINT>(metadataBuffer.size()), reinterpret_cast<DXGI_OUTDUPL_MOVE_RECT*>(metadataBuffer.data()), &moveBytes))) {
+            return false;
+        }
+        const auto* moves = reinterpret_cast<const DXGI_OUTDUPL_MOVE_RECT*>(metadataBuffer.data());
+        const auto moveCount = moveBytes / sizeof(DXGI_OUTDUPL_MOVE_RECT);
+        for (std::size_t index = 0; index < moveCount; ++index) {
+            const auto& move = moves[index];
+            const auto w = static_cast<std::int64_t>(move.DestinationRect.right) - move.DestinationRect.left;
+            const auto h = static_cast<std::int64_t>(move.DestinationRect.bottom) - move.DestinationRect.top;
+            addClamped(move.DestinationRect.left, move.DestinationRect.top, move.DestinationRect.right, move.DestinationRect.bottom);
+            if (w > 0 && h > 0) {
+                addClamped(move.SourcePoint.x, move.SourcePoint.y, static_cast<std::int64_t>(move.SourcePoint.x) + w, static_cast<std::int64_t>(move.SourcePoint.y) + h);
+            }
+        }
+        UINT dirtyBytes = 0;
+        if (FAILED(duplication->GetFrameDirtyRects(static_cast<UINT>(metadataBuffer.size()), reinterpret_cast<RECT*>(metadataBuffer.data()), &dirtyBytes))) {
+            return false;
+        }
+        const auto* rects = reinterpret_cast<const RECT*>(metadataBuffer.data());
+        const auto rectCount = dirtyBytes / sizeof(RECT);
+        for (std::size_t index = 0; index < rectCount; ++index) {
+            addClamped(rects[index].left, rects[index].top, rects[index].right, rects[index].bottom);
+        }
+        return !dirtyRects.empty() && dirtyRects.size() <= 64 && totalArea <= static_cast<std::uint64_t>(width) * height * 3 / 5;
+    }
+    void ensureStaging(const D3D11_TEXTURE2D_DESC& textureDescription) {
         D3D11_TEXTURE2D_DESC previous{};
         if (staging) {
             staging->GetDesc(&previous);
@@ -108,6 +155,9 @@ struct DesktopCapture::State {
             stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             require(device->CreateTexture2D(&stagingDescription, nullptr, &staging), "Create staging texture");
         }
+    }
+    void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing) {
+        ensureStaging(textureDescription);
         const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
         context->CopyResource(staging.Get(), source.Get());
         const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
@@ -131,7 +181,32 @@ struct DesktopCapture::State {
             }
         }
     }
-    void copyPixels(const ComPtr<ID3D11Texture2D>& source, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing) {
+    void copyStagingRects(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing) {
+        ensureStaging(textureDescription);
+        const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
+        for (const auto& rect : dirtyRects) {
+            const D3D11_BOX box{rect.left, rect.top, 0, rect.right, rect.bottom, 1};
+            context->CopySubresourceRegion(staging.Get(), 0, rect.left, rect.top, 0, source.Get(), 0, &box);
+        }
+        const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        require(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
+        const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+        Clock::time_point rowsEnded;
+        {
+            MappedTexture mapping{context.Get(), staging.Get()};
+            copyCapturePixelRects(frame.bgra, frame.width, frame.height, mapped.pData, mapped.RowPitch, dirtyRects);
+            rowsEnded = timing ? Clock::now() : Clock::time_point{};
+        }
+        if (timing) {
+            timing->copyDispatchMilliseconds = milliseconds(copyStarted, mapStarted);
+            timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
+            timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+            timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+            timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
+        }
+    }
+    void copyPixels(const ComPtr<ID3D11Texture2D>& source, const DXGI_OUTDUPL_FRAME_INFO* frameInfo, bool allowIncremental, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing) {
         D3D11_TEXTURE2D_DESC textureDescription{};
         source->GetDesc(&textureDescription);
         const auto byteCount = static_cast<std::uint64_t>(textureDescription.Width) * textureDescription.Height * 4;
@@ -139,10 +214,54 @@ struct DesktopCapture::State {
             textureDescription.Width != frame.width || textureDescription.Height != frame.height) {
             throw CaptureReset();
         }
+        std::uint64_t dirtyArea = 0;
+        const bool incremental = allowIncremental && frameInfo && !(timing && timing->verifyWithStaging) && reusablePixels &&
+                                 reusablePixels->size() == static_cast<std::size_t>(byteCount) && reusablePixels->data() == lastReadbackData &&
+                                 sourceSerial == lastReadbackSerial + 1 && extractDirtyRects(*frameInfo, frame.width, frame.height, dirtyArea);
         if (reusablePixels) {
             frame.bgra.swap(*reusablePixels);
         }
         frame.bgra.resize(static_cast<std::size_t>(byteCount));
+        frame.dirtyRowBegin = 0;
+        frame.dirtyRowEnd = frame.height;
+        frame.changedPixels = static_cast<std::uint64_t>(frame.width) * frame.height;
+        if (incremental) {
+            std::uint32_t minTop = frame.height;
+            std::uint32_t maxBottom = 0;
+            for (const auto& rect : dirtyRects) {
+                minTop = std::min(minTop, rect.top);
+                maxBottom = std::max(maxBottom, rect.bottom);
+            }
+            frame.dirtyRowBegin = minTop & ~1u;
+            frame.dirtyRowEnd = std::min(frame.height, (maxBottom + 1u) & ~1u);
+            frame.changedPixels = std::min<std::uint64_t>(dirtyArea, static_cast<std::uint64_t>(frame.width) * frame.height);
+            if (description.DesktopImageInSystemMemory && !(timing && timing->forceStaging)) {
+                DXGI_MAPPED_RECT mapped{};
+                const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
+                require(duplication->MapDesktopSurface(&mapped), "Map desktop surface");
+                const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+                Clock::time_point rowsEnded;
+                {
+                    MappedDesktop mapping{duplication.Get()};
+                    if (mapped.Pitch < 0) {
+                        throw std::runtime_error("Invalid desktop row pitch");
+                    }
+                    copyCapturePixelRects(frame.bgra, frame.width, frame.height, mapped.pBits, static_cast<std::size_t>(mapped.Pitch), dirtyRects);
+                    rowsEnded = timing ? Clock::now() : Clock::time_point{};
+                }
+                if (timing) {
+                    timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
+                    timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+                    timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+                    timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
+                }
+            } else {
+                copyStagingRects(source, textureDescription, frame, timing);
+            }
+            lastReadbackSerial = sourceSerial;
+            lastReadbackData = frame.bgra.data();
+            return;
+        }
         // DXGI can expose the duplicated desktop in system memory directly.
         // Avoid a redundant GPU copy and a blocking staging-texture Map in that case.
         if (description.DesktopImageInSystemMemory && !(timing && timing->forceStaging)) {
@@ -179,9 +298,13 @@ struct DesktopCapture::State {
                     }
                 }
             }
+            lastReadbackSerial = sourceSerial;
+            lastReadbackData = frame.bgra.data();
             return;
         }
         copyStagingPixels(source, textureDescription, frame, timing);
+        lastReadbackSerial = sourceSerial;
+        lastReadbackData = frame.bgra.data();
     }
 };
 DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_unique<State>()) {
@@ -316,12 +439,17 @@ void DesktopCapture::readTexture(CapturedFrame& frame, CaptureTiming* timing) {
     timing->stages.mapMicroseconds.reset();
     timing->stages.rowCopyMicroseconds.reset();
     state_->copyStagingPixels(state_->latest, description, frame, timing);
+    frame.dirtyRowBegin = 0;
+    frame.dirtyRowEnd = frame.height;
+    frame.changedPixels = static_cast<std::uint64_t>(frame.width) * frame.height;
     frame.stageTiming.mapMicroseconds = timing->stages.mapMicroseconds;
     frame.stageTiming.rowCopyMicroseconds = timing->stages.rowCopyMicroseconds;
     state_->deferred.reset();
     state_->pixelsCaptured = true;
     state_->lastPixelsWidth = frame.width;
     state_->lastPixelsHeight = frame.height;
+    state_->lastReadbackSerial = state_->sourceSerial;
+    state_->lastReadbackData = frame.bgra.data();
     if (requireInputDesktop() != state_->desktopGeneration) {
         throw CaptureReset();
     }
@@ -365,9 +493,14 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
             D3D11_TEXTURE2D_DESC description{};
             state_->latest->GetDesc(&description);
             state_->copyStagingPixels(state_->latest, description, frame, timing);
+            frame.dirtyRowBegin = 0;
+            frame.dirtyRowEnd = frame.height;
+            frame.changedPixels = static_cast<std::uint64_t>(frame.width) * frame.height;
             state_->pixelsCaptured = true;
             state_->lastPixelsWidth = frame.width;
             state_->lastPixelsHeight = frame.height;
+            state_->lastReadbackSerial = state_->sourceSerial;
+            state_->lastReadbackData = frame.bgra.data();
             if (requireInputDesktop() != state_->desktopGeneration) {
                 throw CaptureReset();
             }
@@ -427,10 +560,11 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         state_->context->CopyResource(state_->latest.Get(), source.Get());
     }
     if (readPixels && (desktopUpdated || state_->deferred)) {
-        if (state_->deferred && !frame.captureTicks) {
+        const bool hadDeferred = state_->deferred.has_value();
+        if (hadDeferred && !frame.captureTicks) {
             frame.captureTicks = state_->deferred->captureTicks;
         }
-        state_->copyPixels(source, frame, reusablePixels, timing);
+        state_->copyPixels(source, &info, desktopUpdated && !hadDeferred && !geometryChanged, frame, reusablePixels, timing);
         state_->deferred.reset();
         state_->pixelsCaptured = true;
         state_->lastPixelsWidth = frame.width;
@@ -439,8 +573,9 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         // ReleaseFrame invalidates the acquired resource. Own exactly one GPU
         // snapshot before releasing it; replace raw pixels, never encoded AVC.
         state_->pixelsCaptured = false;
+        state_->lastReadbackSerial = 0;
+        state_->lastReadbackData = nullptr;
     }
-    // Every pixel snapshot is complete; no DXGI dirty/move metadata is consumed.
     if (info.LastMouseUpdateTime.QuadPart) {
         state_->pointerPosition = info.PointerPosition;
     }

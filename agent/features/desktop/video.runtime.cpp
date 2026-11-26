@@ -84,8 +84,6 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     ruvia::event_loop loop;
     ruvia::blocking_pool& pool;
     std::shared_ptr<DesktopVideoWorker> worker = std::make_shared<DesktopVideoWorker>();
-    std::optional<ruvia::one_shot_receiver<PoolOutcome<PrefetchedCapture>>> pendingPrefetch;
-    std::shared_future<void> pendingPrefetchDone;
     std::optional<ruvia::one_shot_receiver<PoolOutcome<std::pair<DesktopVideoDiagnostics, bool>>>> pendingRelease;
     std::shared_future<void> pendingReleaseDone;
     WindowsDeadlineTimer pace;
@@ -134,10 +132,6 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
     }
     ~State() {
-        pendingPrefetch.reset();
-        if (pendingPrefetchDone.valid()) {
-            pendingPrefetchDone.wait(); // Shutdown only: ensure DXGI capture is idle before releasing worker.
-        }
         pendingRelease.reset();
         if (pendingReleaseDone.valid()) {
             pendingReleaseDone.wait(); // Shutdown only, never the event-loop hot path.
@@ -153,24 +147,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         // resource-release job must finish first.
         completion.get();
     }
-    static asio::awaitable<void> awaitPrefetch(std::shared_ptr<State> self) {
-        if (!self->pendingPrefetch) {
-            co_return;
-        }
-        auto receiver = std::move(*self->pendingPrefetch);
-        self->pendingPrefetch.reset();
-        auto prefetched = co_await ruvia::as_awaitable(awaitPoolReceiver(std::move(receiver)));
-        self->pendingPrefetchDone = {};
-        if (!self->stopped && !self->flow.background() && !self->reset && prefetched.captureInstance == self->worker->captureInstance) {
-            self->worker->prefetched = std::move(prefetched);
-        }
-    }
     void releaseCapture() {
-        if (pendingPrefetch) {
-            // Single-flight guard: when backgrounded or stopped while a prefetch
-            // is in flight, nextOwned/resizeOwned or ~State() joins it first.
-            return;
-        }
         if (pendingRelease) {
             return;
         }
@@ -216,7 +193,6 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             ~Pending() { value = false; }
         } guard{self->pending};
         self->pending = true;
-        co_await awaitPrefetch(self);
         co_await awaitCaptureRelease(self);
         if (self->stopped) {
             co_return std::nullopt;
@@ -227,6 +203,9 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             // also lets the owner process pending resize/rebind work.
             self->pace.expiresAfter(std::chrono::milliseconds(250));
         } else {
+            if (self->creditClosedAt && self->flow.canEncode(VideoClock::now())) {
+                self->nextFrameAt = {};
+            }
             self->pace.expiresAt(self->nextFrameAt);
         }
         const auto pacingStarted = VideoClock::now();
@@ -273,18 +252,22 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         if (step.deferredEncode) {
             auto deferred = std::move(*step.deferredEncode);
             bool preconverted = false;
-            const auto pixels = static_cast<std::uint64_t>(deferred.width) * deferred.height;
+            const auto convertHeight = deferred.rowEnd > deferred.rowBegin ? deferred.rowEnd - deferred.rowBegin : 0u;
+            const auto dirtyPixels = static_cast<std::uint64_t>(deferred.width) * convertHeight;
             const auto poolThreads = self->pool.thread_count();
-            const auto sliceCount = pixels >= 1280ull * 720 && poolThreads > 1
-                                        ? std::clamp<std::size_t>(poolThreads, 1, std::min<std::size_t>(deferred.height / 2, 32))
-                                        : 1u;
-            if (sliceCount > 1) {
+            const auto sliceCount = dirtyPixels >= 640ull * 360 && poolThreads > 1
+                                        ? std::clamp<std::size_t>(poolThreads, 1, std::min<std::size_t>(convertHeight / 2, 32))
+                                        : (convertHeight == 0 ? 0u : 1u);
+            if (convertHeight == 0) {
+                preconverted = true;
+            } else if (sliceCount > 1) {
+                const auto convertStarted = VideoClock::now();
                 std::vector<ruvia::one_shot_receiver<PoolOutcome<bool>>> sliceReceivers;
                 sliceReceivers.reserve(sliceCount);
-                const auto pairCount = deferred.height / 2u;
+                const auto pairCount = convertHeight / 2u;
                 for (std::size_t slot = 0; slot < sliceCount; ++slot) {
-                    const auto rowBegin = static_cast<std::uint32_t>((pairCount * slot / sliceCount) * 2u);
-                    const auto rowEnd = static_cast<std::uint32_t>((pairCount * (slot + 1) / sliceCount) * 2u);
+                    const auto rowBegin = deferred.rowBegin + static_cast<std::uint32_t>((pairCount * slot / sliceCount) * 2u);
+                    const auto rowEnd = deferred.rowBegin + static_cast<std::uint32_t>((pairCount * (slot + 1) / sliceCount) * 2u);
                     sliceReceivers.push_back(startOnPool(self->loop.worker(), self->pool, [owned = self->worker, rowBegin, rowEnd, format = deferred.pixelFormat] {
                         return owned->convertRowSlice(rowBegin, rowEnd, format);
                     }));
@@ -295,19 +278,11 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                         allOk = false;
                     }
                 }
+                if (allOk) {
+                    const auto elapsed = DesktopVideoStages::microseconds(convertStarted, VideoClock::now());
+                    deferred.stages.prepareCpu = std::min(60000000u, deferred.stages.prepareCpu.value_or(0) + elapsed);
+                }
                 preconverted = allOk;
-            }
-            if (deferred.prefetchCaptureInstance != 0 && poolThreads > 1 && !self->stopped && !self->flow.background() && !self->reset &&
-                self->worker->requestedRevision.load() == revision) {
-                std::promise<void> doneSignal;
-                self->pendingPrefetchDone = doneSignal.get_future().share();
-                self->pendingPrefetch.emplace(startOnPool(self->loop.worker(), self->pool, [owned = self->worker, instance = deferred.prefetchCaptureInstance, doneSignal = std::move(doneSignal)]() mutable {
-                    struct SignalGuard {
-                        std::promise<void>& signal;
-                        ~SignalGuard() { signal.set_value(); }
-                    } guard{doneSignal};
-                    return owned->prefetchNext(instance);
-                }));
             }
             auto encodeOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, deferred = std::move(deferred), preconverted]() mutable {
                 return owned->encodeDeferred(std::move(deferred), preconverted);
@@ -397,9 +372,8 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             ~Pending() { value = false; }
         } guard{self->pending};
         self->pending = true;
-        co_await awaitPrefetch(self);
         co_await awaitCaptureRelease(self);
-        auto operation = ruvia::run_blocking(self->loop.worker(), [owned = self->worker, width, height] {
+        auto operation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, width, height] {
             return owned->resize(width, height);
         });
         const bool applied = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());

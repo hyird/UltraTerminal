@@ -46,6 +46,8 @@ struct CapturedFrame {
     std::uint32_t rotation = 0;
     std::uint64_t captureTicks = 0;
     std::uint64_t captureEpoch = 0, sourceSerial = 0;
+    std::uint32_t dirtyRowBegin = 0, dirtyRowEnd = 0;
+    std::uint64_t changedPixels = 0;
     CaptureStageTiming stageTiming;
     // Empty for cursor updates and deferred GPU snapshots. captureTicks marks
     // a desktop update even when CPU readback was deferred by receiver credit.

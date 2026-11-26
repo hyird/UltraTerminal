@@ -48,7 +48,28 @@ int main() {
             rejectedStorage = true;
         }
         require(rejectedStorage, "Undersized desktop storage was accepted");
-        std::cout << "Complete BGRA copy, reusable storage and invalid row pitch passed\n";
+        std::fill(rebuilt.begin(), rebuilt.end(), 0x11);
+        std::fill(current.begin(), current.end(), 0x88);
+        const std::array<CapturePixelRect, 2> rects{{{2, 1, 5, 3}, {6, 0, 8, 2}}};
+        copyCapturePixelRects(rebuilt, width, height, current.data(), pitch, rects);
+        for (std::uint32_t y = 0; y < height; ++y) {
+            for (std::uint32_t x = 0; x < width; ++x) {
+                const bool inside = (x >= 2 && x < 5 && y >= 1 && y < 3) || (x >= 6 && x < 8 && y < 2);
+                const auto expected = static_cast<std::uint8_t>(inside ? 0x88 : 0x11);
+                for (std::size_t channel = 0; channel < 4; ++channel) {
+                    require(rebuilt[y * stride + x * 4 + channel] == expected, "Incremental rectangle copy corrupted outside or inside pixels");
+                }
+            }
+        }
+        bool rejectedRect = false;
+        try {
+            const std::array<CapturePixelRect, 1> invalid{{{3, 0, width + 1, 2}}};
+            copyCapturePixelRects(rebuilt, width, height, current.data(), pitch, invalid);
+        } catch (const std::runtime_error&) {
+            rejectedRect = true;
+        }
+        require(rejectedRect, "Out-of-bounds desktop rectangle was accepted");
+        std::cout << "Complete and incremental BGRA copy, reusable storage and invalid row pitch passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

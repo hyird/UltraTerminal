@@ -57,7 +57,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 | 前端 | HeroUI Pro Dashboard Template 1.0.13、React、TypeScript、Tailwind、Bun |
 | 浏览器桌面显示 | 独立会话对象、画布与输入控制，沿用现有视频协议 |
 | 桌面采集与输入 | DXGI Desktop Duplication、Win32 |
-| 视频编码 | Media Foundation 硬编、OpenH264 屏幕内容实时模式软编 |
+| 视频编码 | Media Foundation 硬编、OpenH264 多切片实时软编 |
 | 无损矩形 | libpng、zlib，Raw/RLE 补充 |
 | VNC | Agent 内嵌 LibVNCServer，浏览器 noVNC |
 | SSH | Agent 内嵌 libssh，网关 libssh2，浏览器 xterm.js |
@@ -78,7 +78,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 服务和桌面工作进程各持有一个与物理/逻辑 CPU 核心数一致的全核同构 `ruvia::event_loop_pool` 及其共用的全核有界 `ruvia::blocking_pool`；全部线程生命周期均由 `ruvia::core` 独占管理，不自建裸线程或专职异构池。连接、IPC、心跳、输入与视频通道通过 `next_loop()` / `loop_for(key)` 亲和绑定到同构 Worker，跨 Worker 通过 `make_one_shot` 与 `post` 传递自有数据；退出先取消并等待原生 I/O，再 `stop()` 与 `join()` 回收事件循环和阻塞池。服务的设置、进程启动、登录准备与 `SendSAS` 通过有界 `run_blocking` 卸载；桌面进程的阻塞卸载显式检查结果，由既定单飞状态保障 DXGI 采集和编码器的非并发访问。
 
-桌面工作进程中，CPU 侧的 `BGRA -> I420/NV12` 偶数行分片颜色转换通过事件循环协程向同构全核 `blocking_pool` 并行派发并由 `one_shot` 汇合，软件编码使用内嵌 OpenH264（同一帧按像素规模与 CPU 核心数使用 1～4 个切片并行），并将下一帧 DXGI 采编预取与当前编码、IPC/网络写出重叠执行；事件循环继续响应输入与 IPC。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
+桌面工作进程中，CPU 侧的 `BGRA -> I420/NV12` 按 DXGI 脏矩形与移动矩形合并后的偶数行区间向同构全核 `blocking_pool` 并行派发转换并由 `one_shot` 汇合（未变化行复用已缓存平面），软件编码使用内嵌 OpenH264 实时多切片模式（启用背景宏块检测，同一帧按像素规模与 CPU 核心数使用 1～8 个切片并行）；事件循环按帧槽位调度采集与编码并继续响应输入与 IPC。当前 Agent 启动新桌面会话时停止旧会话，关闭期间可短暂重叠。
 
 ### 会话流程
 
@@ -113,7 +113,7 @@ Agent ← 原生加密 UDP 优先 / TLS-TCP 降级 → 网关原生入口
 
 Windows 桌面采用 DXGI Desktop Duplication，画面变化时保留一张最新整帧快照，鼠标形状和位置独立传输。接收窗口关闭时继续合并未编码的原始画面，编码前选取最新来源。CPU 采集和硬件失败回退均读取完整图像；采集接口只提供完整读回与借用 GPU 纹理。
 
-编码优先选择双方支持的 AV1、HEVC、H.264 硬件编码器，系统媒体组件缺失或硬件编码失败时回退到内嵌 OpenH264 的 `SCREEN_CONTENT_REAL_TIME` 模式。软件路径使用低复杂度、单时域/空间层、无跳帧和按需 IDR，保持逐帧同步输出与原始采集时间戳；调整帧率、码率不重建编码器，清晰模式切换才重建独立基准。支持 GPU 的 MFT 通过 D3D11 Video Processor 将完整 BGRA 纹理转换为 NV12。码率是编码目标，瞬时复杂帧仍由有界字节、帧数和显示确认窗口约束，自适应帧率受真实链路、编解码压力与接收信用约束。视频、输入使用独立原生连接与有界队列，已编码依赖帧按序发送；继续全部经 Server 中继，不引入直连。
+编码优先选择双方支持的 AV1、HEVC、H.264 硬件编码器，系统媒体组件缺失或硬件编码失败时回退到内嵌 OpenH264 的实时多切片模式（`CAMERA_VIDEO_REAL_TIME` + 背景检测）。软件路径使用低复杂度、单时域/空间层、无跳帧和按需 IDR，保持逐帧同步输出与原始采集时间戳；连续帧采集按 DXGI 脏矩形与移动矩形做子区域回读并增量更新完整像素快照；调整帧率、码率不重建编码器，清晰模式切换才重建独立基准。支持 GPU 的 MFT 通过 D3D11 Video Processor 将完整 BGRA 纹理转换为 NV12。码率是编码目标，瞬时复杂帧仍由有界字节、帧数和显示确认窗口约束，自适应帧率受真实链路、编解码压力与接收信用约束。视频、输入使用独立原生连接与有界队列，已编码依赖帧按序发送；继续全部经 Server 中继，不引入直连。
 
 Agent 1.0.41 起，桌面生产链路统一发送 VideoConfig、VideoFrame 和独立 CursorUpdate。PNG 区域更新、CopyRect、瓦片缓存、静态/动态 PNG 精修、GPU 差分与区域读回成本调度已移除。对应的 Agent 实现、浏览器合成器、辅助解码信用和测试夹具一并删除。
 

@@ -64,16 +64,14 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
     requireCodec(state_->encoder->SetOption(ENCODER_OPTION_TRACE_LEVEL, &traceLevel), "Cannot configure encoder logging");
     SEncParamExt parameters{};
     requireCodec(state_->encoder->GetDefaultParams(&parameters), "Cannot obtain encoder defaults");
-    parameters.iMinQp = config.sharp ? 10 : config.bitrate >= 15000000 ? 10
-                                        : config.bitrate >= 6000000    ? 14
-                                                                       : 18;
-    parameters.iMaxQp = config.sharp ? 18 : 42;
-    parameters.iUsageType = SCREEN_CONTENT_REAL_TIME;
+    parameters.iMinQp = config.sharp ? 10 : 22;
+    parameters.iMaxQp = config.sharp ? 18 : 51;
+    parameters.iUsageType = CAMERA_VIDEO_REAL_TIME;
     parameters.iPicWidth = static_cast<int>(config.width);
     parameters.iPicHeight = static_cast<int>(config.height);
     parameters.iTargetBitrate = static_cast<int>(bitrate);
     parameters.iMaxBitrate = static_cast<int>(bitrate);
-    parameters.iRCMode = RC_BITRATE_MODE;
+    parameters.iRCMode = RC_TIMESTAMP_MODE;
     parameters.fMaxFrameRate = static_cast<float>(std::min(config.framesPerSecond, 60u));
     parameters.iTemporalLayerNum = 1;
     parameters.iSpatialLayerNum = 1;
@@ -85,18 +83,20 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
     parameters.bEnableSSEI = false;
     parameters.bEnableFrameSkip = false;
     parameters.bEnableLongTermReference = false;
-    // Bound codec parallelism so capture, input and networking retain CPU time.
-    // Small frames do not amortize the cost of slice worker synchronization.
-    // Two slices keep 1080p resource use bounded; larger frames can use four.
-    const auto maximumThreads = pixels <= 1920 * 1080 ? 2u : 4u;
-    const auto threads = pixels >= 1280 * 720 ? std::clamp(std::thread::hardware_concurrency() / 2, 1u, maximumThreads) : 1u;
+    // CAMERA_VIDEO_REAL_TIME enables true parallel multi-slice encoding without
+    // OpenH264's single-threaded screen-content full-frame hash search, while
+    // background detection skips unchanged 16x16 desktop macroblocks via SIMD.
+    const auto mbRows = (config.height + 15u) / 16u;
+    const auto maximumThreads = std::min<unsigned>(8u, std::max(1u, mbRows / 4u));
+    const auto threads = pixels >= 640 * 360 ? std::clamp(std::thread::hardware_concurrency(), 1u, maximumThreads) : 1u;
     parameters.iMultipleThreadIdc = static_cast<unsigned short>(threads);
+    parameters.bUseLoadBalancing = false;
+    parameters.iLoopFilterDisableIdc = threads > 1 ? 2 : 0;
     parameters.bEnableDenoise = false;
-    parameters.bEnableBackgroundDetection = false;
+    parameters.bEnableBackgroundDetection = true;
     parameters.bEnableAdaptiveQuant = false;
-    // OpenH264 requires scene detection in screen-content mode. It can emit
-    // a scene-cut IDR independently of explicit recovery, but no periodic GOP.
-    parameters.bEnableSceneChangeDetect = true;
+    parameters.bEnableSceneChangeDetect = false;
+    parameters.bFixRCOverShoot = true;
     parameters.bEnableFrameCroppingFlag = true;
     auto& layer = parameters.sSpatialLayers[0];
     layer.iVideoWidth = parameters.iPicWidth;
@@ -147,17 +147,21 @@ void SoftwareVideoEncoder::setRate(std::uint32_t framesPerSecond, std::uint32_t 
         requireCodec(state_->encoder->SetOption(ENCODER_OPTION_FRAME_RATE, &rate), "Cannot update encoder frame rate");
     }
     if (nextBitrate != previousBitrate) {
+        SBitrateInfo layer{SPATIAL_LAYER_0, static_cast<int>(nextBitrate)};
         SBitrateInfo rate{SPATIAL_LAYER_ALL, static_cast<int>(nextBitrate)};
         const auto maximum = [&] {
-            SBitrateInfo layer{SPATIAL_LAYER_0, static_cast<int>(nextBitrate)};
             requireCodec(state_->encoder->SetOption(ENCODER_OPTION_MAX_BITRATE, &layer), "Cannot update layer maximum bitrate");
             requireCodec(state_->encoder->SetOption(ENCODER_OPTION_MAX_BITRATE, &rate), "Cannot update maximum bitrate");
+        };
+        const auto target = [&] {
+            requireCodec(state_->encoder->SetOption(ENCODER_OPTION_BITRATE, &layer), "Cannot update layer bitrate");
+            requireCodec(state_->encoder->SetOption(ENCODER_OPTION_BITRATE, &rate), "Cannot update encoder bitrate");
         };
         // Raise ceilings before the target; lower the target before ceilings.
         if (nextBitrate > previousBitrate) {
             maximum();
         }
-        requireCodec(state_->encoder->SetOption(ENCODER_OPTION_BITRATE, &rate), "Cannot update encoder bitrate");
+        target();
         if (nextBitrate < previousBitrate) {
             maximum();
         }

@@ -152,19 +152,23 @@ class DesktopFrameFlow {
         if (!baseline_ && !roundTrip_) {
             return std::min<std::size_t>(2, clientFrameLimit_);
         }
-        const auto frames = (static_cast<std::uint64_t>(pathDelay().count()) * rate_.framesPerSecond + 999999) / 1000000 + 2;
+        const auto frames = (static_cast<std::uint64_t>(pathDelay().count()) * rate_.framesPerSecond + 999999) / 1000000 + 4;
         return std::min<std::size_t>(std::clamp<std::uint64_t>(frames, 2, kMaximumInFlightFrames), clientFrameLimit_);
     }
     std::size_t byteWindow() const {
         const auto delivery = deliveryBytesPerSecond_ ? std::min<std::uint64_t>(deliveryBytesPerSecond_, rate_.bitrate / 8) : rate_.bitrate / 8;
         const auto bytes = delivery * static_cast<std::uint64_t>(pathDelay().count() + 50000) / 1000000;
         // ACK delay and codec-size variation need a normal two-picture
-        // cushion, just as frameWindow has two slots beyond the path BDP.
+        // cushion, just as frameWindow has slots beyond the path BDP.
         // Keyframes and repeats cannot inflate it; age/frame guards remain.
         return static_cast<std::size_t>(std::clamp<std::uint64_t>(std::max(bytes, videoFrameBytes_ * 2), 16384, 4 * 1024 * 1024));
     }
+    std::chrono::microseconds maximumFrameAge() const {
+        const auto rtt = pathDelay();
+        return std::max(rtt * 2, rtt + std::chrono::milliseconds(250));
+    }
     bool canEncode(Clock::time_point now) const {
-        return !background_ && (pending_.empty() || (pending_.size() < frameWindow() && pressureBytes(now) < byteWindow() && now - pending_.front().sent <= pathDelay() + std::chrono::milliseconds(150)));
+        return !background_ && (pending_.empty() || (pending_.size() < frameWindow() && pressureBytes(now) < byteWindow() && now - pending_.front().sent <= maximumFrameAge()));
     }
     std::size_t pendingBytes() const { return pendingBytes_; }
     std::size_t pendingFrames() const { return pending_.size(); }
@@ -175,7 +179,7 @@ class DesktopFrameFlow {
         const auto age = pending_.empty() ? Clock::duration::zero() : std::max(now - pending_.front().sent, Clock::duration::zero());
         const auto bytes = pressureBytes(now);
         const auto flags = (background_ ? 1u : 0u) | (!pending_.empty() && pending_.size() >= frameWindow() ? 2u : 0u) |
-                           (!pending_.empty() && bytes >= byteWindow() ? 4u : 0u) | (!pending_.empty() && age > pathDelay() + std::chrono::milliseconds(150) ? 8u : 0u);
+                           (!pending_.empty() && bytes >= byteWindow() ? 4u : 0u) | (!pending_.empty() && age > maximumFrameAge() ? 8u : 0u);
         return {static_cast<std::uint32_t>(frameWindow()), static_cast<std::uint32_t>(byteWindow()), static_cast<std::uint32_t>(pending_.size()),
                 static_cast<std::uint32_t>(pendingBytes_), static_cast<std::uint32_t>(bytes), static_cast<std::uint32_t>(pathDelay().count()),
                 static_cast<std::uint32_t>(std::min<std::int64_t>(60000000, std::chrono::duration_cast<std::chrono::microseconds>(age).count())),

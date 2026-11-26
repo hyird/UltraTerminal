@@ -21,4 +21,28 @@ void copyCapturePixels(std::span<std::uint8_t> target, std::uint32_t width, std:
         std::memcpy(target.data() + row * stride, pixels + row * pitch, stride);
     }
 }
+void copyCapturePixelRects(std::span<std::uint8_t> target, std::uint32_t width, std::uint32_t height,
+                           const void* source, std::size_t pitch, std::span<const CapturePixelRect> rects) {
+    if (!width || !height || static_cast<std::uint64_t>(width) * height > maximumPixels) {
+        throw std::runtime_error("Invalid desktop dimensions");
+    }
+    const auto stride = static_cast<std::size_t>(width) * 4;
+    if (!source || pitch < stride || target.size() < stride * height) {
+        throw std::runtime_error("Invalid desktop pixel storage or row pitch");
+    }
+    const auto* pixels = static_cast<const std::uint8_t*>(source);
+    for (const auto& rect : rects) {
+        if (rect.left > rect.right || rect.top > rect.bottom || rect.right > width || rect.bottom > height) {
+            throw std::runtime_error("Invalid desktop pixel rectangle");
+        }
+        if (rect.left == rect.right || rect.top == rect.bottom) {
+            continue;
+        }
+        const auto byteOffset = static_cast<std::size_t>(rect.left) * 4;
+        const auto byteWidth = static_cast<std::size_t>(rect.right - rect.left) * 4;
+        for (std::size_t row = rect.top; row < rect.bottom; ++row) {
+            std::memcpy(target.data() + row * stride + byteOffset, pixels + row * pitch + byteOffset, byteWidth);
+        }
+    }
+}
 } // namespace ultraterimal::agent
