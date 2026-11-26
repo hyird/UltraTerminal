@@ -59,7 +59,7 @@ struct DesktopVideoWorker {
     std::chrono::steady_clock::time_point encodeAt{}, repeatAt{}, previousPixelCaptureAt{};
     std::uint64_t generation = 0, contentFrameId = 0, deliveryFrameId = 0;
     std::uint64_t configuredCaptureEpoch = 0, lastPresentTicks = 0;
-    std::uint32_t width = 0, height = 0, coalescedCaptures = 0;
+    std::uint32_t width = 0, height = 0, coalescedCaptures = 0, consecutiveRepeatedFrames = 0;
     std::int32_t configuredLeft = 0, configuredTop = 0;
     bool configurationPending = true, pixelsPending = false;
     bool optimizationV2 = false, continuousFrames = false;

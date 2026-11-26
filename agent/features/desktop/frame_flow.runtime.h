@@ -78,6 +78,7 @@ class DesktopFrameFlow {
         decodeMicroseconds_ = 0;
         scenePixels_.reset();
         congestionSamples_ = 0;
+        queueBacklogSamples_ = 0;
         healthySince_.reset();
     }
     void observeRoundTrip(std::chrono::microseconds elapsed, Clock::time_point now) {
@@ -287,7 +288,10 @@ class DesktopFrameFlow {
         // Require an ordinary byte-saturated flight before reducing bitrate;
         // frame/byte credit and frame age still bound unsaturated delayed work.
         const bool networkPressure = ordinaryDelivery && byteSaturated && transit > pathDelay() + std::chrono::milliseconds(50);
-        const bool decoderPressure = queueDepth > 2 || decodeMicroseconds_ > 25000;
+        // Browser WebCodecs keeps up to 4 frames in its decode pipeline. Only
+        // sustained backlog (>= 4 frames across 6 ACKs) or slow decoding reduces FPS.
+        queueBacklogSamples_ = queueDepth >= 4 ? std::min(6u, queueBacklogSamples_ + 1) : 0;
+        const bool decoderPressure = decodeMicroseconds_ > 25000 || queueBacklogSamples_ >= 6;
         const bool congested = networkPressure || decoderPressure;
         congestionSamples_ = congested ? std::min(3u, congestionSamples_ + 1) : 0;
         if (congested) {
@@ -309,7 +313,7 @@ class DesktopFrameFlow {
             restoredAt_.reset();
             if (networkPressure) {
                 auto target = static_cast<std::uint64_t>(rate_.bitrate) * 4 / 5;
-                if (capacitySample && byteSaturated && deliveryBytesPerSecond_) {
+                if (deliveryBytesPerSecond_) {
                     target = std::min(target, std::max<std::uint64_t>(rate_.bitrate / 2, deliveryBytesPerSecond_ * 8 * 9 / 10));
                 }
                 rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, kTargetVideoBitrate));
@@ -319,19 +323,30 @@ class DesktopFrameFlow {
             }
             updateFrameRate();
             congestionSamples_ = 0;
+            queueBacklogSamples_ = 0;
             adjustAt_ = now + std::chrono::milliseconds(500);
         } else if (now >= adjustAt_ && healthySince_ && now - *healthySince_ >= std::chrono::seconds(2)) {
             if (recoveryRate_ && now >= recoveryExpiresAt_) {
                 recoveryRate_.reset();
             }
-            const auto bitrateLimit = recoveryRate_ ? std::min(kTargetVideoBitrate, recoveryRate_->bitrate) : kTargetVideoBitrate;
+            // Do not inflate target bitrate far above measured link capacity during
+            // app-limited small-frame/idle periods; allow active probing when actual
+            // changed-frame load utilizes at least half of the current bitrate budget.
+            const bool activeLoad = videoPacingActive_ && videoFrameBytes_ * 8 * rate_.framesPerSecond >= static_cast<std::uint64_t>(rate_.bitrate) / 2;
+            const auto measuredCeiling = deliveryBytesPerSecond_ && !activeLoad
+                                             ? std::clamp<std::uint64_t>(deliveryBytesPerSecond_ * 8 * 5 / 4, kMinimumVideoBitrate, kTargetVideoBitrate)
+                                             : static_cast<std::uint64_t>(kTargetVideoBitrate);
+            const auto recoveryLimit = recoveryRate_ ? std::min<std::uint64_t>(kTargetVideoBitrate, recoveryRate_->bitrate) : static_cast<std::uint64_t>(kTargetVideoBitrate);
+            const auto bitrateLimit = static_cast<std::uint32_t>(std::min(recoveryLimit, measuredCeiling));
             const bool restoring = recoveryRate_ && now >= restoreBlockedUntil_;
             const auto step = restoring ? std::max(4u, rate_.framesPerSecond / 4) : 2u;
             auto nextBitrate = static_cast<std::uint64_t>(rate_.bitrate) + std::max(64000u, rate_.bitrate / (restoring ? 2 : 20));
             if (restoring && deliveryBytesPerSecond_) {
                 nextBitrate = std::max(nextBitrate, deliveryBytesPerSecond_ * 8 * 4 / 5);
             }
-            rate_.bitrate = static_cast<std::uint32_t>(std::min<std::uint64_t>(bitrateLimit, nextBitrate));
+            if (rate_.bitrate < bitrateLimit) {
+                rate_.bitrate = static_cast<std::uint32_t>(std::min<std::uint64_t>(bitrateLimit, nextBitrate));
+            }
             receiverFrameRate_ = std::min(kMaximumFramesPerSecond, receiverFrameRate_ + step);
             updateFrameRate(true, step);
             if (restoring) {
@@ -368,6 +383,7 @@ class DesktopFrameFlow {
         if (background != background_) {
             videoBudgetFrames_ = 0;
             congestionSamples_ = 0;
+            queueBacklogSamples_ = 0;
             healthySince_.reset();
             lastAcknowledgedAt_ = {};
         }
@@ -409,7 +425,7 @@ class DesktopFrameFlow {
     std::optional<Rate> recoveryRate_;
     std::optional<Clock::time_point> restoredAt_;
     Clock::time_point recoveryExpiresAt_{}, restoreBlockedUntil_{};
-    unsigned congestionSamples_ = 0;
+    unsigned congestionSamples_ = 0, queueBacklogSamples_ = 0;
     bool background_ = false;
 };
 } // namespace ultraterimal::agent

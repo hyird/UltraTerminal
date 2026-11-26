@@ -15,6 +15,7 @@ export class DesktopInput {
   private move: { x: number; y: number } | null = null;
   private moveTimer = 0;
   private animation = 0;
+  private lastMoveSentAt = 0;
   private wheelRemainder = [0, 0];
   private disposed = false;
   private readonly macKeyboard = /Mac/i.test(navigator.platform);
@@ -259,10 +260,14 @@ export class DesktopInput {
           this.send({ kind: Kind.BUTTON, code, pressed: !!(next & bit) });
       });
     } else if (!this.moveTimer && !this.animation) {
-      // Healthy links follow the next display tick; only a backed-up uplink
-      // coalesces more movement. Discrete input still flushes immediately.
-      if (this.congested())
-        this.moveTimer = window.setTimeout(() => this.flushMove(), 16);
+      // Cap pointer-move cadence to ~60 Hz (16 ms) even on high-refresh displays
+      // since the local cursor is rendered immediately; discrete input still flushes at once.
+      const elapsed = performance.now() - this.lastMoveSentAt;
+      if (this.congested() || elapsed < 16)
+        this.moveTimer = window.setTimeout(
+          () => this.flushMove(),
+          this.congested() ? 16 : Math.max(1, Math.ceil(16 - elapsed)),
+        );
       else this.animation = requestAnimationFrame(() => this.flushMove());
     }
     if (!next && this.pointer !== null) {
@@ -279,7 +284,10 @@ export class DesktopInput {
     this.moveTimer = 0;
     const move = this.move;
     this.move = null;
-    if (move && !this.disposed) this.send({ kind: Kind.POINTER_MOVE, ...move });
+    if (move && !this.disposed) {
+      this.lastMoveSentAt = performance.now();
+      this.send({ kind: Kind.POINTER_MOVE, ...move });
+    }
   }
   private wheel(event: WheelEvent): void {
     if (!this.focused()) return;

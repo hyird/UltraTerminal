@@ -64,6 +64,7 @@ void DesktopVideoWorker::discard() {
     pixelsPending = false;
     lastPresentTicks = 0;
     coalescedCaptures = 0;
+    consecutiveRepeatedFrames = 0;
     encodeAt = repeatAt = previousPixelCaptureAt = {};
 }
 void DesktopVideoWorker::beginGeneration() {
@@ -72,6 +73,7 @@ void DesktopVideoWorker::beginGeneration() {
     }
     ++generation;
     contentFrameId = deliveryFrameId = 0;
+    consecutiveRepeatedFrames = 0;
     configurationPending = true;
 }
 bool DesktopVideoWorker::convertRowSlice(std::uint32_t rowBegin, std::uint32_t rowEnd, VideoPixelFormat format) {
@@ -325,7 +327,15 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
         bool repeated = continuousFrames && contentFrameId && !pixelsPending && !refresh && !configurationPending;
         const auto slots = nextDesktopFrameSlots({encodeAt, repeatAt}, started, rate.framesPerSecond, continuousFrames, refresh || configurationPending, repeated);
         encodeAt = slots.content;
-        repeatAt = slots.repeated;
+        if (repeated) {
+            ++consecutiveRepeatedFrames;
+            // After 3 repeated frames settle static residuals, drop idle repeat
+            // cadence to 5 FPS to avoid wasting CPU and receiver credit.
+            repeatAt = consecutiveRepeatedFrames >= 3 ? started + std::chrono::milliseconds(200) : slots.repeated;
+        } else {
+            consecutiveRepeatedFrames = 0;
+            repeatAt = slots.repeated;
+        }
         const auto encodeStarted = VideoClock::now();
         const auto timestamp = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(encodeStarted - epoch).count());
         const bool keyRequired = refresh || configurationPending;
@@ -346,8 +356,14 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
                 rowBegin = source.dirtyRowBegin & ~1u;
                 rowEnd = std::min(height, (source.dirtyRowEnd + 1u) & ~1u);
             }
+            DeferredCpuEncode deferred{std::move(update), stages, rate, *pixelFormat, width, height, rowBegin, rowEnd, source.captureEpoch, source.sourceSerial, changedArea, computeStarted, timestamp, keyRequired, repeated};
+            const auto convertHeight = rowEnd > rowBegin ? rowEnd - rowBegin : 0u;
+            const auto dirtyPixels = static_cast<std::uint64_t>(width) * convertHeight;
+            if (convertHeight == 0 || dirtyPixels < 640ull * 360) {
+                return encodeDeferred(std::move(deferred), convertHeight == 0);
+            }
             PreparedVideoStep step;
-            step.deferredEncode = DeferredCpuEncode{std::move(update), stages, rate, *pixelFormat, width, height, rowBegin, rowEnd, source.captureEpoch, source.sourceSerial, changedArea, computeStarted, timestamp, keyRequired, repeated};
+            step.deferredEncode = std::move(deferred);
             step.diagnostics = diagnostics;
             step.baselineRequired = false;
             step.activeV2 = optimizationV2;

@@ -256,7 +256,13 @@ int main() {
         require(motion.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Rate-controlled motion did not reach the adaptive ceiling on an uncongested path");
         DesktopFrameFlow decoder;
         decoder.observeRoundTrip(20ms, now);
-        for (std::uint64_t id = 1; id <= 12; ++id) {
+        for (std::uint64_t id = 1; id <= 4; ++id) {
+            now += 100ms;
+            decoder.sent(1, id, now, 1000, FrameType::kVideo);
+            require(decoder.acknowledge(1, id, 1000, 3, now + 21ms), "Transient decoder queue ACK rejected");
+        }
+        require(decoder.rate().framesPerSecond == 30, "Transient queue depth within 4-frame decode pipeline reduced FPS");
+        for (std::uint64_t id = 5; id <= 16; ++id) {
             now += 300ms;
             decoder.sent(1, id, now, 1000, FrameType::kVideo);
             require(decoder.acknowledge(1, id, 1000, 4, now + 21ms), "Decoder backlog ACK rejected");

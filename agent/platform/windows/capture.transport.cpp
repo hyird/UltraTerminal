@@ -1,6 +1,7 @@
 #include "capture.transport.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <limits>
@@ -41,7 +42,13 @@ void require(HRESULT status, const char* operation) {
 }
 struct AcquiredFrame {
     IDXGIOutputDuplication* duplication;
-    ~AcquiredFrame() { duplication->ReleaseFrame(); }
+    void release() {
+        if (duplication) {
+            duplication->ReleaseFrame();
+            duplication = nullptr;
+        }
+    }
+    ~AcquiredFrame() { release(); }
 };
 struct MappedTexture {
     ID3D11DeviceContext* context;
@@ -80,7 +87,8 @@ struct DesktopCapture::State {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGIOutputDuplication> duplication;
-    ComPtr<ID3D11Texture2D> staging;
+    std::array<ComPtr<ID3D11Texture2D>, 2> staging;
+    std::size_t stagingIndex = 0;
     ComPtr<ID3D11Texture2D> latest;
     std::optional<CapturedFrame> deferred;
     DXGI_OUTDUPL_DESC description{};
@@ -141,32 +149,43 @@ struct DesktopCapture::State {
         }
         return !dirtyRects.empty() && dirtyRects.size() <= 64 && totalArea <= static_cast<std::uint64_t>(width) * height * 3 / 5;
     }
-    void ensureStaging(const D3D11_TEXTURE2D_DESC& textureDescription) {
+    ID3D11Texture2D* ensureStaging(const D3D11_TEXTURE2D_DESC& textureDescription) {
+        auto& slot = staging[stagingIndex];
+        stagingIndex = (stagingIndex + 1) % staging.size();
         D3D11_TEXTURE2D_DESC previous{};
-        if (staging) {
-            staging->GetDesc(&previous);
+        if (slot) {
+            slot->GetDesc(&previous);
         }
-        if (!staging || previous.Width != textureDescription.Width || previous.Height != textureDescription.Height) {
-            staging.Reset();
+        if (!slot || previous.Width != textureDescription.Width || previous.Height != textureDescription.Height) {
+            if (slot && (previous.Width != textureDescription.Width || previous.Height != textureDescription.Height)) {
+                for (auto& entry : staging) {
+                    entry.Reset();
+                }
+            }
             auto stagingDescription = textureDescription;
             stagingDescription.BindFlags = 0;
             stagingDescription.MiscFlags = 0;
             stagingDescription.Usage = D3D11_USAGE_STAGING;
             stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            require(device->CreateTexture2D(&stagingDescription, nullptr, &staging), "Create staging texture");
+            require(device->CreateTexture2D(&stagingDescription, nullptr, &slot), "Create staging texture");
         }
+        return slot.Get();
     }
-    void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing) {
-        ensureStaging(textureDescription);
+    void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr) {
+        auto* target = ensureStaging(textureDescription);
         const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
-        context->CopyResource(staging.Get(), source.Get());
+        context->CopyResource(target, source.Get());
+        if (releaseBeforeMap) {
+            context->Flush();
+            releaseBeforeMap->release();
+        }
         const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        require(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
+        require(context->Map(target, 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
         const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
         Clock::time_point rowsEnded;
         {
-            MappedTexture mapping{context.Get(), staging.Get()};
+            MappedTexture mapping{context.Get(), target};
             copyCapturePixels(frame.bgra, frame.width, frame.height, mapped.pData, mapped.RowPitch);
             rowsEnded = timing ? Clock::now() : Clock::time_point{};
         }
@@ -181,20 +200,24 @@ struct DesktopCapture::State {
             }
         }
     }
-    void copyStagingRects(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing) {
-        ensureStaging(textureDescription);
+    void copyStagingRects(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr) {
+        auto* target = ensureStaging(textureDescription);
         const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
         for (const auto& rect : dirtyRects) {
             const D3D11_BOX box{rect.left, rect.top, 0, rect.right, rect.bottom, 1};
-            context->CopySubresourceRegion(staging.Get(), 0, rect.left, rect.top, 0, source.Get(), 0, &box);
+            context->CopySubresourceRegion(target, 0, rect.left, rect.top, 0, source.Get(), 0, &box);
+        }
+        if (releaseBeforeMap) {
+            context->Flush();
+            releaseBeforeMap->release();
         }
         const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        require(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
+        require(context->Map(target, 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
         const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
         Clock::time_point rowsEnded;
         {
-            MappedTexture mapping{context.Get(), staging.Get()};
+            MappedTexture mapping{context.Get(), target};
             copyCapturePixelRects(frame.bgra, frame.width, frame.height, mapped.pData, mapped.RowPitch, dirtyRects);
             rowsEnded = timing ? Clock::now() : Clock::time_point{};
         }
@@ -206,7 +229,7 @@ struct DesktopCapture::State {
             timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
         }
     }
-    void copyPixels(const ComPtr<ID3D11Texture2D>& source, const DXGI_OUTDUPL_FRAME_INFO* frameInfo, bool allowIncremental, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing) {
+    void copyPixels(const ComPtr<ID3D11Texture2D>& source, const DXGI_OUTDUPL_FRAME_INFO* frameInfo, bool allowIncremental, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr) {
         D3D11_TEXTURE2D_DESC textureDescription{};
         source->GetDesc(&textureDescription);
         const auto byteCount = static_cast<std::uint64_t>(textureDescription.Width) * textureDescription.Height * 4;
@@ -256,7 +279,7 @@ struct DesktopCapture::State {
                     timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
                 }
             } else {
-                copyStagingRects(source, textureDescription, frame, timing);
+                copyStagingRects(source, textureDescription, frame, timing, releaseBeforeMap);
             }
             lastReadbackSerial = sourceSerial;
             lastReadbackData = frame.bgra.data();
@@ -302,7 +325,7 @@ struct DesktopCapture::State {
             lastReadbackData = frame.bgra.data();
             return;
         }
-        copyStagingPixels(source, textureDescription, frame, timing);
+        copyStagingPixels(source, textureDescription, frame, timing, releaseBeforeMap);
         lastReadbackSerial = sourceSerial;
         lastReadbackData = frame.bgra.data();
     }
@@ -549,7 +572,9 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         }
         if (!state_->latest || previous.Width != description.Width || previous.Height != description.Height) {
             state_->latest.Reset();
-            state_->staging.Reset();
+            for (auto& entry : state_->staging) {
+                entry.Reset();
+            }
             auto latestDescription = description;
             latestDescription.Usage = D3D11_USAGE_DEFAULT;
             latestDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -558,23 +583,6 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
             require(state_->device->CreateTexture2D(&latestDescription, nullptr, &state_->latest), "Create latest desktop texture");
         }
         state_->context->CopyResource(state_->latest.Get(), source.Get());
-    }
-    if (readPixels && (desktopUpdated || state_->deferred)) {
-        const bool hadDeferred = state_->deferred.has_value();
-        if (hadDeferred && !frame.captureTicks) {
-            frame.captureTicks = state_->deferred->captureTicks;
-        }
-        state_->copyPixels(source, &info, desktopUpdated && !hadDeferred && !geometryChanged, frame, reusablePixels, timing);
-        state_->deferred.reset();
-        state_->pixelsCaptured = true;
-        state_->lastPixelsWidth = frame.width;
-        state_->lastPixelsHeight = frame.height;
-    } else if (!readPixels && desktopUpdated) {
-        // ReleaseFrame invalidates the acquired resource. Own exactly one GPU
-        // snapshot before releasing it; replace raw pixels, never encoded AVC.
-        state_->pixelsCaptured = false;
-        state_->lastReadbackSerial = 0;
-        state_->lastReadbackData = nullptr;
     }
     if (info.LastMouseUpdateTime.QuadPart) {
         state_->pointerPosition = info.PointerPosition;
@@ -598,6 +606,23 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     frame.pointerPitch = state_->pointerInfo.Pitch;
     frame.hotspotX = state_->pointerInfo.HotSpot.x;
     frame.hotspotY = state_->pointerInfo.HotSpot.y;
+    if (readPixels && (desktopUpdated || state_->deferred)) {
+        const bool hadDeferred = state_->deferred.has_value();
+        if (hadDeferred && !frame.captureTicks) {
+            frame.captureTicks = state_->deferred->captureTicks;
+        }
+        state_->copyPixels(source, &info, desktopUpdated && !hadDeferred && !geometryChanged, frame, reusablePixels, timing, &acquired);
+        state_->deferred.reset();
+        state_->pixelsCaptured = true;
+        state_->lastPixelsWidth = frame.width;
+        state_->lastPixelsHeight = frame.height;
+    } else if (!readPixels && desktopUpdated) {
+        // ReleaseFrame invalidates the acquired resource. Own exactly one GPU
+        // snapshot before releasing it; replace raw pixels, never encoded AVC.
+        state_->pixelsCaptured = false;
+        state_->lastReadbackSerial = 0;
+        state_->lastReadbackData = nullptr;
+    }
     if (!readPixels && (desktopUpdated || state_->deferred)) {
         const auto present = frame.captureTicks ? frame.captureTicks : state_->deferred ? state_->deferred->captureTicks
                                                                                         : 0;

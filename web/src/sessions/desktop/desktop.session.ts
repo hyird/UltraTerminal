@@ -71,6 +71,7 @@ export class DesktopSession {
   private hotspot = { x: 0, y: 0 };
   private cursor = { x: 0, y: 0, visible: false };
   private drawnCursor: { x: number; y: number; shape: ImageData } | null = null;
+  private readonly cursorDataUrlCache = new Map<string, string>();
   private context: CanvasRenderingContext2D;
   private cursorContext: CanvasRenderingContext2D;
   private viewportResize: ResizeObserver | undefined;
@@ -1026,25 +1027,37 @@ export class DesktopSession {
     );
     scaleX *= limit;
     scaleY *= limit;
-    const source = document.createElement("canvas");
-    source.width = shape.width;
-    source.height = shape.height;
-    source.getContext("2d")?.putImageData(shape, 0, 0);
-    const rendered = document.createElement("canvas");
-    rendered.width = Math.max(1, Math.round(shape.width * scaleX));
-    rendered.height = Math.max(1, Math.round(shape.height * scaleY));
-    rendered
-      .getContext("2d")
-      ?.drawImage(source, 0, 0, rendered.width, rendered.height);
-    const x = Math.min(rendered.width - 1, Math.round(this.hotspot.x * scaleX));
-    const y = Math.min(
-      rendered.height - 1,
-      Math.round(this.hotspot.y * scaleY),
-    );
-    this.canvas.style.setProperty(
-      "--desktop-cursor",
-      `url("${rendered.toDataURL()}") ${x} ${y}, default`,
-    );
+    const renderedWidth = Math.max(1, Math.round(shape.width * scaleX));
+    const renderedHeight = Math.max(1, Math.round(shape.height * scaleY));
+    const x = Math.min(renderedWidth - 1, Math.round(this.hotspot.x * scaleX));
+    const y = Math.min(renderedHeight - 1, Math.round(this.hotspot.y * scaleY));
+    let hash = 2166136261;
+    const pixels = shape.data;
+    for (let index = 0; index < pixels.length; index++) {
+      hash ^= pixels[index];
+      hash = Math.imul(hash, 16777619);
+    }
+    const cacheKey = `${shape.width}x${shape.height}->${renderedWidth}x${renderedHeight}@${x},${y}#${hash >>> 0}`;
+    let cssCursor = this.cursorDataUrlCache.get(cacheKey);
+    if (!cssCursor) {
+      const source = document.createElement("canvas");
+      source.width = shape.width;
+      source.height = shape.height;
+      source.getContext("2d")?.putImageData(shape, 0, 0);
+      const rendered = document.createElement("canvas");
+      rendered.width = renderedWidth;
+      rendered.height = renderedHeight;
+      rendered
+        .getContext("2d")
+        ?.drawImage(source, 0, 0, renderedWidth, renderedHeight);
+      cssCursor = `url("${rendered.toDataURL()}") ${x} ${y}, default`;
+      if (this.cursorDataUrlCache.size >= 16) {
+        const oldest = this.cursorDataUrlCache.keys().next().value;
+        if (oldest !== undefined) this.cursorDataUrlCache.delete(oldest);
+      }
+      this.cursorDataUrlCache.set(cacheKey, cssCursor);
+    }
+    this.canvas.style.setProperty("--desktop-cursor", cssCursor);
   }
   private completeStartup(): void {
     if (
@@ -1140,6 +1153,7 @@ export class DesktopSession {
       cancelAnimationFrame(this.observationAnimation);
     this.observationAnimation = undefined;
     this.visibleFrameGaps.clear();
+    this.cursorDataUrlCache.clear();
     this.canvas.style.removeProperty("--desktop-cursor");
     clearTimeout(this.deadline);
     clearTimeout(this.livenessDeadline);

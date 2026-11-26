@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <stdexcept>
 #include <vector>
 
@@ -89,12 +90,14 @@ struct DesktopInput::State {
     VirtualDesktop desktop;
     DWORD thread = GetCurrentThreadId();
     std::uint64_t desktopGeneration = 0;
+    std::chrono::steady_clock::time_point lastDesktopCheck{};
     bool stale = false;
 
     State(std::int32_t x, std::int32_t y, std::uint32_t w, std::uint32_t h) : left(x), top(y), width(w), height(h) {
         desktopGeneration = requireInputDesktop();
         DpiScope dpi;
         desktop = VirtualDesktop{};
+        lastDesktopCheck = std::chrono::steady_clock::now();
         if (!width || !height || width > 16384 || height > 16384 || desktop.width <= 0 || desktop.height <= 0 ||
             left < desktop.left || top < desktop.top || static_cast<std::int64_t>(left) + width > static_cast<std::int64_t>(desktop.left) + desktop.width ||
             static_cast<std::int64_t>(top) + height > static_cast<std::int64_t>(desktop.top) + desktop.height) {
@@ -146,20 +149,29 @@ struct DesktopInput::State {
         }
         // Wait for the video owner to publish a new configuration and recreate
         // this input binding. Never apply coordinates from the previous desktop.
-        try {
-            if (requireInputDesktop() != desktopGeneration) {
+        const auto now = std::chrono::steady_clock::now();
+        const bool verifyDesktop = event.kind() != wire::InputEvent::POINTER_MOVE ||
+                                   now - lastDesktopCheck >= std::chrono::milliseconds(100);
+        if (verifyDesktop) {
+            try {
+                if (requireInputDesktop() != desktopGeneration) {
+                    stale = true;
+                }
+            } catch (const DesktopChanged&) {
                 stale = true;
             }
-        } catch (const DesktopChanged&) {
-            stale = true;
-        }
-        if (stale) {
+            if (stale) {
+                release();
+                return;
+            }
+            DpiScope dpi;
+            if (!(desktop == VirtualDesktop{})) {
+                throw std::runtime_error("Desktop geometry changed during input");
+            }
+            lastDesktopCheck = now;
+        } else if (stale) {
             release();
             return;
-        }
-        DpiScope dpi;
-        if (!(desktop == VirtualDesktop{})) {
-            throw std::runtime_error("Desktop geometry changed during input");
         }
         INPUT input{};
         input.type = INPUT_MOUSE;
