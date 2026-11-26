@@ -116,7 +116,7 @@ void twoHopAsymmetricRttWindowDrag() {
         }
         now += 1ms;
     }
-    require(flow.rate().bitrate == DesktopFrameFlow::kTargetVideoBitrate && flow.rate().framesPerSecond >= 50,
+    require(flow.rate().bitrate == DesktopFrameFlow::kTargetVideoBitrate && flow.rate().framesPerSecond >= DesktopFrameFlow::kMaximumFramesPerSecond,
             "Two-hop browser RTT falsely triggered congestion backoff during window drag");
 }
 
@@ -126,7 +126,7 @@ void normalVbvAfterBurst() {
     DesktopFrameFlow vbv;
     vbv.setFixedPictureCost(false);
     vbv.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 5ms);
-    require(vbv.rate().framesPerSecond >= 30 && vbv.byteWindow() == 800000, "A single VBV burst reduced cadence or escaped its credit cushion");
+    require(vbv.rate().framesPerSecond >= DesktopFrameFlow::kMaximumFramesPerSecond && vbv.byteWindow() == 800000, "A single VBV burst reduced cadence or escaped its credit cushion");
     for (unsigned sample = 0; sample < 12; ++sample) {
         const auto rate = vbv.rate();
         vbv.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond), 1920 * 1080, 5ms);
@@ -141,12 +141,12 @@ void normalVbvAfterBurst() {
             const auto rate = flow.rate();
             flow.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond) + overhead, 1920 * 1080, 5ms);
             require(flow.rate().framesPerSecond <= rate.framesPerSecond + 1, "VBV cost revalidation jumped more than one FPS");
-            if (!firstRecovered && flow.rate().framesPerSecond >= 30) {
+            if (!firstRecovered && flow.rate().framesPerSecond >= DesktopFrameFlow::kMaximumFramesPerSecond) {
                 firstRecovered = sample;
             }
         }
-        std::cout << "fixed_cost_after_single_burst initial_fps=" << reduced << " frames=100 overhead_bytes=" << overhead << " ending_fps=" << flow.rate().framesPerSecond << " first_30fps_sample=" << firstRecovered << '\n';
-        require(reduced == 10 && flow.rate().framesPerSecond >= 30 && firstRecovered, "A single fixed-cost burst permanently locked cadence without an artificial cheap frame");
+        std::cout << "fixed_cost_after_single_burst initial_fps=" << reduced << " frames=100 overhead_bytes=" << overhead << " ending_fps=" << flow.rate().framesPerSecond << " first_cap_sample=" << firstRecovered << '\n';
+        require(reduced == 10 && flow.rate().framesPerSecond >= DesktopFrameFlow::kMaximumFramesPerSecond && firstRecovered, "A single fixed-cost burst permanently locked cadence without an artificial cheap frame");
     }
     DesktopFrameFlow cpu;
     cpu.observeFrame(FrameType::kVideo, 400000, 1920 * 1080, 40ms);
@@ -171,12 +171,12 @@ void fixedSharpCapacityChange() {
     const auto beforeRecovery = link.videoTimes.size();
     link.run(30s, 10000000, 40ms, {.fixedBytes = 100000});
     std::cout << "fixed_sharp_recovery frames_30s=" << link.videoTimes.size() - beforeRecovery << " bitrate=" << link.flow.rate().bitrate << " fps=" << link.flow.rate().framesPerSecond << '\n';
-    require(link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && link.flow.rate().framesPerSecond >= 40 && link.flow.rate().framesPerSecond <= 42, "Stale delivery/frame-cost history prevented capacity recovery");
+    require(link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && link.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Stale delivery/frame-cost history prevented capacity recovery");
     link.run(20s, 125000, 40ms, {.fixedBytes = 100000});
     require(link.flow.rate().bitrate < 2000000 && link.flow.rate().framesPerSecond == 5, "Restoration hysteresis ignored renewed fixed-sharp congestion");
     Link distant;
     distant.run(12s, 10000000, 600ms, {.fixedBytes = 100000});
-    require(distant.videoTimes.size() > 300 && distant.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && distant.flow.rate().framesPerSecond >= 30, "High RTT alone throttled fixed sharp pictures");
+    require(distant.videoTimes.size() > 240 && distant.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && distant.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "High RTT alone throttled fixed sharp pictures");
 }
 
 } // namespace
@@ -204,7 +204,7 @@ int main() {
         DesktopFrameFlow continuous;
         continuous.sent(1, 1, now, 1000, FrameType::kKeyFrame);
         require(continuous.acknowledge(1, 1, 350000, 0, now + 10ms), "Cold keyframe ACK failed");
-        require(continuous.rate().framesPerSecond == 30, "Cold decoder startup poisoned steady cadence");
+        require(continuous.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Cold decoder startup poisoned steady cadence");
         DesktopFrameFlow idleCapacity;
         idleCapacity.observeRoundTrip(80ms, now);
         idleCapacity.sent(1, 1, now, 1000, FrameType::kKeyFrame);
@@ -216,13 +216,13 @@ int main() {
             idleCapacity.sent(1, frame + 2, now + 33333us * (frame + 1), 1000, FrameType::kRepeatedVideo);
             require(idleCapacity.acknowledge(1, frame, 1000, 0, now + 33333us * (frame - 1) + 80ms), "Continuous idle ACK failed");
         }
-        require(idleCapacity.byteWindow() == capacityBeforeIdle && idleCapacity.rate().framesPerSecond == 30, "Application-limited idle repeats collapsed credit before a window drag");
+        require(idleCapacity.byteWindow() == capacityBeforeIdle && idleCapacity.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Application-limited idle repeats collapsed credit before a window drag");
         idleCapacity.sent(1, 39, now + 1300ms, 50000, FrameType::kVideo);
         require(idleCapacity.canEncode(now + 1301ms), "Idle-to-drag transition was backpressured by idle throughput");
         continuous.sent(1, 2, now + 20ms, 100, FrameType::kRepeatedVideo);
         require(continuous.acknowledge(1, 2, 1000, 0, now + 30ms), "Real repeated frame did not return credit");
         continuous.sent(1, 3, now + 110ms, 1000, FrameType::kVideo);
-        require(flow.rate().framesPerSecond == 30 && flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Desktop did not default to the fixed sharp rate");
+        require(flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond && flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Desktop did not default to the fixed sharp rate");
         flow.sent(1, 1, now, 4000000, FrameType::kKeyFrame);
         require(!flow.canEncode(now + 1ms), "Oversized IDR did not exhaust byte credit");
         const auto blocked = flow.snapshot(now + 1ms);
@@ -248,7 +248,7 @@ int main() {
         require(cpu.rate().framesPerSecond <= 20, "Encoding pressure did not reduce capture load");
         DesktopFrameFlow motion;
         motion.observeFrame(FrameType::kKeyFrame, 300000, 1920 * 1080, 350ms);
-        require(motion.rate().framesPerSecond == 30, "Codec startup reduced steady motion cadence");
+        require(motion.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Codec startup reduced steady motion cadence");
         for (unsigned sample = 0; sample < 24; ++sample) {
             const auto rate = motion.rate();
             motion.observeFrame(FrameType::kVideo, rate.bitrate / (8 * rate.framesPerSecond), 1920 * 1080, 12ms);
@@ -261,38 +261,38 @@ int main() {
             decoder.sent(1, id, now, 1000, FrameType::kVideo);
             require(decoder.acknowledge(1, id, 1000, 3, now + 21ms), "Transient decoder queue ACK rejected");
         }
-        require(decoder.rate().framesPerSecond == 30, "Transient queue depth within 4-frame decode pipeline reduced FPS");
+        require(decoder.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Transient queue depth within 4-frame decode pipeline reduced FPS");
         for (std::uint64_t id = 5; id <= 16; ++id) {
             now += 300ms;
             decoder.sent(1, id, now, 1000, FrameType::kVideo);
             require(decoder.acknowledge(1, id, 1000, 4, now + 21ms), "Decoder backlog ACK rejected");
         }
-        require(decoder.rate().framesPerSecond < 30 && decoder.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Decoder backlog did not reduce capture independently of network bitrate");
+        require(decoder.rate().framesPerSecond < DesktopFrameFlow::kMaximumFramesPerSecond && decoder.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Decoder backlog did not reduce capture independently of network bitrate");
         DesktopFrameFlow idle;
         for (std::uint64_t id = 1; id <= 20; ++id) {
             now += 2s;
             idle.sent(1, id, now, 1000, FrameType::kVideo);
             require(idle.acknowledge(1, id, 1000, 0, now + 20ms), "Idle ACK rejected");
         }
-        require(idle.rate().framesPerSecond >= 30 && idle.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Static idle time was interpreted as narrow capacity");
+        require(idle.rate().framesPerSecond >= DesktopFrameFlow::kMaximumFramesPerSecond && idle.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate, "Static idle time was interpreted as narrow capacity");
         Link fast;
         fast.run(12s, 10000000, 20ms);
         std::cout << "fast_12s frames=" << fast.frame << " fps=" << fast.flow.rate().framesPerSecond << '\n';
-        require(fast.frame > 660 && fast.frame <= 720 && fast.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Fast path failed to sustain the adaptive FPS ceiling");
+        require(fast.frame > 270 && fast.frame <= 300 && fast.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Fast path failed to sustain the adaptive FPS ceiling");
         Link distant;
         distant.run(12s, 10000000, 600ms);
         std::cout << "distant_12s frames=" << distant.frame << " fps=" << distant.flow.rate().framesPerSecond << '\n';
-        require(distant.frame > 600 && distant.frame <= 720 && distant.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Stable high RTT caused unnecessary rate reduction");
+        require(distant.frame > 250 && distant.frame <= 300 && distant.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Stable high RTT caused unnecessary rate reduction");
         Link narrow;
         narrow.run(30s, 125000, 40ms);
-        require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Narrow link failed to adapt both bitrate and capture cadence");
+        require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < DesktopFrameFlow::kMaximumFramesPerSecond, "Narrow link failed to adapt both bitrate and capture cadence");
         require(narrow.peakFrames <= 128 && narrow.peakBytes <= 4 * 1024 * 1024 + 50000, "Narrow link exceeded bounded flight");
         const auto reduced = narrow.flow.rate();
         narrow.run(25s, 10000000, 40ms);
         std::cout << "recovery_25s_bitrate=" << narrow.flow.rate().bitrate << " fps=" << narrow.flow.rate().framesPerSecond << '\n';
         require(narrow.flow.rate().bitrate > reduced.bitrate * 8 && narrow.flow.rate().framesPerSecond == DesktopFrameFlow::kMaximumFramesPerSecond, "Capacity recovery failed to restore the adaptive FPS ceiling");
         narrow.run(30s, 125000, 40ms);
-        require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < 30, "Recovery ignored renewed congestion");
+        require(narrow.flow.rate().bitrate < 2000000 && narrow.flow.rate().framesPerSecond < DesktopFrameFlow::kMaximumFramesPerSecond, "Recovery ignored renewed congestion");
         DesktopFrameFlow stalled;
         stalled.sent(1, 1, now, 1000, FrameType::kVideo);
         require(!stalled.canEncode(now + 1s), "Missing ACK did not stop further encoding");

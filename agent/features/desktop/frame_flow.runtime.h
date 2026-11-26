@@ -23,13 +23,13 @@ class DesktopFrameFlow {
                            kRepeatedVideo,
                            kRepeatedKeyFrame };
     struct Rate {
-        std::uint32_t framesPerSecond = 30;
+        std::uint32_t framesPerSecond = kMaximumFramesPerSecond;
         std::uint32_t bitrate = kTargetVideoBitrate;
     };
     static constexpr std::size_t kMaximumInFlightFrames = 128;
     // Clarity budget, encode/decode cost, receiver credit and congestion still
     // decide the actual cadence below this ceiling.
-    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
+    static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 25;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
     static constexpr std::uint32_t kTargetVideoBitrate = 32000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
@@ -257,7 +257,8 @@ class DesktopFrameFlow {
         // RTT overlap alone is not bandwidth saturation: a stream of 1KB cache
         // Frames can have several outstanding ACKs on an idle link.
         constexpr std::uint64_t minimumCapacityBytes = 16 * 1024;
-        const auto pathBytes = std::max(minimumCapacityBytes, static_cast<std::uint64_t>(rate_.bitrate) * pathDelay().count() / 8000000);
+        const auto effectiveDelivery = deliveryBytesPerSecond_ ? std::min<std::uint64_t>(deliveryBytesPerSecond_, rate_.bitrate / 8) : rate_.bitrate / 8;
+        const auto pathBytes = std::max(minimumCapacityBytes, effectiveDelivery * pathDelay().count() / 1000000);
         const bool byteSaturated = ordinaryFlightBytes >= pathBytes;
         const auto interval = std::chrono::duration_cast<std::chrono::microseconds>(now - lastAcknowledgedAt_);
         const bool capacitySample = ordinaryDelivery && !background_ && !background && decodeMicroseconds <= 25000 && queueDepth <= 2 &&
