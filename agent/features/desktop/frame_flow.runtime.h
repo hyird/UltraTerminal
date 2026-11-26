@@ -68,6 +68,7 @@ class DesktopFrameFlow {
         lastContentFrame_ = 0;
         lastAcknowledgedAt_ = {};
         baseline_.reset();
+        unloadedTransit_.reset();
         deliveryBytesPerSecond_ = 0;
         videoFrameBytes_ = videoPacingBytes_ = 0;
         videoPacingActive_ = false;
@@ -229,6 +230,17 @@ class DesktopFrameFlow {
         } else {
             baseline_ = std::min(*baseline_, transit);
         }
+        // Native ping RTT only covers Agent<->Server; small frames also measure
+        // the unloaded Server<->Browser leg without absorbing congested queues.
+        if (!decodedKeyFrame && transit > std::chrono::microseconds::zero() && pendingBytes_ <= 16 * 1024 &&
+            decodeMicroseconds <= 25000 && queueDepth <= 2) {
+            if (!unloadedTransit_ || now >= unloadedTransitExpiresAt_) {
+                unloadedTransit_ = transit;
+                unloadedTransitExpiresAt_ = now + std::chrono::seconds(30);
+            } else {
+                unloadedTransit_ = std::min(*unloadedTransit_, transit);
+            }
+        }
         std::size_t delivered = 0;
         bool ordinaryDelivery = true;
         for (auto current = pending_.begin(); current != std::next(found); ++current) {
@@ -248,7 +260,8 @@ class DesktopFrameFlow {
         const bool byteSaturated = ordinaryFlightBytes >= pathBytes;
         const auto interval = std::chrono::duration_cast<std::chrono::microseconds>(now - lastAcknowledgedAt_);
         const bool capacitySample = ordinaryDelivery && !background_ && !background && decodeMicroseconds <= 25000 && queueDepth <= 2 &&
-                                    lastAcknowledgedAt_ != Clock::time_point{} && found->sent <= lastAcknowledgedAt_ && interval >= std::chrono::milliseconds(5);
+                                    lastAcknowledgedAt_ != Clock::time_point{} && found->sent <= lastAcknowledgedAt_ &&
+                                    interval >= std::chrono::milliseconds(5) && interval <= std::chrono::seconds(2);
         if (capacitySample) {
             const auto sample = std::min<std::uint64_t>(100000000, static_cast<std::uint64_t>(delivered) * 1000000 / static_cast<std::uint64_t>(interval.count()));
             if (sample > deliveryBytesPerSecond_ && (byteSaturated || deliveryBytesPerSecond_)) {
@@ -297,7 +310,7 @@ class DesktopFrameFlow {
             if (networkPressure) {
                 auto target = static_cast<std::uint64_t>(rate_.bitrate) * 4 / 5;
                 if (capacitySample && byteSaturated && deliveryBytesPerSecond_) {
-                    target = std::min(target, deliveryBytesPerSecond_ * 8 * 9 / 10);
+                    target = std::min(target, std::max<std::uint64_t>(rate_.bitrate / 2, deliveryBytesPerSecond_ * 8 * 9 / 10));
                 }
                 rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, kTargetVideoBitrate));
             }
@@ -314,7 +327,11 @@ class DesktopFrameFlow {
             const auto bitrateLimit = recoveryRate_ ? std::min(kTargetVideoBitrate, recoveryRate_->bitrate) : kTargetVideoBitrate;
             const bool restoring = recoveryRate_ && now >= restoreBlockedUntil_;
             const auto step = restoring ? std::max(4u, rate_.framesPerSecond / 4) : 2u;
-            rate_.bitrate = std::min(bitrateLimit, rate_.bitrate + std::max(64000u, rate_.bitrate / (restoring ? 4 : 20)));
+            auto nextBitrate = static_cast<std::uint64_t>(rate_.bitrate) + std::max(64000u, rate_.bitrate / (restoring ? 2 : 20));
+            if (restoring && deliveryBytesPerSecond_) {
+                nextBitrate = std::max(nextBitrate, deliveryBytesPerSecond_ * 8 * 4 / 5);
+            }
+            rate_.bitrate = static_cast<std::uint32_t>(std::min<std::uint64_t>(bitrateLimit, nextBitrate));
             receiverFrameRate_ = std::min(kMaximumFramesPerSecond, receiverFrameRate_ + step);
             updateFrameRate(true, step);
             if (restoring) {
@@ -340,7 +357,11 @@ class DesktopFrameFlow {
         FrameType type;
     };
     std::chrono::microseconds pathDelay() const {
-        return std::clamp(roundTrip_.value_or(baseline_.value_or(std::chrono::microseconds(100000))), std::chrono::microseconds(1000), std::chrono::microseconds(2000000));
+        const auto measured = roundTrip_ && unloadedTransit_ ? std::max(*roundTrip_, *unloadedTransit_)
+                              : unloadedTransit_             ? *unloadedTransit_
+                              : roundTrip_                   ? *roundTrip_
+                                                             : baseline_.value_or(std::chrono::microseconds(100000));
+        return std::clamp(measured, std::chrono::microseconds(1000), std::chrono::microseconds(2000000));
     }
     void setReceiver(bool background, std::uint32_t capacity) {
         clientFrameLimit_ = capacity ? capacity : kLegacyMaximumInFlightFrames;
@@ -356,7 +377,8 @@ class DesktopFrameFlow {
         // Prefer fewer readable frames on a narrow path. The bitrate remains
         // bounded by capacity even below the per-frame clarity budget.
         const auto pixels = scenePixels_.value_or(static_cast<std::uint64_t>(width_) * height_);
-        const auto clarityBits = std::max<std::uint64_t>(1024, 8000000ull * pixels / (1920ull * 1080 * 60));
+        const auto nominalClarityBitsPerSecond = fixedPictureCost_ ? 8000000ull : 3000000ull;
+        const auto clarityBits = std::max<std::uint64_t>(1024, nominalClarityBitsPerSecond * pixels / (1920ull * 1080 * 60));
         const auto bitsPerFrame = std::max({clarityBits, videoPacingActive_ ? videoPacingBytes_ * 8 : std::uint64_t{0}});
         auto fps = std::min<std::uint64_t>(receiverFrameRate_, rate_.bitrate / bitsPerFrame);
         if (encodeMicroseconds_) {
@@ -381,8 +403,8 @@ class DesktopFrameFlow {
     std::uint32_t videoBudgetFrames_ = 0;
     std::deque<Pending> pending_;
     std::size_t pendingBytes_ = 0;
-    std::optional<std::chrono::microseconds> roundTrip_, baseline_;
-    Clock::time_point roundTripExpiresAt_{}, baselineExpiresAt_{}, lastAcknowledgedAt_{}, adjustAt_{};
+    std::optional<std::chrono::microseconds> roundTrip_, baseline_, unloadedTransit_;
+    Clock::time_point roundTripExpiresAt_{}, baselineExpiresAt_{}, unloadedTransitExpiresAt_{}, lastAcknowledgedAt_{}, adjustAt_{};
     std::optional<Clock::time_point> healthySince_;
     std::optional<Rate> recoveryRate_;
     std::optional<Clock::time_point> restoredAt_;

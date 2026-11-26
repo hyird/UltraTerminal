@@ -84,6 +84,42 @@ void unsaturatedVideoJitter() {
     require(link.minimumBitrate == DesktopFrameFlow::kTargetVideoBitrate, "Unsaturated video display jitter collapsed the clarity budget");
 }
 
+void twoHopAsymmetricRttWindowDrag() {
+    // Native ping RTT only sees Agent<->Server (80ms), while browser ACKs cross
+    // Agent<->Server<->Browser (180ms). A window drag after idle must not mistake
+    // the second hop's unloaded 100ms RTT for persistent congestion or trap FPS.
+    DesktopFrameFlow flow;
+    flow.setFixedPictureCost(false);
+    auto now = DesktopFrameFlow::Clock::time_point{1s};
+    flow.observeRoundTrip(80ms, now);
+    std::uint64_t id = 0;
+    flow.sent(1, ++id, now, 12000, FrameType::kKeyFrame);
+    require(flow.acknowledge(1, id, 2000, 0, now + 182ms, false, 128), "Two-hop baseline ACK rejected");
+    now += 200ms;
+    for (unsigned i = 0; i < 6; ++i) {
+        flow.sent(1, ++id, now, 800, FrameType::kRepeatedVideo);
+        require(flow.acknowledge(1, id, 1000, 0, now + 181ms, false, 128), "Two-hop idle repeat ACK rejected");
+        now += 200ms;
+    }
+    require(flow.snapshot(now).pathDelayMicroseconds >= 175000, "Two-hop unloaded transit did not raise path delay above one-hop ping RTT");
+    std::deque<std::pair<std::uint64_t, DesktopFrameFlow::Clock::time_point>> acks;
+    for (unsigned step = 0; step < 4000; ++step) {
+        while (!acks.empty() && acks.front().second <= now) {
+            require(flow.acknowledge(1, acks.front().first, 1500, 0, now, false, 128), "Two-hop drag ACK rejected");
+            acks.pop_front();
+        }
+        const auto period = std::chrono::microseconds(1000000 / flow.rate().framesPerSecond);
+        if ((acks.empty() || now - (acks.back().second - 184ms) >= period) && flow.canEncode(now)) {
+            flow.observeFrame(FrameType::kVideo, 18000, 640 * 480, 12ms);
+            flow.sent(1, ++id, now, 18000, FrameType::kVideo);
+            acks.push_back({id, now + 184ms});
+        }
+        now += 1ms;
+    }
+    require(flow.rate().bitrate == DesktopFrameFlow::kTargetVideoBitrate && flow.rate().framesPerSecond >= 50,
+            "Two-hop browser RTT falsely triggered congestion backoff during window drag");
+}
+
 void normalVbvAfterBurst() {
     // V2 VBV pictures: one oversized changed picture is bounded by byte credit,
     // not by seconds of reduced cadence while the +1 FPS probe revalidates.
@@ -147,6 +183,7 @@ void fixedSharpCapacityChange() {
 int main() {
     try {
         unsaturatedVideoJitter();
+        twoHopAsymmetricRttWindowDrag();
         normalVbvAfterBurst();
         fixedSharpCapacityChange();
         auto now = DesktopFrameFlow::Clock::time_point{1s};
