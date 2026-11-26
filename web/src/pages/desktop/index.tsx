@@ -275,7 +275,7 @@ function DesktopPanel({
   return (
     <div
       ref={root}
-      className="bg-surface flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden fullscreen:h-dvh"
+      className="bg-surface flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden outline-none fullscreen:h-dvh"
       hidden={!visible}
     >
       <div
@@ -384,7 +384,7 @@ function DesktopPanel({
         </Button>
       </div>
       <div
-        className="relative flex min-h-0 min-w-0 w-full max-w-full flex-1 overflow-hidden bg-[#111317] data-[scale=native]:overflow-auto"
+        className="relative flex min-h-0 min-w-0 w-full max-w-full flex-1 overflow-hidden bg-[#111317] outline-none data-[scale=native]:overflow-auto"
         data-desktop-viewport
         data-scale={scale}
       >
