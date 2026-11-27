@@ -31,7 +31,7 @@ class DesktopFrameFlow {
     // decide the actual cadence below this ceiling.
     static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
-    static constexpr std::uint32_t kTargetVideoBitrate = 32000000;
+    static constexpr std::uint32_t kTargetVideoBitrate = 12000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
     Rate rate() const { return rate_; }
     bool background() const { return background_; }
