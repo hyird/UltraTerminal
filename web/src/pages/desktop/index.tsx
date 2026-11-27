@@ -48,7 +48,7 @@ export function DesktopWorkspace() {
   return (
     <section
       hidden={!visible}
-      className="flex h-[calc(100dvh-var(--workspace-navbar-height))] min-h-0 min-w-0 max-w-full flex-col overflow-hidden"
+      className="relative flex h-[calc(100dvh-var(--workspace-navbar-height))] min-h-0 min-w-0 max-w-full flex-col overflow-hidden"
       aria-label="远程会话工作区"
     >
       {entries.map((entry) =>
@@ -143,7 +143,21 @@ function DesktopPanel({
   const [autoResolution, setAutoResolution] = useState(
     () => initialPreferences.current.resolution === "auto",
   );
+  const [resizingTarget, setResizingTarget] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  const resizingClearTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const lastAutoResize = useRef("");
   const viewport = useRef<HTMLDivElement>(null);
+  function triggerResize(width: number, height: number) {
+    setResizingTarget({ width, height });
+    clearTimeout(resizingClearTimer.current);
+    resizingClearTimer.current = setTimeout(() => setResizingTarget(null), 3000);
+    session.current?.resize(width, height);
+  }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const restartKey = useRef("");
@@ -287,6 +301,19 @@ function DesktopPanel({
     }
   }, [modes, sample?.width, sample?.height]);
   useEffect(() => {
+    if (
+      resizingTarget &&
+      sample?.width === resizingTarget.width &&
+      sample?.height === resizingTarget.height
+    ) {
+      clearTimeout(resizingClearTimer.current);
+      setResizingTarget(null);
+    }
+  }, [resizingTarget, sample?.width, sample?.height]);
+  useEffect(() => {
+    return () => clearTimeout(resizingClearTimer.current);
+  }, []);
+  useEffect(() => {
     if (!autoResolution || !visible || ended || !entry.ticket.writeControl) {
       return;
     }
@@ -300,20 +327,23 @@ function DesktopPanel({
         const dpr = window.devicePixelRatio || 1;
         const width = Math.min(
           3840,
-          Math.max(640, Math.floor(rect.width * dpr) & ~1),
+          Math.max(640, Math.round((rect.width * dpr) / 2) * 2),
         );
         const height = Math.min(
           2160,
-          Math.max(480, Math.floor(rect.height * dpr) & ~1),
+          Math.max(480, Math.round((rect.height * dpr) / 2) * 2),
         );
+        const targetKey = `${width}x${height}`;
         if (
           width >= 640 &&
           height >= 480 &&
+          targetKey !== lastAutoResize.current &&
           (sample?.width !== width || sample?.height !== height)
         ) {
-          session.current?.resize(width, height);
+          lastAutoResize.current = targetKey;
+          triggerResize(width, height);
         }
-      }, 400);
+      }, 50);
     };
     schedule();
     const observer = new ResizeObserver(schedule);
@@ -352,8 +382,10 @@ function DesktopPanel({
   return (
     <div
       ref={root}
-      className="bg-surface flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden outline-none fullscreen:h-dvh"
-      hidden={!visible}
+      className={`bg-surface absolute inset-0 flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden outline-none fullscreen:h-dvh ${
+        visible ? "visible z-10" : "invisible pointer-events-none z-0"
+      }`}
+      aria-hidden={!visible}
     >
       <div
         className="desktop-toolbar flex shrink-0 flex-wrap items-center gap-1.5 px-3 py-1.5 max-md:px-2"
@@ -418,6 +450,7 @@ function DesktopPanel({
                 onChange={(value) => {
                   if (value === "auto") {
                     resolutionRestored.current = true;
+                    lastAutoResize.current = "";
                     setAutoResolution(true);
                     updatePreferences({ resolution: "auto" });
                     return;
@@ -427,9 +460,10 @@ function DesktopPanel({
                   );
                   if (mode) {
                     resolutionRestored.current = true;
+                    lastAutoResize.current = "";
                     setAutoResolution(false);
                     updatePreferences({ resolution: mode });
-                    session.current?.resize(mode.width, mode.height);
+                    triggerResize(mode.width, mode.height);
                   }
                 }}
                 items={[
@@ -507,7 +541,7 @@ function DesktopPanel({
         data-desktop-viewport
         data-scale={scale}
       >
-        <div className="relative m-auto h-full w-full flex-none [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full [&>canvas]:outline-none">
+        <div className="relative m-auto h-full w-full flex-none transition-[width,height] duration-150 ease-out [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full [&>canvas]:outline-none">
           <canvas
             ref={canvas}
             tabIndex={entry.ticket.writeControl ? 0 : -1}
@@ -518,6 +552,23 @@ function DesktopPanel({
             className="pointer-events-none absolute inset-0"
             aria-hidden="true"
           />
+        </div>
+        <div
+          className={`pointer-events-none absolute inset-0 flex items-center justify-center bg-[#111317]/35 backdrop-blur-md transition-opacity duration-200 ease-out ${
+            resizingTarget && !ended && sample?.width
+              ? "opacity-100"
+              : "opacity-0"
+          }`}
+          aria-hidden={!resizingTarget}
+        >
+          <div className="flex items-center gap-2.5 rounded-full border border-white/15 bg-black/55 px-4 py-2 text-xs font-medium text-white shadow-lg backdrop-blur-md">
+            <span className="size-3.5 animate-spin rounded-full border-2 border-white/25 border-t-white" />
+            <span>
+              {resizingTarget
+                ? `正在适配 ${resizingTarget.width} × ${resizingTarget.height}`
+                : ""}
+            </span>
+          </div>
         </div>
         {(ended || !sample?.width) && (
           <div

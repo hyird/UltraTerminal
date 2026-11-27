@@ -334,6 +334,9 @@ export class DesktopSession {
     this.visibleFrameGaps.clear();
     if (!visible) {
       this.input?.release();
+    } else {
+      this.sizeDesktop();
+      this.updateLocalCursor();
     }
     this.reportDisplay();
   }
@@ -666,10 +669,19 @@ export class DesktopSession {
       this.visibleFrameGaps.clear();
       this.frame = 0;
       this.displayedContentFrame = 0;
-      this.canvas.width = this.overlay.width = video.width;
-      this.canvas.height = this.overlay.height = video.height;
-      // Resizing a canvas clears it, including any previously drawn cursor.
-      this.drawnCursor = null;
+      if (
+        this.overlay.width !== video.width ||
+        this.overlay.height !== video.height
+      ) {
+        this.overlay.width = video.width;
+        this.overlay.height = video.height;
+        // Resizing a canvas clears it, including any previously drawn cursor.
+        this.drawnCursor = null;
+      }
+      if (this.displayedCount === 0) {
+        this.canvas.width = video.width;
+        this.canvas.height = video.height;
+      }
       this.canvas.dataset.sourceWidth = String(video.width);
       this.canvas.dataset.sourceHeight = String(video.height);
       this.sizeDesktop();
@@ -737,6 +749,13 @@ export class DesktopSession {
               if (this.displayedContentFrame !== pending.content)
                 throw new Error("Repeated video lost its content baseline");
             } else {
+              if (
+                this.canvas.width !== frame.displayWidth ||
+                this.canvas.height !== frame.displayHeight
+              ) {
+                this.canvas.width = frame.displayWidth;
+                this.canvas.height = frame.displayHeight;
+              }
               this.context.drawImage(frame, 0, 0);
             }
             const canvasSubmitMicroseconds = desktopDuration(
@@ -987,6 +1006,15 @@ export class DesktopSession {
       );
       width *= scale;
       height *= scale;
+      // Snap sub-2px rounding seams (from even-pixel video dimensions) flush to
+      // the viewport so auto-fit mode leaves zero black border lines.
+      if (
+        Math.abs(width - viewport.clientWidth) <= 2 &&
+        Math.abs(height - viewport.clientHeight) <= 2
+      ) {
+        width = viewport.clientWidth;
+        height = viewport.clientHeight;
+      }
     }
     stage.style.width = `${width}px`;
     stage.style.height = `${height}px`;
