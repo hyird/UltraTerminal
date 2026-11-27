@@ -353,7 +353,7 @@ export function DesktopFilesPanel({
                         variant="tertiary"
                         onPress={() => triggerDownload(entry)}
                       >
-                        {entry.directory ? "打包下载 .zip" : "下载"}
+                        下载
                       </Button>
                     </td>
                   </tr>
