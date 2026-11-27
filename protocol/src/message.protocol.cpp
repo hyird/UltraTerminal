@@ -139,6 +139,11 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kWindowsLoginResult:
     case wire::Envelope::kWindowsRestartRequest:
     case wire::Envelope::kWindowsRestartResult:
+    case wire::Envelope::kFileListRequest:
+    case wire::Envelope::kFileListResult:
+    case wire::Envelope::kFileStatRequest:
+    case wire::Envelope::kFileStatResult:
+    case wire::Envelope::kFileTransferStart:
         if (!m.session_id().empty() || !m.channel_id().empty()) {
             return invalid();
         }
