@@ -70,8 +70,9 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kDesktop: {
             DesktopParent parent(options->windowsSession, options->parentProcess);
             const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
-            ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
-            ruvia::event_loop_pool loopPool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+            const auto blockingThreads = std::min<std::size_t>(coreCount, 4u);
+            ruvia::blocking_pool blockingPool{{.thread_count_ = blockingThreads, .queue_capacity_ = 32}};
+            ruvia::event_loop_pool loopPool{{.loop_count_ = 1, .queue_capacity_ = 256, .blocking_pool_ = &blockingPool}};
             auto workerLoop = loopPool.next_loop();
             auto pipe = NamedPipeTransport::connect(workerLoop.io_context().get_executor(), options->pipeName, options->parentProcess);
             std::promise<std::pair<std::exception_ptr, std::uint32_t>> completed;
@@ -134,8 +135,9 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kConnect: {
             const auto config = loadConnectionConfig(options->configPath);
             const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
-            ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
-            ruvia::event_loop_pool loopPool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+            const auto serviceThreads = std::min<std::size_t>(coreCount, 2u);
+            ruvia::blocking_pool blockingPool{{.thread_count_ = serviceThreads, .queue_capacity_ = 32}};
+            ruvia::event_loop_pool loopPool{{.loop_count_ = serviceThreads, .queue_capacity_ = 256, .blocking_pool_ = &blockingPool}};
             auto controlLoop = loopPool.loop_for("control");
             ControlRuntime runtime(controlLoop, config, agentExecutablePath(), nullptr, &loopPool);
             asio::signal_set signals(controlLoop.io_context(), SIGINT, SIGTERM);
@@ -181,8 +183,9 @@ int wmain(int argc, wchar_t** argv) {
             dispatchService([](std::stop_token stop, ConsoleSessionEvents& consoleEvents) {
                 const auto config = loadConnectionConfig(serviceConfigPath());
                 const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
-                ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
-                ruvia::event_loop_pool loopPool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+                const auto serviceThreads = std::min<std::size_t>(coreCount, 2u);
+                ruvia::blocking_pool blockingPool{{.thread_count_ = serviceThreads, .queue_capacity_ = 32}};
+                ruvia::event_loop_pool loopPool{{.loop_count_ = serviceThreads, .queue_capacity_ = 256, .blocking_pool_ = &blockingPool}};
                 auto controlLoop = loopPool.loop_for("control");
                 ControlRuntime runtime(controlLoop, config, agentExecutablePath(), &consoleEvents, &loopPool);
                 std::stop_callback cancellation(stop, [&] { runtime.stop(); });

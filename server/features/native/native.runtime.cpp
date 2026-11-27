@@ -314,8 +314,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
 };
 } // namespace
 struct NativeServer::State : std::enable_shared_from_this<State> {
-    ruvia::blocking_pool blockingPool{{.thread_count_ = std::max<std::size_t>(1u, std::thread::hardware_concurrency()), .queue_capacity_ = std::max<std::size_t>(64u, std::thread::hardware_concurrency() * 16u)}};
-    ruvia::event_loop_pool pool{{.loop_count_ = 0, .queue_capacity_ = 1024, .blocking_pool_ = &blockingPool}};
+    ruvia::event_loop_pool pool{{.loop_count_ = std::clamp<std::size_t>(std::thread::hardware_concurrency(), 1u, 2u), .queue_capacity_ = 256}};
     ruvia::event_loop acceptLoop = pool.loop(0);
     asio::ssl::context tls{asio::ssl::context::tls_server};
     asio::ip::tcp::acceptor acceptor{acceptLoop.executor()};
@@ -448,7 +447,6 @@ void NativeServer::stop() {
         }
         state_->pool.request_stop();
         state_->pool.join();
-        state_->blockingPool.join();
         state_->started = false;
     }
 }

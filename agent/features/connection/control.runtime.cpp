@@ -398,6 +398,9 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     self->sessions.erase(id);
                     ++self->statistics.completedSessions;
                     self->sessionsDone.cancel();
+                    if (self->sessions.empty()) {
+                        (void)SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+                    }
                     self->log(failure || result.terminal.has_session_error() ? wire::AgentLog::DESKTOP_FAILED : wire::AgentLog::DESKTOP_ENDED, id, result.exitCode, result.forcedExit, result.fault ? &*result.fault : nullptr);
                     if (!self->ended) {
                         try {

@@ -97,7 +97,10 @@ int main(int argc, char** argv) {
         const auto gateway = std::make_shared<GatewayRuntime>(config.database);
         const auto native = std::make_shared<NativeServer>(config);
         const auto shared = std::make_shared<ServerSharedState>();
-        const auto workers = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+        // Cap worker and blocking pool concurrency to avoid per-thread allocator
+        // and database pool bloat on high-core hosts while retaining full throughput.
+        const auto workers = std::clamp<std::size_t>(std::thread::hardware_concurrency(), 1u, 4u);
+        const auto blockingThreads = std::min<std::size_t>(workers, 2u);
         ruvia::http_client_config telegramClient{};
         telegramClient.alias_ = "telegram";
         telegramClient.base_url_ = "https://api.telegram.org";
@@ -116,10 +119,10 @@ int main(int argc, char** argv) {
         // Homogeneous multi-core Ruvia workers; mutable state is strictly partitioned per worker.
         app.listen({.address_ = config.address, .http_ = config.port})
             .workers({.worker_count_ = workers, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install})
-            .server({.idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::minutes(30), .write_timeout_ = std::chrono::seconds(60), .max_connections_per_worker_ = 512, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
-            .db({.config_ = toRuviaDbConfig(config.database)})
+            .server({.idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::minutes(30), .write_timeout_ = std::chrono::seconds(60), .max_connections_per_worker_ = 256, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
+            .db({.config_ = toRuviaDbConfig(config.database, 2)})
             .http_client(std::move(telegramClient))
-            .blocking_pool({.thread_count_ = workers, .queue_capacity_ = std::max<std::size_t>(64u, workers * 16u)})
+            .blocking_pool({.thread_count_ = blockingThreads, .queue_capacity_ = std::max<std::size_t>(32u, blockingThreads * 16u)})
             .rate_limit({.rule_ = {.max_requests_ = 300, .window_ = std::chrono::minutes(1)}})
             .use<ruvia::security_headers_middleware>(securityHeaders)
             .use_worker_state<ServerRuntime>([config, shared] { return ServerRuntime(config, shared); })

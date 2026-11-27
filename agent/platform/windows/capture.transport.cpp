@@ -100,8 +100,7 @@ struct DesktopCapture::State {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGIOutputDuplication> duplication;
-    std::array<ComPtr<ID3D11Texture2D>, 2> staging;
-    std::size_t stagingIndex = 0;
+    ComPtr<ID3D11Texture2D> staging;
     ComPtr<ID3D11Texture2D> latest;
     std::optional<CapturedFrame> deferred;
     DXGI_OUTDUPL_DESC description{};
@@ -164,26 +163,20 @@ struct DesktopCapture::State {
         return !dirtyRects.empty() && dirtyRects.size() <= 64 && totalArea <= static_cast<std::uint64_t>(width) * height * 3 / 5;
     }
     ID3D11Texture2D* ensureStaging(const D3D11_TEXTURE2D_DESC& textureDescription) {
-        auto& slot = staging[stagingIndex];
-        stagingIndex = (stagingIndex + 1) % staging.size();
         D3D11_TEXTURE2D_DESC previous{};
-        if (slot) {
-            slot->GetDesc(&previous);
+        if (staging) {
+            staging->GetDesc(&previous);
         }
-        if (!slot || previous.Width != textureDescription.Width || previous.Height != textureDescription.Height) {
-            if (slot && (previous.Width != textureDescription.Width || previous.Height != textureDescription.Height)) {
-                for (auto& entry : staging) {
-                    entry.Reset();
-                }
-            }
+        if (!staging || previous.Width != textureDescription.Width || previous.Height != textureDescription.Height) {
+            staging.Reset();
             auto stagingDescription = textureDescription;
             stagingDescription.BindFlags = 0;
             stagingDescription.MiscFlags = 0;
             stagingDescription.Usage = D3D11_USAGE_STAGING;
             stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-            require(device->CreateTexture2D(&stagingDescription, nullptr, &slot), "Create staging texture");
+            require(device->CreateTexture2D(&stagingDescription, nullptr, &staging), "Create staging texture");
         }
-        return slot.Get();
+        return staging.Get();
     }
     void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr) {
         auto* target = ensureStaging(textureDescription);
@@ -600,9 +593,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         }
         if (!state_->latest || previous.Width != description.Width || previous.Height != description.Height) {
             state_->latest.Reset();
-            for (auto& entry : state_->staging) {
-                entry.Reset();
-            }
+            state_->staging.Reset();
             auto latestDescription = description;
             latestDescription.Usage = D3D11_USAGE_DEFAULT;
             latestDescription.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
