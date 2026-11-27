@@ -87,7 +87,7 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
     // OpenH264's single-threaded screen-content full-frame hash search, while
     // background detection skips unchanged 16x16 desktop macroblocks via SIMD.
     const auto mbRows = (config.height + 15u) / 16u;
-    const auto maximumThreads = std::min<unsigned>(8u, std::max(1u, mbRows / 4u));
+    const auto maximumThreads = std::min<unsigned>(16u, std::max(1u, mbRows / 4u));
     const auto threads = pixels >= 640 * 360 ? std::clamp(std::thread::hardware_concurrency(), 1u, maximumThreads) : 1u;
     parameters.iMultipleThreadIdc = static_cast<unsigned short>(threads);
     parameters.bUseLoadBalancing = false;

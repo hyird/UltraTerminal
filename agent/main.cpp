@@ -70,8 +70,7 @@ int wmain(int argc, wchar_t** argv) {
         case Command::kDesktop: {
             DesktopParent parent(options->windowsSession, options->parentProcess);
             const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
-            const auto blockingThreads = std::min<std::size_t>(coreCount, 4u);
-            ruvia::blocking_pool blockingPool{{.thread_count_ = blockingThreads, .queue_capacity_ = 32}};
+            ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
             ruvia::event_loop_pool loopPool{{.loop_count_ = 1, .queue_capacity_ = 256, .blocking_pool_ = &blockingPool}};
             auto workerLoop = loopPool.next_loop();
             auto pipe = NamedPipeTransport::connect(workerLoop.io_context().get_executor(), options->pipeName, options->parentProcess);
