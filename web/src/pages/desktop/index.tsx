@@ -339,8 +339,8 @@ function DesktopPanel({
         if (
           width >= 640 &&
           height >= 480 &&
-          targetKey !== lastAutoResize.current &&
-          (sample?.width !== width || sample?.height !== height)
+          (sample?.width !== width || sample?.height !== height) &&
+          (resizingTarget?.width !== width || resizingTarget?.height !== height)
         ) {
           lastAutoResize.current = targetKey;
           triggerResize(width, height);

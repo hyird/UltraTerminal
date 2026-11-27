@@ -86,6 +86,7 @@ export class DesktopSession {
   private decodeMicroseconds = 0;
   private resizeSequence = 0;
   private resizePending = false;
+  private queuedResize: { width: number; height: number } | null = null;
   private lastProbeNonce = 0;
   private lastAcceptedResponseNonce = 0;
   private resizeDeadline: ReturnType<typeof setTimeout> | undefined;
@@ -295,8 +296,7 @@ export class DesktopSession {
       !channel ||
       this.stopped ||
       !this.ticket.writeControl ||
-      !this.generation ||
-      this.resizePending
+      !this.generation
     )
       return;
     if (
@@ -310,6 +310,11 @@ export class DesktopSession {
       height % 2
     )
       return;
+    if (this.resizePending) {
+      this.queuedResize = { width, height };
+      return;
+    }
+    this.queuedResize = null;
     this.resizePending = true;
     const requestId = ++this.resizeSequence;
     this.status("正在调整远程分辨率…");
@@ -528,6 +533,12 @@ export class DesktopSession {
         if (requestId === this.resizeSequence) {
           clearTimeout(this.resizeDeadline);
           this.resizePending = false;
+          const next = this.queuedResize;
+          this.queuedResize = null;
+          if (next) {
+            this.resize(next.width, next.height);
+            return;
+          }
           this.status(
             result.applied
               ? "分辨率已应用，正在更新画面…"
