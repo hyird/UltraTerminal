@@ -20,7 +20,7 @@ class GatewayRuntime {
 
   private:
     std::string ownerId_;
-    ruvia::event_loop_pool pool_{{.loop_count_ = 1, .queue_capacity_ = 64, .blocking_pool_ = ruvia::blocking_pool_options{.thread_count_ = 1}}};
+    ruvia::event_loop_pool pool_{{.loop_count_ = 1, .queue_capacity_ = 64}};
     std::shared_ptr<ruvia::db_client> client_;
     std::shared_ptr<std::atomic<bool>> failed_ = std::make_shared<std::atomic<bool>>(false);
     ruvia::stop_source stop_;

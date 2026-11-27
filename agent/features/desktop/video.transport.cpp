@@ -43,9 +43,6 @@ struct VideoEncoder::State {
                 return false;
             }
         }
-        if (!media->gpu()) {
-            nv12.resize(static_cast<std::size_t>(config.width) * config.height * 3 / 2);
-        }
         return true;
     }
 
@@ -172,7 +169,9 @@ void VideoEncoder::setDetail(bool sharp) {
 std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodePreconverted(std::span<const std::uint8_t> bgra, std::size_t stride, std::span<const std::uint8_t> yuv, VideoPixelFormat format, std::uint64_t timestampMicroseconds, bool forceKeyFrame) {
     auto& state = *state_;
     const auto yuvBytes = static_cast<std::size_t>(state.config.width) * state.config.height * 3 / 2;
-    if (yuv.size() < yuvBytes || stride < static_cast<std::size_t>(state.config.width) * 4 || stride > 64 * 1024 * 1024 / state.config.height || bgra.size() < stride * state.config.height) {
+    const bool directI420Only = !state.media && format == VideoPixelFormat::kI420 && bgra.empty();
+    if (yuv.size() < yuvBytes ||
+        (!directI420Only && (stride < static_cast<std::size_t>(state.config.width) * 4 || stride > 64 * 1024 * 1024 / state.config.height || bgra.size() < stride * state.config.height))) {
         return std::unexpected(VideoEncodeError::kInvalidPixels);
     }
     if (timestampMicroseconds > static_cast<std::uint64_t>(std::numeric_limits<long long>::max()) / 10 ||
@@ -182,6 +181,7 @@ std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encodePreconver
     if (state.media) {
         std::span<const std::uint8_t> nv12Input = yuv;
         if (format != VideoPixelFormat::kNv12) {
+            state.nv12.resize(yuvBytes);
             if (!convertVideoPixels(bgra, stride, state.config.width, state.config.height, VideoPixelFormat::kNv12, state.nv12)) {
                 return std::unexpected(VideoEncodeError::kInvalidPixels);
             }
@@ -233,6 +233,7 @@ std::expected<EncodedVideoFrame, VideoEncodeError> VideoEncoder::encode(std::spa
         return std::unexpected(VideoEncodeError::kInvalidTimestamp);
     }
     if (state.media) {
+        state.nv12.resize(static_cast<std::size_t>(state.config.width) * state.config.height * 3 / 2);
         if (!convertVideoPixels(bgra, stride, state.config.width, state.config.height, VideoPixelFormat::kNv12, state.nv12)) {
             return std::unexpected(VideoEncodeError::kInvalidPixels);
         }

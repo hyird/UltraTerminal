@@ -1,8 +1,10 @@
 #pragma once
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "desktop.transport.h"
@@ -72,7 +74,14 @@ class DesktopCapture {
     // readPixels=false retains only the latest GPU image and pointer metadata.
     // A later readPixels=true materializes it even if DXGI has no new update;
     // every CPU readback copies the complete image into reusable storage.
-    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool readPixels = true, bool retainTexture = false);
+    // Optional zero-copy pixel consumer invoked while the DXGI surface or staging
+    // texture is mapped. Returning true bypasses allocating and copying frame.bgra.
+    using DirectPixelConsumer = std::function<bool(std::span<const std::uint8_t> bgra, std::size_t rowPitch,
+                                                   std::uint32_t width, std::uint32_t height,
+                                                   std::uint32_t rowBegin, std::uint32_t rowEnd,
+                                                   std::uint64_t captureEpoch, std::uint64_t sourceSerial,
+                                                   bool incremental)>;
+    std::optional<CapturedFrame> nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels = nullptr, CaptureTiming* timing = nullptr, bool readPixels = true, bool retainTexture = false, const DirectPixelConsumer* directConsumer = nullptr);
     // Borrowed on the capture worker only; finish encoding before nextFrame().
     ID3D11Device* device() const;
     ID3D11Texture2D* texture() const;

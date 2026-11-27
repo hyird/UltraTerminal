@@ -114,6 +114,7 @@ struct DesktopCapture::State {
     const std::uint64_t captureEpoch = nextCaptureEpoch.fetch_add(1, std::memory_order_relaxed);
     std::uint64_t sourceSerial = 0;
     std::uint64_t lastReadbackSerial = 0;
+    std::uint64_t lastDirectSerial = 0;
     const std::uint8_t* lastReadbackData = nullptr;
     std::vector<std::uint8_t> metadataBuffer;
     std::vector<CapturePixelRect> dirtyRects;
@@ -243,7 +244,93 @@ struct DesktopCapture::State {
             timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
         }
     }
-    void copyPixels(const ComPtr<ID3D11Texture2D>& source, const DXGI_OUTDUPL_FRAME_INFO* frameInfo, bool allowIncremental, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr) {
+    bool consumeDirectPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, const DXGI_OUTDUPL_FRAME_INFO* frameInfo, bool allowIncremental, CapturedFrame& frame, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap, const DirectPixelConsumer& consumer) {
+        std::uint64_t dirtyArea = 0;
+        const bool incremental = allowIncremental && frameInfo && !(timing && timing->verifyWithStaging) &&
+                                 sourceSerial == lastDirectSerial + 1 && extractDirtyRects(*frameInfo, frame.width, frame.height, dirtyArea);
+        std::uint32_t rowBegin = 0;
+        std::uint32_t rowEnd = frame.height;
+        frame.dirtyRowBegin = 0;
+        frame.dirtyRowEnd = frame.height;
+        frame.changedPixels = static_cast<std::uint64_t>(frame.width) * frame.height;
+        if (incremental) {
+            std::uint32_t minTop = frame.height;
+            std::uint32_t maxBottom = 0;
+            for (const auto& rect : dirtyRects) {
+                minTop = std::min(minTop, rect.top);
+                maxBottom = std::max(maxBottom, rect.bottom);
+            }
+            rowBegin = minTop & ~1u;
+            rowEnd = std::min(frame.height, (maxBottom + 1u) & ~1u);
+            frame.dirtyRowBegin = rowBegin;
+            frame.dirtyRowEnd = rowEnd;
+            frame.changedPixels = std::min<std::uint64_t>(dirtyArea, static_cast<std::uint64_t>(frame.width) * frame.height);
+        }
+        bool consumed = false;
+        if (description.DesktopImageInSystemMemory && !(timing && timing->forceStaging)) {
+            DXGI_MAPPED_RECT mapped{};
+            const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
+            require(duplication->MapDesktopSurface(&mapped), "Map desktop surface");
+            const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+            Clock::time_point rowsEnded;
+            {
+                MappedDesktop mapping{duplication.Get()};
+                if (mapped.Pitch < 0) {
+                    throw std::runtime_error("Invalid desktop row pitch");
+                }
+                const auto pitch = static_cast<std::size_t>(mapped.Pitch);
+                consumed = consumer(std::span<const std::uint8_t>(mapped.pBits, pitch * frame.height), pitch,
+                                    frame.width, frame.height, rowBegin, rowEnd, frame.captureEpoch, frame.sourceSerial, incremental);
+                rowsEnded = timing ? Clock::now() : Clock::time_point{};
+            }
+            if (timing) {
+                timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
+                timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+                timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+                timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
+            }
+        } else {
+            auto* target = ensureStaging(textureDescription);
+            const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
+            if (incremental && rowBegin < rowEnd) {
+                const D3D11_BOX box{0, rowBegin, 0, frame.width, rowEnd, 1};
+                context->CopySubresourceRegion(target, 0, 0, rowBegin, 0, source.Get(), 0, &box);
+            } else {
+                context->CopyResource(target, source.Get());
+            }
+            if (releaseBeforeMap) {
+                context->Flush();
+                releaseBeforeMap->release();
+            }
+            const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            require(context->Map(target, 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
+            const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+            Clock::time_point rowsEnded;
+            {
+                MappedTexture mapping{context.Get(), target};
+                const auto pitch = static_cast<std::size_t>(mapped.RowPitch);
+                consumed = consumer(std::span<const std::uint8_t>(static_cast<const std::uint8_t*>(mapped.pData), pitch * frame.height), pitch,
+                                    frame.width, frame.height, rowBegin, rowEnd, frame.captureEpoch, frame.sourceSerial, incremental);
+                rowsEnded = timing ? Clock::now() : Clock::time_point{};
+            }
+            if (timing) {
+                timing->copyDispatchMilliseconds = milliseconds(copyStarted, mapStarted);
+                timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
+                timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+                timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+                timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
+            }
+        }
+        if (consumed) {
+            lastDirectSerial = sourceSerial;
+            lastReadbackSerial = 0;
+            lastReadbackData = nullptr;
+            frame.bgra.clear();
+        }
+        return consumed;
+    }
+    void copyPixels(const ComPtr<ID3D11Texture2D>& source, const DXGI_OUTDUPL_FRAME_INFO* frameInfo, bool allowIncremental, CapturedFrame& frame, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr, const DirectPixelConsumer* directConsumer = nullptr) {
         D3D11_TEXTURE2D_DESC textureDescription{};
         source->GetDesc(&textureDescription);
         const auto byteCount = static_cast<std::uint64_t>(textureDescription.Width) * textureDescription.Height * 4;
@@ -251,6 +338,12 @@ struct DesktopCapture::State {
             textureDescription.Width != frame.width || textureDescription.Height != frame.height) {
             throw CaptureReset();
         }
+        if (directConsumer && *directConsumer && !(timing && timing->verifyWithStaging)) {
+            if (consumeDirectPixels(source, textureDescription, frameInfo, allowIncremental, frame, timing, releaseBeforeMap, *directConsumer)) {
+                return;
+            }
+        }
+        lastDirectSerial = 0;
         std::uint64_t dirtyArea = 0;
         const bool incremental = allowIncremental && frameInfo && !(timing && timing->verifyWithStaging) && reusablePixels &&
                                  reusablePixels->size() == static_cast<std::size_t>(byteCount) && reusablePixels->data() == lastReadbackData &&
@@ -491,7 +584,7 @@ void DesktopCapture::readTexture(CapturedFrame& frame, CaptureTiming* timing) {
         throw CaptureReset();
     }
 }
-std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool readPixels, bool retainTexture) {
+std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds timeout, std::vector<std::uint8_t>* reusablePixels, CaptureTiming* timing, bool readPixels, bool retainTexture, const DirectPixelConsumer* directConsumer) {
     if (timeout.count() < 0 || timeout.count() > 5000) {
         throw std::invalid_argument("Capture wait must be between 0 and 5000 milliseconds");
     }
@@ -644,7 +737,8 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         if (hadDeferred && !frame.captureTicks) {
             frame.captureTicks = state_->deferred->captureTicks;
         }
-        state_->copyPixels(source, &info, desktopUpdated && !hadDeferred && !geometryChanged, frame, reusablePixels, timing, &acquired);
+        const DirectPixelConsumer* activeDirect = (directConsumer && *directConsumer && !DesktopCursor::requiresBackground(frame)) ? directConsumer : nullptr;
+        state_->copyPixels(source, &info, desktopUpdated && !hadDeferred && !geometryChanged, frame, reusablePixels, timing, &acquired, activeDirect);
         state_->deferred.reset();
         state_->pixelsCaptured = true;
         state_->lastPixelsWidth = frame.width;
@@ -654,6 +748,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         // snapshot before releasing it; replace raw pixels, never encoded AVC.
         state_->pixelsCaptured = false;
         state_->lastReadbackSerial = 0;
+        state_->lastDirectSerial = 0;
         state_->lastReadbackData = nullptr;
     }
     if (!readPixels && (desktopUpdated || state_->deferred)) {

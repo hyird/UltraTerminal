@@ -114,7 +114,8 @@ int main(int argc, char** argv) {
         securityHeaders.existing_headers_ = ruvia::security_header_conflict_policy::preserve_existing;
         auto& app = ruvia::app();
         if (!config.webRoot.empty()) {
-            app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind::only, .extensions_ = {"html", "js", "css", "svg", "ico", "png", "woff", "woff2", "txt", "md"}}}, .precompress_gzip_ = true});
+            // External reverse proxy terminates TLS and response compression; avoid duplicating static assets in RAM.
+            app.document_root({.root_ = config.webRoot, .static_options_ = {.cache_control_ = "no-cache", .index_file_ = "index.html", .file_types_ = {.kind_ = ruvia::static_file_type_policy::kind::only, .extensions_ = {"html", "js", "css", "svg", "ico", "png", "woff", "woff2", "txt", "md"}}}, .precompress_gzip_ = false});
         }
         // Homogeneous multi-core Ruvia workers; mutable state is strictly partitioned per worker.
         app.listen({.address_ = config.address, .http_ = config.port})

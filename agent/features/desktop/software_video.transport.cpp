@@ -58,7 +58,6 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoEncoderConfig config) : state_(s
     }
     const auto bitrate = codecBitrate(config.bitrate, config.framesPerSecond);
     state_->config = config;
-    state_->i420.resize(static_cast<std::size_t>(pixels * 3 / 2));
     requireCodec(WelsCreateSVCEncoder(&state_->encoder), "Cannot create OpenH264 encoder");
     int traceLevel = WELS_LOG_QUIET;
     requireCodec(state_->encoder->SetOption(ENCODER_OPTION_TRACE_LEVEL, &traceLevel), "Cannot configure encoder logging");
@@ -258,6 +257,7 @@ std::expected<EncodedVideoFrame, VideoEncodeError> SoftwareVideoEncoder::encode(
         (state.lastTimestamp && timestampMicroseconds <= *state.lastTimestamp)) {
         return std::unexpected(VideoEncodeError::kInvalidTimestamp);
     }
+    state.i420.resize(static_cast<std::size_t>(width) * height * 3 / 2);
     if (!convertVideoPixels(bgra, stride, width, height, VideoPixelFormat::kI420, state.i420)) {
         return std::unexpected(VideoEncodeError::kInvalidPixels);
     }
