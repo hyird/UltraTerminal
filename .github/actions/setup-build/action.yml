@@ -9,7 +9,7 @@ inputs:
     description: Official SHA256 of the toolchain archive.
     required: true
   vcpkg-commit:
-    description: Commit pinned by the project manifest.
+    description: vcpkg master commit resolved for this workflow run.
     required: true
 
 outputs:
@@ -86,11 +86,11 @@ runs:
       uses: actions/cache/restore@v6.1.0
       with:
         path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-        key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json', 'cmake/**', 'ports/**') }}
+        key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ inputs.vcpkg-commit }}-${{ hashFiles('vcpkg.json', 'cmake/**') }}
         restore-keys: |
           vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-musl-${{ inputs.toolchain-release }}-${{ inputs.toolchain-sha256 }}-${{ inputs.vcpkg-commit }}-
 
-    - name: Bootstrap pinned vcpkg
+    - name: Bootstrap vcpkg
       shell: bash
       env:
         VCPKG_COMMIT: ${{ inputs.vcpkg-commit }}

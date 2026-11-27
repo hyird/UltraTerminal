@@ -187,12 +187,10 @@ enum class DesktopStage : std::size_t {
     kGpuSyncWait,
     kReadbackReady,
     kPrepareCpu,
-    kPngEncode,
     kVideoEncode,
     kBrowserReceiveQueue,
     kBrowserDecode,
     kBrowserCanvasSubmit,
-    kBrowserPngDecode,
     kBrowserBaselineWait,
     kWorkerIpcWrite,
     kRelaySendQueueWait,
@@ -204,8 +202,8 @@ enum class DesktopStage : std::size_t {
 };
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(DesktopStage::kCount)> kDesktopStageNames{
     "worker_queue", "acquire_wait", "source_age", "pacing_credit_wait", "gpu_sync_wait",
-    "readback_ready", "prepare_cpu", "png_encode", "video_encode",
-    "browser_receive_queue", "browser_decode", "browser_canvas_submit", "browser_png_decode", "browser_baseline_wait",
+    "readback_ready", "prepare_cpu", "video_encode",
+    "browser_receive_queue", "browser_decode", "browser_canvas_submit", "browser_baseline_wait",
     "worker_ipc_write", "relay_send_queue_wait", "relay_native_write",
     "server_video_admission", "server_video_queue_wait", "server_video_ws_write"};
 struct DesktopFrameKey {
@@ -233,7 +231,6 @@ class DesktopPipelineDiagnostics {
         DESKTOP_STAGE(gpu_sync_wait_microseconds, kGpuSyncWait)
         DESKTOP_STAGE(readback_ready_microseconds, kReadbackReady)
         DESKTOP_STAGE(prepare_cpu_microseconds, kPrepareCpu)
-        DESKTOP_STAGE(png_encode_microseconds, kPngEncode)
         DESKTOP_STAGE(video_encode_microseconds, kVideoEncode)
 #undef DESKTOP_STAGE
     }
@@ -245,7 +242,6 @@ class DesktopPipelineDiagnostics {
         DESKTOP_STAGE(receive_queue_microseconds, kBrowserReceiveQueue)
         DESKTOP_STAGE(decode_microseconds, kBrowserDecode)
         DESKTOP_STAGE(canvas_submit_microseconds, kBrowserCanvasSubmit)
-        DESKTOP_STAGE(png_decode_microseconds, kBrowserPngDecode)
         DESKTOP_STAGE(baseline_wait_microseconds, kBrowserBaselineWait)
 #undef DESKTOP_STAGE
     }
@@ -390,10 +386,6 @@ struct DesktopDiagnostics {
     std::uint32_t latestTargetBitrate = 0;
     bool latestHardwareEncoding = false;
     bool latestGpuEncoding = false;
-    std::uint64_t refinementMessages = 0, refinementBytes = 0;
-    std::uint64_t refinementApplied = 0, refinementSuperseded = 0;
-    DesktopDurationWindow<128> refinementAcknowledgement;
-    std::uint64_t regionMessages = 0, regionBytes = 0, copiedPixels = 0, tileCacheHits = 0;
     std::uint64_t videoGeneration = 0, latestVideoFrame = 0;
     std::chrono::steady_clock::time_point renderReportedAt{};
 };

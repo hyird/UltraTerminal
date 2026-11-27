@@ -33,14 +33,31 @@ export class ApiError extends Error {
   }
 }
 
+function xsrfToken(): string {
+  if (typeof document === "undefined") return "";
+  for (const part of document.cookie.split(";")) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith("XSRF-TOKEN=")) {
+      return decodeURIComponent(trimmed.slice("XSRF-TOKEN=".length));
+    }
+  }
+  return "";
+}
+
 export async function jsonRequest(
   path: string,
   body?: unknown,
 ): Promise<unknown> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    const token = xsrfToken();
+    if (token) headers["X-XSRF-TOKEN"] = token;
+  }
   const response = await fetch(path, {
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });

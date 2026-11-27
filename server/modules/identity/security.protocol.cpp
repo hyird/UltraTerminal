@@ -1,40 +1,29 @@
 #include "security.protocol.h"
 
 #include <array>
+#include <binary_text_encoding.h>
+#include <crypto.h>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <vector>
 
-#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
-#include <openssl/rand.h>
 
 namespace ultraterimal::server {
 namespace {
 constexpr std::string_view kBase32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 std::string toHex(std::span<const unsigned char> bytes) {
-    constexpr char digits[] = "0123456789abcdef";
-    std::string result;
-    for (const auto byte : bytes) {
-        result += digits[byte >> 4];
-        result += digits[byte & 15];
-    }
-    return result;
+    return ruvia::encode_lower_hex(std::as_bytes(bytes));
 }
 std::vector<unsigned char> fromHex(std::string_view text) {
-    if (text.size() % 2 || text.size() > 8192) {
+    if (text.size() % 2 != 0 || text.size() > 8192 || !ruvia::is_lower_hex(text, text.size())) {
         throw std::invalid_argument("Invalid encrypted secret");
     }
-    std::vector<unsigned char> result;
-    for (std::size_t i = 0; i < text.size(); i += 2) {
-        const auto a = std::string_view("0123456789abcdef").find(text[i]);
-        const auto b = std::string_view("0123456789abcdef").find(text[i + 1]);
-        if (a > 15 || b > 15) {
-            throw std::invalid_argument("Invalid encrypted secret");
-        }
-        result.push_back(static_cast<unsigned char>(a * 16 + b));
+    std::vector<unsigned char> result(text.size() / 2);
+    if (!ruvia::decode_hex(text, std::as_writable_bytes(std::span(result)))) {
+        throw std::invalid_argument("Invalid encrypted secret");
     }
     return result;
 }
@@ -45,14 +34,14 @@ void require(bool ok) {
 }
 } // namespace
 bool constantEqual(std::string_view left, std::string_view right) {
-    return left.size() == right.size() && CRYPTO_memcmp(left.data(), right.data(), left.size()) == 0;
+    return ruvia::constant_time_bytes_equal(left, right);
 }
 std::string sealSecret(std::string_view key, std::string_view owner, std::string_view plaintext) {
     const auto bytes = fromHex(key);
     require(bytes.size() == 32 && plaintext.size() <= 2048 && owner.size() <= 256);
     std::array<unsigned char, 12> nonce{};
     std::array<unsigned char, 16> tag{};
-    require(RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) == 1);
+    require(ruvia::fill_random_bytes(std::as_writable_bytes(std::span(nonce))));
     std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     require(ctx && EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, bytes.data(), nonce.data()) == 1);
     int length = 0;
@@ -84,7 +73,7 @@ std::string openSecret(std::string_view key, std::string_view owner, std::string
 }
 std::string newTotpSecret() {
     std::array<unsigned char, 20> bytes{};
-    require(RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) == 1);
+    require(ruvia::fill_random_bytes(std::as_writable_bytes(std::span(bytes))));
     std::string result;
     unsigned accumulator = 0, bits = 0;
     for (const auto byte : bytes) {

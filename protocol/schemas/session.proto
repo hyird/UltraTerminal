@@ -221,6 +221,8 @@ message DesktopFlowSample {
 // Local durations only, each <= 60000000 us. Presence distinguishes unexecuted
 // stages from measured zero. Stages may overlap: never sum as total latency.
 message DesktopStageTiming {
+  reserved 8;
+  reserved "png_encode_microseconds";
   optional uint32 worker_queue_microseconds = 1;
   optional uint32 acquire_wait_microseconds = 2;
   optional uint32 source_age_microseconds = 3;
@@ -228,26 +230,18 @@ message DesktopStageTiming {
   optional uint32 gpu_sync_wait_microseconds = 5;
   optional uint32 readback_ready_microseconds = 6;
   optional uint32 prepare_cpu_microseconds = 7;
-  optional uint32 png_encode_microseconds = 8;
   optional uint32 video_encode_microseconds = 9;
   uint32 coalesced_captures = 10;
 }
 // Browser-local software stages, not physical presentation or remote-clock deltas.
 message DesktopBrowserTiming {
+  reserved 4;
+  reserved "png_decode_microseconds";
   optional uint32 receive_queue_microseconds = 1;
   optional uint32 decode_microseconds = 2;
   optional uint32 canvas_submit_microseconds = 3;
-  optional uint32 png_decode_microseconds = 4;
   optional uint32 baseline_wait_microseconds = 5;
 }
-message Rectangle { uint32 x = 1; uint32 y = 2; uint32 width = 3; uint32 height = 4; }
-message FullFrame { uint32 width = 1; uint32 height = 2; bytes rgba = 3; }
-message CopyRect { Rectangle destination = 1; uint32 source_x = 2; uint32 source_y = 3; }
-// cache_slot 1..128 defines/reuses a generation-scoped 128x64-or-smaller tile.
-// Empty png requires a previously defined slot of exactly the same dimensions.
-// Zero is an uncached PNG (also the only form allowed in legacy DiffBatch).
-message PatchRect { Rectangle destination = 1; bytes png = 2; uint32 cache_slot = 3; }
-message DiffBatch { repeated CopyRect copies = 1; repeated PatchRect patches = 2; }
 // POINTER_MOVE: output-local physical pixels. BUTTON: 0 left, 1 middle, 2 right,
 // 3 back, 4 forward. KEY: Windows virtual-key code (left/right modifiers),
 // 0x10D for keypad Enter. WHEEL: code 0 vertical / 1 horizontal, delta in 120ths
@@ -272,40 +266,21 @@ message VisibleFrameTiming {
   uint32 observed_fps_milli = 5;
 }
 message QualityFeedback {
-  reserved 6;
-  reserved "preference";
+  reserved 6, 9;
+  reserved "preference", "video_refinement";
   uint64 displayed_frame = 1;
   uint32 decode_microseconds = 2;
   uint32 queue_depth = 3;
   bool background = 4;
   uint64 displayed_generation = 5;
   // Maximum received, not-yet-displayed video frames the client can accept.
-  // Zero/omitted means the legacy limit of 16; valid explicit values are 1..128.
+  // Zero/omitted means 16; valid explicit values are 1..128.
   uint32 maximum_pending_video_frames = 7;
-  // Opt-in: video bottom layer with bounded, frame-bound PNG detail patches.
-  bool video_refinement = 9;
   // Browser-only diagnostics, consumed by the gateway. At most once per 5 s.
   VisibleFrameTiming visible_frame_timing = 8;
   // Gateway-consumed diagnostics associated with displayed_generation/frame.
   // Does not participate in QoS; decode_microseconds above retains its meaning.
   DesktopBrowserTiming browser_timing = 10;
-}
-enum RefinementKind { UNSPECIFIED = 0; STATIC_DETAIL = 1; DYNAMIC_DETAIL = 2; }
-// Applied only to the matching composed canvas, never to a newer baseline.
-// Envelope frame_id == base_frame_id. Legacy batch_id/kind are zero; v2 batch
-// IDs strictly increase within generation (gaps allowed), with uncached PNGs.
-message VideoRefinement {
-  repeated PatchRect patches = 1;
-  uint64 batch_id = 2;
-  RefinementKind kind = 3;
-  DesktopStageTiming stage_timing = 4;
-}
-// Independent, non-coalescible input-channel ACK. Envelope generation/frame_id
-// identify the canvas, base_frame_id=0. Late/duplicate tuples are runtime no-ops.
-message DesktopRefinementAck {
-  enum Status { UNSPECIFIED = 0; APPLIED = 1; SUPERSEDED = 2; }
-  uint64 batch_id = 1;
-  Status status = 2;
 }
 // Agent input-channel diagnostics only. Server consumes, never forwards to Browser.
 message DesktopPipelineSample {
@@ -323,23 +298,12 @@ message DesktopPipelineReport {
   repeated DesktopPipelineSample samples = 1; // At most 32, best effort.
   uint32 dropped_samples = 2;
 }
-// Atomic updates to the composed canvas. All copies read the PREVIOUS canvas,
-// then patches are applied. Does not change the video decoder's reference frames.
-message DesktopRegionUpdate {
-  repeated CopyRect copies = 1;
-  repeated PatchRect patches = 2;
-  uint32 encode_microseconds = 3;
-  uint32 target_frames_per_second = 4;
-  uint32 target_bitrate = 5;
-  DesktopStageTiming stage_timing = 6;
-}
 enum VideoCodec { VIDEO_CODEC_UNSPECIFIED = 0; AVC = 1; HEVC = 2; AV1 = 3; }
-// Sent on the authenticated input channel; independent of frame ACKs. Missing
-// capabilities preserve the deployed H264/uncached-refinement contract.
+// Sent on the authenticated input channel; independent of frame ACKs.
 message DesktopVideoCapabilities {
+  reserved 2, 3;
+  reserved "region_updates", "tile_cache";
   repeated VideoCodec codecs = 1;
-  bool region_updates = 2;
-  bool tile_cache = 3;
   uint32 desktop_optimization_contract = 4;
   bool continuous_frames = 5;
   DesktopSessionCapabilities session_capabilities = 6;
@@ -376,6 +340,8 @@ message WindowsLoginDelivery {
   WindowsLoginHello.Scenario scenario = 7;
 }
 message Envelope {
+  reserved 20, 21, 43, 44, 46;
+  reserved "full_frame", "diff_batch", "video_refinement", "desktop_region_update", "desktop_refinement_ack";
   uint32 protocol_version = 1;
   string session_id = 2;
   string channel_id = 3;
@@ -394,8 +360,6 @@ message Envelope {
     ChannelData channel_data = 17;
     VideoConfig video_config = 18;
     VideoFrame video_frame = 19;
-    FullFrame full_frame = 20;
-    DiffBatch diff_batch = 21;
     InputEvent input_event = 22;
     CursorUpdate cursor_update = 23;
     QualityFeedback quality_feedback = 24;
@@ -417,10 +381,7 @@ message Envelope {
     AgentLogAck agent_log_ack = 40;
     AgentUpdate agent_update = 41;
     DesktopSecureAttentionResult desktop_secure_attention_result = 42;
-    VideoRefinement video_refinement = 43;
-    DesktopRegionUpdate desktop_region_update = 44;
     DesktopVideoCapabilities desktop_video_capabilities = 45;
-    DesktopRefinementAck desktop_refinement_ack = 46;
     DesktopPipelineReport desktop_pipeline_report = 47;
   }
 }

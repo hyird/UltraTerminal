@@ -1,13 +1,17 @@
 #pragma once
 #include <filesystem>
 #include <fstream>
+#include <model.h>
 #include <optional>
-
-#include <boost/json.hpp>
+#include <string>
 
 #include "ultraterimal/protocol/update.protocol.h"
 
 namespace ultraterimal::server {
+RUVIA_MODEL(AgentReleaseManifest,
+            RUVIA_REQUIRED_FIELD(file, ruvia::string),
+            RUVIA_REQUIRED_FIELD(version, ruvia::string),
+            RUVIA_REQUIRED_FIELD(sha256, ruvia::string));
 struct AgentRelease {
     wire::AgentUpdate update;
     std::filesystem::path file;
@@ -24,8 +28,12 @@ inline std::optional<AgentRelease> agentRelease(const std::filesystem::path& rel
         if (bytes.empty() || bytes.size() > 4096) {
             return {};
         }
-        const auto object = boost::json::parse(bytes).as_object();
-        std::string name(object.at("file").as_string());
+        auto parsed = ruvia::parse_json<AgentReleaseManifest>(bytes);
+        if (!parsed.has_value()) {
+            return {};
+        }
+        const auto manifest = std::move(parsed).take_value();
+        std::string name(manifest.get<"file">().view());
         if (name.starts_with("/assets/")) {
             name = name.substr(8);
         }
@@ -47,8 +55,8 @@ inline std::optional<AgentRelease> agentRelease(const std::filesystem::path& rel
                 return {};
             }
         }
-        release.update.set_version(std::string(object.at("version").as_string()));
-        release.update.set_sha256(std::string(object.at("sha256").as_string()));
+        release.update.set_version(std::string(manifest.get<"version">().view()));
+        release.update.set_sha256(std::string(manifest.get<"sha256">().view()));
         release.update.set_size(std::filesystem::file_size(release.file));
         if (!protocol::validUpdate(release.update)) {
             return {};

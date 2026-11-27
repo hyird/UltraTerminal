@@ -45,7 +45,7 @@ jobs:
           checksum="$(curl -fsSL "https://github.com/cross-tools/clang-cross/releases/download/$release/$asset.sha256")"
           read -r sha256 _ <<< "$checksum"
           [[ "$sha256" =~ ^[[:xdigit:]]{64}$ ]]
-          vcpkg_commit="$(jq -er '."builtin-baseline"' vcpkg.json)"
+          vcpkg_commit="$(gh api repos/microsoft/vcpkg/commits/master --jq '.sha')"
           ruvia_commit="$(sed -nE 's/^    GIT_TAG ([0-9a-f]{40})\)/\1/p' CMakeLists.txt)"
           [[ "$vcpkg_commit" =~ ^[0-9a-f]{40}$ ]]
           [[ "$ruvia_commit" =~ ^[0-9a-f]{40}$ ]]
@@ -212,7 +212,7 @@ jobs:
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
         run: mise use --global cmake@latest
-      - name: Bootstrap pinned vcpkg
+      - name: Bootstrap vcpkg
         env:
           VCPKG_COMMIT: ${{ needs.resolve_toolchain.outputs.vcpkg_commit }}
         run: |
@@ -231,7 +231,7 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-${{ hashFiles('vcpkg.json', 'CMakeLists.txt', 'ports/**') }}
+          key: vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-${{ hashFiles('vcpkg.json', 'CMakeLists.txt') }}
           restore-keys: |
             vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-${{ env.RUNNER_IMAGE }}-
             vcpkg-v3-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ needs.resolve_toolchain.outputs.vcpkg_commit }}-

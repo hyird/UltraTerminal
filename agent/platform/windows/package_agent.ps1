@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory)][string]$Output,
     [Parameter(Mandatory)][string]$DependencyRoot,
     [Parameter(Mandatory)][string]$RuviaRoot,
+    [string]$VcpkgRoot = $env:VCPKG_ROOT,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayHost,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayAddress,
     [ValidateRange(1,65535)][int]$GatewayPort = 7443
@@ -25,7 +26,9 @@ $ruvia = (& git -C $RuviaRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Get-Content (Join-Path $repository 'CMakeLists.txt') -Raw).Contains($ruvia)) { throw 'Ruvia source does not match the project pin' }
 & git -C $RuviaRoot diff --quiet HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Ruvia source has uncommitted changes' }
-$baseline = (Get-Content (Join-Path $repository 'vcpkg.json') -Raw | ConvertFrom-Json).'builtin-baseline'
+if (-not $VcpkgRoot) { throw 'VcpkgRoot or VCPKG_ROOT is required' }
+$vcpkgCommit = (& git -C $VcpkgRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $vcpkgCommit -notmatch '^[a-f0-9]{40}$') { throw 'Cannot identify vcpkg commit' }
 $sourceUrl = "https://github.com/hyird/UltraTerminal/tree/$commit"
 $toolRoot = Join-Path $repository 'build\tools'
 $wix = Join-Path $toolRoot 'wix7'
@@ -60,8 +63,8 @@ foreach ($directory in Get-ChildItem (Join-Path $DependencyRoot 'share') -Direct
 }
 [IO.File]::WriteAllText((Join-Path $payload 'third_party_notices.txt'), $notices.ToString(), (New-Object System.Text.UTF8Encoding($false)))
 if (-not ($sourceResources | Where-Object { $_.package -eq 'openh264' -and $_.resources })) { throw 'OpenH264 source metadata missing' }
-$sourceMetadata = @{ project_commit=$commit; ruvia_commit=$ruvia; vcpkg_baseline=$baseline; agent_sha256=(Get-FileHash $AgentExe -Algorithm SHA256).Hash.ToLowerInvariant(); dependencies=$sourceResources } | ConvertTo-Json -Depth 12
-$sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject source and build instructions: $sourceUrl`nProject download: https://github.com/hyird/UltraTerminal/archive/$commit.tar.gz`nRuvia source location and exact revision: $sourceUrl/CMakeLists.txt`nDependency recipes: https://github.com/microsoft/vcpkg/tree/$baseline`nDependency source locations and checksums (SPDX):`n$sourceMetadata`n"
+$sourceMetadata = @{ project_commit=$commit; ruvia_commit=$ruvia; vcpkg_commit=$vcpkgCommit; agent_sha256=(Get-FileHash $AgentExe -Algorithm SHA256).Hash.ToLowerInvariant(); dependencies=$sourceResources } | ConvertTo-Json -Depth 12
+$sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject source and build instructions: $sourceUrl`nProject download: https://github.com/hyird/UltraTerminal/archive/$commit.tar.gz`nRuvia source location and exact revision: $sourceUrl/CMakeLists.txt`nDependency recipes: https://github.com/microsoft/vcpkg/tree/$vcpkgCommit`nDependency source locations and checksums (SPDX):`n$sourceMetadata`n"
 [IO.File]::WriteAllText((Join-Path $payload 'source_info.txt'), $sourceNotice, (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install_agent.ps1') -Destination (Join-Path $payload 'install_agent.ps1') -Force
 $resolvedOutput = [IO.Path]::GetFullPath($Output)

@@ -1,41 +1,23 @@
-find_package(unofficial-libmariadb CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(Boost CONFIG REQUIRED COMPONENTS json)
 set(ULTRATERIMAL_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/devices/install.ps1")
 file(READ "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}" ULTRATERIMAL_INSTALL_SCRIPT)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}")
 configure_file(config/installer.script.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/installer.script.h" @ONLY)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/001_mariadb.sql" ULTRATERIMAL_MARIADB_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/001_mariadb.sql)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/002_control_only.sql" ULTRATERIMAL_CONTROL_ONLY_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/002_control_only.sql)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/003_identity_telegram.sql" ULTRATERIMAL_IDENTITY_TELEGRAM_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/003_identity_telegram.sql)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/004_grant_verification.sql" ULTRATERIMAL_GRANT_VERIFICATION_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/004_grant_verification.sql)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/005_session_reconnect.sql" ULTRATERIMAL_SESSION_RECONNECT_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/005_session_reconnect.sql)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/006_requester_telegram.sql" ULTRATERIMAL_REQUESTER_TELEGRAM_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/006_requester_telegram.sql)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/migrations/007_device_agent_version.sql" ULTRATERIMAL_DEVICE_AGENT_VERSION_MIGRATION)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS migrations/007_device_agent_version.sql)
-configure_file(migrations/migration.schema.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/migration.schema.h" @ONLY)
 add_library(ultraterimal-server-core STATIC
     config/server.config.cpp
-    modules/database/database.service.cpp
-    modules/database/database.transport.cpp
+    config/storage.cpp
     modules/identity/identity.service.cpp
     modules/identity/security.protocol.cpp
     modules/telegram/telegram.service.cpp
     modules/devices/device.service.cpp
     modules/sessions/session.service.cpp)
-target_include_directories(ultraterimal-server-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_include_directories(ultraterimal-server-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(ultraterimal-server-core PUBLIC cxx_std_23)
 set_target_properties(ultraterimal-server-core PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_options(ultraterimal-server-core PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc;/bigobj>"
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
-target_link_libraries(ultraterimal-server-core PUBLIC unofficial::libmariadb ultraterimal::protocol PRIVATE Boost::json OpenSSL::Crypto)
+target_link_libraries(ultraterimal-server-core PUBLIC ruvia::web ultraterimal::protocol PRIVATE OpenSSL::Crypto)
 add_library(ultraterimal-control-runtime STATIC features/control/control.runtime.cpp)
 target_include_directories(ultraterimal-control-runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(ultraterimal-control-runtime PUBLIC cxx_std_23)
@@ -71,6 +53,6 @@ set_target_properties(ultraterimal-server PROPERTIES CXX_EXTENSIONS OFF OUTPUT_N
 target_compile_options(ultraterimal-server PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc;/bigobj>"
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
-target_link_libraries(ultraterimal-server PRIVATE ultraterimal-server-core ultraterimal-control-runtime ultraterimal-desktop-runtime ruvia::web Boost::json spdlog::spdlog)
+target_link_libraries(ultraterimal-server PRIVATE ultraterimal-server-core ultraterimal-control-runtime ultraterimal-desktop-runtime ruvia::web spdlog::spdlog)
 
 install(TARGETS ultraterimal-server RUNTIME DESTINATION bin)

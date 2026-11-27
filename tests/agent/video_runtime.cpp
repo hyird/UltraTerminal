@@ -123,7 +123,6 @@ asio::awaitable<void> verify(agent::DesktopVideoRuntime& video, asio::steady_tim
     if (optimization) {
         const auto& stages = first->frame.stage_timing();
         require(stages.has_worker_queue_microseconds() && stages.has_acquire_wait_microseconds() && stages.has_source_age_microseconds() == (first->sourcePresentTicks != 0) && stages.has_pacing_credit_wait_microseconds() && stages.has_video_encode_microseconds(), "Actual first frame omitted executed stages");
-        require(!stages.has_png_encode_microseconds(), "Video-only path invented PNG duration");
     }
     require(ticks > 0, "Capture/encoding blocked the Ruvia event loop");
     const auto configuration = *first->configuration;

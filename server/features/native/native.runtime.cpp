@@ -59,6 +59,7 @@ class NativeContext {
     T& worker_state() { return context_.worker_state<T>(); }
     template <typename Fn>
     auto run_blocking(Fn&& operation) { return context_.run_blocking(std::forward<Fn>(operation)); }
+    ruvia::db_executor db() const { return context_.db(); }
     template <typename T>
     const T& request_state() const {
         if constexpr (std::is_same_v<T, DeviceIdentity>) {
@@ -231,7 +232,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
                 try {
                     auto& runtime = context.worker_state<ServerRuntime>();
                     if (req.purpose() == wire::NativeConnect::ENROLLMENT) {
-                        auto reg = ((co_await context.run_blocking([service = runtime.devices, code = req.enrollment_code(), name = req.device_name()] { return service.registerDevice(code, name); })).take_value());
+                        auto reg = co_await runtime.devices.registerDevice(context.db(), req.enrollment_code(), req.device_name());
                         req.Clear();
                         if (reg) {
                             outcome.accepted = true;
@@ -239,7 +240,7 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
                             outcome.credential = std::move(reg->credential);
                         }
                     } else {
-                        auto dev = ((co_await context.run_blocking([service = runtime.devices, credential = req.credential()] { return service.authenticate(credential); })).take_value());
+                        auto dev = co_await runtime.devices.authenticate(context.db(), req.credential());
                         req.Clear();
                         if (dev) {
                             outcome.accepted = true;

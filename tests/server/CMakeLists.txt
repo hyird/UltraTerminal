@@ -29,8 +29,7 @@ add_executable(server-access-integration EXCLUDE_FROM_ALL access_integration.cpp
 target_link_libraries(server-access-integration PRIVATE ultraterimal-server-core)
 
 # In-memory HTTP contract test: no sockets, database, or external services.
-find_package(Boost REQUIRED COMPONENTS json)
 add_executable(server-http-tests http.cpp)
-target_link_libraries(server-http-tests PRIVATE ultraterimal-server-core ruvia::web Boost::json)
+target_link_libraries(server-http-tests PRIVATE ultraterimal-server-core ruvia::web)
 add_test(NAME server.http COMMAND server-http-tests)
 set_tests_properties(server.http PROPERTIES LABELS unit TIMEOUT 15)

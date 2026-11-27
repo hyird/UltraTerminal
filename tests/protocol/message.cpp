@@ -239,15 +239,6 @@ int main() {
         ready.set_sequence(1);
         ready.mutable_channel_ready()->set_purpose(wire::SSH_STREAM);
         require(!protocol::validateMessage(ready), "Non-desktop readiness accepted");
-        wire::Envelope frame;
-        frame.set_protocol_version(1);
-        frame.set_sequence(2);
-        frame.set_session_id("session");
-        frame.set_generation(1);
-        frame.set_frame_id(1);
-        frame.mutable_full_frame()->set_width(16384);
-        frame.mutable_full_frame()->set_height(16384);
-        require(!protocol::validateMessage(frame), "Invalid image storage accepted");
         wire::InputEvent input;
         require(!protocol::validateInputEvent(input), "Unspecified input accepted");
         input.set_kind(wire::InputEvent::POINTER_MOVE);

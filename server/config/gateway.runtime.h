@@ -1,12 +1,13 @@
 #pragma once
 #include <atomic>
-#include <blocking_pool.h>
+#include <db_executor.h>
+#include <event_loop.h>
 #include <memory>
-#include <stop_token>
+#include <optional>
+#include <stop_token.h>
 #include <string>
 
-#include "modules/database/database.config.h"
-#include "modules/database/database.service.h"
+#include "config/database.config.h"
 
 namespace ultraterimal::server {
 class GatewayRuntime {
@@ -18,10 +19,13 @@ class GatewayRuntime {
     bool failed() const;
 
   private:
-    std::shared_ptr<DatabaseConnection> lease_;
+    std::string ownerId_;
+    ruvia::event_loop_pool pool_{{.loop_count_ = 1, .queue_capacity_ = 64, .blocking_pool_ = ruvia::blocking_pool_options{.thread_count_ = 1}}};
+    std::shared_ptr<ruvia::db_client> client_;
     std::shared_ptr<std::atomic<bool>> failed_ = std::make_shared<std::atomic<bool>>(false);
-    std::stop_source stop_;
-    ruvia::blocking_pool pool_{{.thread_count_ = 1, .queue_capacity_ = 1}};
+    ruvia::stop_source stop_;
+    std::optional<ruvia::root_task<void>> watcher_;
     bool started_ = false;
+    bool stopped_ = false;
 };
 } // namespace ultraterimal::server

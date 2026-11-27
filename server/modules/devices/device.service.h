@@ -1,81 +1,41 @@
 #pragma once
 #include <cstdint>
+#include <db_executor.h>
 #include <optional>
 #include <string>
-#include <string_view>
-#include <utility>
+#include <task.h>
 #include <vector>
 
-#include "modules/database/database.config.h"
+#include "device.types.h"
 #include "ultraterimal/protocol/message.protocol.h"
+
 namespace ultraterimal::server {
-struct DeviceRegistration {
-    std::string deviceId;
-    std::string credential;
-};
-struct DeviceIdentity {
-    std::string id;
-    std::string credentialHash;
-};
-struct DeviceInfo {
-    std::string id;
-    std::string name;
-    std::optional<std::string> lastSeen;
-    bool canManage = false;
-    bool enrolled = true;
-    bool desktop = false;
-    bool writeControl = false;
-    std::string verificationMethod = "direct";
-    bool manageCredentials = false;
-    std::string ownerUsername = {};
-    std::optional<std::string> agentVersion = {};
-};
-struct DeviceGrant {
-    std::string userId, username;
-    bool desktop = true;
-    bool writeControl = false;
-    bool systemRestart = false;
-    bool manageCredentials = false;
-    std::string verificationMethod = "direct";
-};
-struct RestartOperation {
-    std::string id;
-    std::string deviceId;
-    std::string status;
-    std::uint64_t expiresAtUnixSeconds = 0;
-    std::uint64_t bootTimeUnixSeconds = 0;
-    bool newlyCreated = false;
-};
 class DeviceService {
   public:
-    explicit DeviceService(DatabaseConfig database) : database_(std::move(database)) {}
-    DeviceInfo createDevice(std::string_view userId, std::string_view name) const;
-    std::optional<std::string> createEnrollment(std::string_view userId, std::string_view deviceId) const;
-    std::optional<std::string> enrollmentDevice(std::string_view code) const;
-    std::optional<DeviceRegistration> registerDevice(std::string_view code, std::string_view name) const;
-    std::optional<DeviceIdentity> authenticate(std::string_view credential) const;
-    bool heartbeat(const DeviceIdentity& device) const;
-    bool capabilities(const DeviceIdentity& device, std::string_view protobuf, std::string_view agentVersion = {}) const;
-    std::vector<DeviceInfo> list(std::string_view userId, bool administration = false) const;
-    bool rename(std::string_view userId, std::string_view deviceId, std::string_view name) const;
-    bool transferOwner(std::string_view actorId, std::string_view deviceId, std::string_view targetUserId) const;
-    bool remove(std::string_view userId, std::string_view deviceId) const;
-    std::optional<std::vector<DeviceGrant>> grants(std::string_view actorId, std::string_view deviceId) const;
-    bool setGrant(std::string_view actorId, std::string_view deviceId, const DeviceGrant& grant, bool remove) const;
-    std::optional<DeviceInfo> find(std::string_view userId, std::string_view deviceId, bool administration = false) const;
-    bool canConfigureWindowsLogin(std::string_view userId, std::string_view deviceId) const;
-    std::optional<bool> systemRestartPermission(std::string_view userId, std::string_view deviceId) const;
-    bool restartDispatchAllowed(std::string_view userId, std::string_view deviceId) const;
-    std::optional<RestartOperation> restartByIdempotencyKey(std::string_view userId, std::string_view deviceId, std::string_view idempotencyKey) const;
-    std::optional<RestartOperation> createRestart(std::string_view userId, std::string_view deviceId, std::string_view idempotencyKey, std::uint64_t bootTimeUnixSeconds) const;
-    std::optional<RestartOperation> restart(std::string_view userId, std::string_view operationId) const;
-    bool applyRestartResult(const DeviceIdentity& device, const wire::WindowsRestartResult& result) const;
-    void updateRestart(std::string_view operationId, std::string_view status, std::optional<std::uint32_t> win32Error = std::nullopt) const;
-    void confirmRestart(std::string_view deviceId, std::uint64_t bootTimeUnixSeconds) const;
-    void recoverRestarts() const;
-    void auditWindowsLogin(std::string_view userId, std::string_view deviceId, std::string_view action, bool success) const;
-
-  private:
-    DatabaseConfig database_;
+    ruvia::task<DeviceInfo> createDevice(ruvia::db_executor db, std::string userId, std::string name) const;
+    ruvia::task<std::optional<std::string>> createEnrollment(ruvia::db_executor db, std::string userId, std::string deviceId) const;
+    ruvia::task<std::optional<std::string>> enrollmentDevice(ruvia::db_executor db, std::string code) const;
+    ruvia::task<std::optional<DeviceRegistration>> registerDevice(ruvia::db_executor db, std::string code, std::string name) const;
+    ruvia::task<std::optional<DeviceIdentity>> authenticate(ruvia::db_executor db, std::string credential) const;
+    ruvia::task<bool> heartbeat(ruvia::db_executor db, DeviceIdentity device) const;
+    ruvia::task<bool> capabilities(ruvia::db_executor db, DeviceIdentity device, std::string protobuf, std::string agentVersion = {}) const;
+    ruvia::task<std::vector<DeviceInfo>> list(ruvia::db_executor db, std::string userId, bool administration = false) const;
+    ruvia::task<bool> rename(ruvia::db_executor db, std::string userId, std::string deviceId, std::string name) const;
+    ruvia::task<bool> transferOwner(ruvia::db_executor db, std::string actorId, std::string deviceId, std::string targetUserId) const;
+    ruvia::task<bool> remove(ruvia::db_executor db, std::string userId, std::string deviceId) const;
+    ruvia::task<std::optional<std::vector<DeviceGrant>>> grants(ruvia::db_executor db, std::string actorId, std::string deviceId) const;
+    ruvia::task<bool> setGrant(ruvia::db_executor db, std::string actorId, std::string deviceId, DeviceGrant grant, bool remove) const;
+    ruvia::task<std::optional<DeviceInfo>> find(ruvia::db_executor db, std::string userId, std::string deviceId, bool administration = false) const;
+    ruvia::task<bool> canConfigureWindowsLogin(ruvia::db_executor db, std::string userId, std::string deviceId) const;
+    ruvia::task<std::optional<bool>> systemRestartPermission(ruvia::db_executor db, std::string userId, std::string deviceId) const;
+    ruvia::task<bool> restartDispatchAllowed(ruvia::db_executor db, std::string userId, std::string deviceId) const;
+    ruvia::task<std::optional<RestartOperation>> restartByIdempotencyKey(ruvia::db_executor db, std::string userId, std::string deviceId, std::string idempotencyKey) const;
+    ruvia::task<std::optional<RestartOperation>> createRestart(ruvia::db_executor db, std::string userId, std::string deviceId, std::string idempotencyKey, std::uint64_t bootTimeUnixSeconds) const;
+    ruvia::task<std::optional<RestartOperation>> restart(ruvia::db_executor db, std::string userId, std::string operationId) const;
+    ruvia::task<bool> applyRestartResult(ruvia::db_executor db, DeviceIdentity device, wire::WindowsRestartResult result) const;
+    ruvia::task<void> updateRestart(ruvia::db_executor db, std::string operationId, std::string status, std::optional<std::uint32_t> win32Error = std::nullopt) const;
+    ruvia::task<void> confirmRestart(ruvia::db_executor db, std::string deviceId, std::uint64_t bootTimeUnixSeconds) const;
+    ruvia::task<void> recoverRestarts(ruvia::db_executor db) const;
+    ruvia::task<void> auditWindowsLogin(ruvia::db_executor db, std::string userId, std::string deviceId, std::string action, bool success) const;
 };
 } // namespace ultraterimal::server

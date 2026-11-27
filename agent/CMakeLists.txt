@@ -1,4 +1,3 @@
-find_package(Boost CONFIG REQUIRED COMPONENTS json)
 find_package(OpenSSL REQUIRED)
 find_package(libde265 CONFIG REQUIRED)
 set(dav1d_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
@@ -106,7 +105,7 @@ foreach(agent_core_target IN LISTS agent_core_targets)
     target_compile_definitions(${agent_core_target} PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
     target_compile_options(${agent_core_target} PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc)
     target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi OpenH264::OpenH264 de265 dav1d::dav1d
-        PUBLIC ultraterimal::protocol ruvia::core Boost::json OpenSSL::SSL OpenSSL::Crypto)
+        PUBLIC ultraterimal::protocol ruvia::core OpenSSL::SSL OpenSSL::Crypto)
 endforeach()
 add_executable(ultraterimal-agent main.cpp)
 target_link_libraries(ultraterimal-agent PRIVATE ultraterimal-agent-core)

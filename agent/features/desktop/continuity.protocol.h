@@ -86,15 +86,6 @@ class DesktopContinuity {
             feedback.set_displayed_generation(feedback.displayed_generation() - generationOffset_);
             return true;
         }
-        if (message.has_desktop_refinement_ack()) {
-            // Independent credit, including SUPERSEDED, must not wait for
-            // ordinary frame feedback or a writable input binding.
-            if (message.generation() <= generationOffset_ || message.generation() > generation_) {
-                return false;
-            }
-            message.set_generation(message.generation() - generationOffset_);
-            return true;
-        }
         if (!acknowledged_ || !displayed_) {
             return false;
         }

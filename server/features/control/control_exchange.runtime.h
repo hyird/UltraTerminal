@@ -76,15 +76,10 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
         co_return;
     }
     auto& runtime = context.template worker_state<ServerRuntime>();
-    if (!(((co_await context.run_blocking([service = runtime.devices, sessions = runtime.sessions, device, bytes = hello->hello().capabilities().SerializeAsString(), version = hello->hello().agent_version()] {
-               if (!service.capabilities(device, bytes, version)) {
-                   return false;
-               }
-               sessions.disconnectDevice(device);
-               return true;
-           })).take_value()))) {
+    if (!(co_await runtime.devices.capabilities(context.db(), device, hello->hello().capabilities().SerializeAsString(), hello->hello().agent_version()))) {
         co_return;
     }
+    co_await runtime.sessions.disconnectDevice(context.db(), device);
     std::uint64_t received = hello->sequence();
     wire::Envelope welcome;
     welcome.set_protocol_version(protocol::kVersion);
@@ -100,7 +95,7 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
     connection.agentVersion = hello->hello().agent_version();
     spdlog::info("agent_connected device_id={} version={}", device.id, protocol::updateVersion(connection.agentVersion) ? connection.agentVersion : "unknown");
     if (connection.capabilities.system_restart()) {
-        ((co_await context.run_blocking([service = runtime.devices, device, bootTime = connection.capabilities.boot_time_unix_seconds()] { service.confirmRestart(device.id, bootTime); })).take_value());
+        co_await runtime.devices.confirmRestart(context.db(), device.id, connection.capabilities.boot_time_unix_seconds());
     }
     connection.ready = true;
     publishClusterStatus(runtime, "d:" + device.id);
@@ -162,15 +157,13 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
             if (!connection.windowsRestartReply(result)) {
                 break;
             }
-            ((co_await context.run_blocking([service = runtime.devices, device, result] {
-                 service.applyRestartResult(device, result);
-             })).take_value());
+            (void)co_await runtime.devices.applyRestartResult(context.db(), device, result);
             continue;
         }
         if (incoming->has_session_error() || incoming->has_session_close()) {
             const bool failed = incoming->has_session_error();
             const auto code = failed ? agentErrorName(incoming->session_error().code()) : std::string_view("agent_closed");
-            if (!(((co_await context.run_blocking([service = runtime.sessions, device, sessionId = incoming->session_id(), reason = failed ? SessionEnd::kFailure : SessionEnd::kAgentClosed] { return service.closeForDevice(device, sessionId, reason); })).take_value()))) {
+            if (!(co_await runtime.sessions.closeForDevice(context.db(), device, incoming->session_id(), failed ? SessionEnd::kFailure : SessionEnd::kAgentClosed))) {
                 closeReason = "invalid_session_event";
                 break;
             }
@@ -181,7 +174,7 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
             closeReason = "invalid_control_message";
             break;
         }
-        if (!(((co_await context.run_blocking([service = runtime.devices, device] { return service.heartbeat(device); })).take_value()))) {
+        if (!(co_await runtime.devices.heartbeat(context.db(), device))) {
             closeReason = "heartbeat_rejected";
             break;
         }
@@ -231,9 +224,7 @@ ruvia::task<void> runControlConnection(Context& context, Connection& socket) {
                 unknown.set_operation_id(operationId);
                 unknown.set_status(wire::WindowsRestartResult::UNKNOWN);
                 try {
-                    ((co_await context.run_blocking([service = runtime.devices, device, unknown] {
-                         service.applyRestartResult(device, unknown);
-                     })).take_value());
+                    (void)co_await runtime.devices.applyRestartResult(context.db(), device, unknown);
                 } catch (const std::exception&) { /* Pending operations expire conservatively if storage is unavailable. */
                 }
             }
@@ -244,7 +235,7 @@ ruvia::task<void> runControlConnection(Context& context, Connection& socket) {
             spdlog::info("agent_control_end device_id={} reason={} transport={} duration_ms={}", device.id, closeReason, context.transport_close_cause(),
                          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
             try {
-                ((co_await context.run_blocking([service = runtime.sessions, device] { service.disconnectDevice(device); })).take_value());
+                co_await runtime.sessions.disconnectDevice(context.db(), device);
             } catch (const std::exception&) { /* Recovery on the next HELLO or gateway restart closes stale database sessions. */
             }
 

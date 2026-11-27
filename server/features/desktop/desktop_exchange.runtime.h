@@ -167,9 +167,9 @@ ruvia::task<void> watchChannel(Context& context, Connection& socket, ChannelStat
             }
             if (state.owner && Clock::now() >= nextAuthorization) {
                 auto& localRuntime = context.template worker_state<ServerRuntime>();
-                const bool authorized = ((co_await context.run_blocking([service = localRuntime.sessions, id = state.authorization->sessionId] { return service.authorized(id); })).take_value());
+                const bool authorized = co_await localRuntime.sessions.authorized(context.db(), state.authorization->sessionId);
                 if (!authorized) {
-                    ((co_await context.run_blocking([service = localRuntime.sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kPermissionRevoked); })).take_value());
+                    (void)co_await localRuntime.sessions.close(context.db(), state.authorization->userId, state.authorization->sessionId, SessionEnd::kPermissionRevoked);
                     closeChannelSession(state, DesktopCloseReason::kPermissionRevoked);
                     socket.abort();
                     co_return;
@@ -198,13 +198,9 @@ ruvia::task<void> exchangeChannel(Context& context, Connection& socket, protocol
     }
     auto& runtime = context.template worker_state<ServerRuntime>();
     if (source == protocol::ChannelSource::kBrowser) {
-        state.authorization = ((co_await context.run_blocking([service = runtime.sessions, user = context.template request_state<UserIdentity>(), message = *open] {
-                                   return service.consumeBrowser(user, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
-                               })).take_value());
+        state.authorization = co_await runtime.sessions.consumeBrowser(context.db(), context.template request_state<UserIdentity>(), open->session_id(), open->channel_id(), open->channel_open().purpose(), open->channel_open().ticket());
     } else {
-        state.authorization = ((co_await context.run_blocking([service = runtime.sessions, device = context.template request_state<DeviceIdentity>(), message = *open] {
-                                   return service.consumeAgent(device, message.session_id(), message.channel_id(), message.channel_open().purpose(), message.channel_open().ticket());
-                               })).take_value());
+        state.authorization = co_await runtime.sessions.consumeAgent(context.db(), context.template request_state<DeviceIdentity>(), open->session_id(), open->channel_id(), open->channel_open().purpose(), open->channel_open().ticket());
     }
     open->Clear(); // The live runtime does not retain bearer tickets.
     if (!state.authorization || scope.stop_requested()) {
@@ -317,7 +313,7 @@ ruvia::task<void> channel(Context& context, Connection& socket, protocol::Channe
             if (state.authorization) {
                 auto& runtime = context.template worker_state<ServerRuntime>();
                 try {
-                    ((co_await context.run_blocking([service = runtime.sessions, auth = *state.authorization] { service.close(auth.userId, auth.sessionId, SessionEnd::kFailure); })).take_value());
+                    (void)co_await runtime.sessions.close(context.db(), state.authorization->userId, state.authorization->sessionId, SessionEnd::kFailure);
                 } catch (const std::exception&) {
                     // A later permission check, reconnect or gateway recovery closes the persisted session.
                 }

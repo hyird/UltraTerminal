@@ -1,53 +1,35 @@
 #pragma once
 #include <cstdint>
+#include <db_executor.h>
 #include <optional>
 #include <string>
-#include <string_view>
+#include <task.h>
 #include <utility>
 #include <vector>
 
-#include "modules/database/database.config.h"
-#include "modules/database/database.service.h"
 #include "modules/identity/identity.service.h"
 #include "modules/sessions/session.types.h"
+#include "telegram.types.h"
 
 namespace ultraterimal::server {
-struct TelegramState {
-    std::string botUsername;
-    std::string telegramId;
-};
-struct TelegramConfig {
-    std::string token, username, webhookSecret, generation;
-};
-struct ApprovalInfo {
-    std::string id, deviceId, state;
-    bool writeControl = false;
-    std::int64_t expiresAt = 0;
-};
-struct ApprovalDispatch {
-    ApprovalInfo approval;
-    std::string botToken, username, deviceName;
-    std::int64_t requesterTelegramId = 0;
-};
 class TelegramService {
   public:
-    TelegramService(DatabaseConfig database, std::string key) : database_(std::move(database)), key_(std::move(key)) {}
-    TelegramState state(std::string_view userId) const;
-    std::optional<TelegramConfig> configuration() const;
-    bool configure(const UserIdentity& actor, const TelegramConfig& config) const;
-    bool disable(const UserIdentity& actor) const;
-    std::optional<std::string> beginBinding(const UserIdentity& user) const;
-    std::optional<std::string> bind(std::string_view generation, std::string_view token, std::int64_t telegramId) const;
-    void unbind(const UserIdentity& user) const;
-    std::optional<ApprovalDispatch> requestApproval(const UserIdentity& user, std::string_view deviceId, bool writeControl) const;
-    void deliveryFailed(std::string_view id) const;
-    std::optional<std::string> decide(std::string_view generation, std::string_view id, std::int64_t telegramId, bool accept) const;
-    std::vector<ApprovalInfo> approvals(const UserIdentity& user) const;
-    void cancel(const UserIdentity& user, std::string_view id) const;
-    static bool consumeApproval(DatabaseTransaction& tx, const SessionRequest& request, std::int64_t revision);
+    explicit TelegramService(std::string key = {}) : key_(std::move(key)) {}
+    ruvia::task<TelegramState> state(ruvia::db_executor db, std::string userId) const;
+    ruvia::task<std::optional<TelegramConfig>> configuration(ruvia::db_executor db) const;
+    ruvia::task<bool> configure(ruvia::db_executor db, UserIdentity actor, TelegramConfig config) const;
+    ruvia::task<bool> disable(ruvia::db_executor db, UserIdentity actor) const;
+    ruvia::task<std::optional<std::string>> beginBinding(ruvia::db_executor db, UserIdentity user) const;
+    ruvia::task<std::optional<std::string>> bind(ruvia::db_executor db, std::string generation, std::string token, std::int64_t telegramId) const;
+    ruvia::task<void> unbind(ruvia::db_executor db, UserIdentity user) const;
+    ruvia::task<std::optional<ApprovalDispatch>> requestApproval(ruvia::db_executor db, UserIdentity user, std::string deviceId, bool writeControl) const;
+    ruvia::task<void> deliveryFailed(ruvia::db_executor db, std::string id) const;
+    ruvia::task<std::optional<std::string>> decide(ruvia::db_executor db, std::string generation, std::string id, std::int64_t telegramId, bool accept) const;
+    ruvia::task<std::vector<ApprovalInfo>> approvals(ruvia::db_executor db, UserIdentity user) const;
+    ruvia::task<void> cancel(ruvia::db_executor db, UserIdentity user, std::string id) const;
+    static ruvia::task<bool> consumeApproval(ruvia::db_transaction& tx, const SessionRequest& request, std::int64_t revision);
 
   private:
-    DatabaseConfig database_;
     std::string key_;
 };
 } // namespace ultraterimal::server

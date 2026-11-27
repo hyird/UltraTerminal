@@ -7,7 +7,7 @@
 namespace ultraterimal::server {
 inline ruvia::task<void> revalidateAccess(ruvia::context& context, std::string userId = {}) {
     auto& runtime = context.worker_state<ServerRuntime>();
-    const auto ended = ((co_await context.run_blocking([service = runtime.sessions, userId] { return service.revalidate(userId); })).take_value());
+    const auto ended = co_await runtime.sessions.revalidate(context.db(), userId);
     for (const auto& session : ended) {
         closeDesktopSession(runtime, session.id, DesktopCloseReason::kPermissionRevoked);
         sendDeviceSessionClose(runtime, session.deviceId, session.id, "permission_revoked");

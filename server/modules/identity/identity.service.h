@@ -1,67 +1,40 @@
 #pragma once
 #include <cstdint>
+#include <db_executor.h>
 #include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <task.h>
 #include <utility>
 #include <vector>
 
-#include "modules/database/database.config.h"
+#include "identity.types.h"
+
 namespace ultraterimal::server {
-class DatabaseTransaction;
-struct UserIdentity {
-    std::string id;
-    std::string username;
-    std::string role = "user";
-    std::string loginHash;
-};
-enum class LoginError { kInvalidCredentials,
-                        kFactorRequired };
-struct LoginSession {
-    UserIdentity user;
-    std::string token;
-};
 std::string randomToken();
 std::string tokenHash(std::string_view token);
 bool validToken(std::string_view token);
-struct AccountInfo {
-    std::string id, username, role;
-    bool disabled = false;
-    bool totp = false;
-};
-struct SecurityInfo {
-    bool totp = false;
-    int recoveryCodes = 0;
-};
-struct TelegramVerification {
-    std::string id;
-    std::int64_t telegramId = 0;
-};
-struct SecurityChange {
-    std::string secret;
-    std::vector<std::string> recoveryCodes;
-};
+
 class IdentityService {
   public:
-    explicit IdentityService(DatabaseConfig database, std::string key = {}) : database_(std::move(database)), key_(std::move(key)) {}
-    void bootstrap(std::string_view username, std::string_view password) const;
-    std::expected<LoginSession, LoginError> login(std::string_view username, std::string_view password, std::string_view code = {}) const;
-    std::optional<UserIdentity> authenticate(std::string_view token) const;
-    void logout(std::string_view token) const;
-    SecurityInfo security(std::string_view userId) const;
-    std::optional<SecurityChange> changeSecurity(const UserIdentity& user, std::string_view action, std::string_view password, std::string_view code, std::string_view newPassword = {}, std::string_view telegramProof = {}) const;
-    std::optional<TelegramVerification> requestTelegramVerification(const UserIdentity& user, std::string_view generation) const;
-    std::optional<std::string> decideTelegramVerification(std::string_view generation, std::string_view id, std::int64_t telegramId, bool accept) const;
-    void failTelegramVerification(std::string_view id) const;
-    bool verifyConnectionFactor(DatabaseTransaction& tx, const UserIdentity& user, std::string_view code) const;
-    bool reauthenticate(const UserIdentity& user, std::string_view password, std::string_view code, std::string_view telegramProof = {}) const;
-    std::optional<std::vector<AccountInfo>> accounts(const UserIdentity& actor) const;
-    bool createAccount(const UserIdentity& actor, std::string_view username, std::string_view password, std::string_view role) const;
-    bool updateAccount(const UserIdentity& actor, std::string_view id, std::string_view role, bool disabled, std::string_view password) const;
+    explicit IdentityService(std::string key = {}) : key_(std::move(key)) {}
+    ruvia::task<void> bootstrap(ruvia::db_executor db, std::string username, std::string password) const;
+    ruvia::task<std::expected<LoginSession, LoginError>> login(ruvia::db_executor db, std::string username, std::string password, std::string code = {}) const;
+    ruvia::task<std::optional<UserIdentity>> authenticate(ruvia::db_executor db, std::string token) const;
+    ruvia::task<void> logout(ruvia::db_executor db, std::string token) const;
+    ruvia::task<SecurityInfo> security(ruvia::db_executor db, std::string userId) const;
+    ruvia::task<std::optional<SecurityChange>> changeSecurity(ruvia::db_executor db, UserIdentity user, std::string action, std::string password, std::string code, std::string newPassword = {}, std::string telegramProof = {}) const;
+    ruvia::task<std::optional<TelegramVerification>> requestTelegramVerification(ruvia::db_executor db, UserIdentity user, std::string generation) const;
+    ruvia::task<std::optional<std::string>> decideTelegramVerification(ruvia::db_executor db, std::string generation, std::string id, std::int64_t telegramId, bool accept) const;
+    ruvia::task<void> failTelegramVerification(ruvia::db_executor db, std::string id) const;
+    ruvia::task<bool> verifyConnectionFactor(ruvia::db_transaction& tx, UserIdentity user, std::string code) const;
+    ruvia::task<bool> reauthenticate(ruvia::db_executor db, UserIdentity user, std::string password, std::string code, std::string telegramProof = {}) const;
+    ruvia::task<std::optional<std::vector<AccountInfo>>> accounts(ruvia::db_executor db, UserIdentity actor) const;
+    ruvia::task<bool> createAccount(ruvia::db_executor db, UserIdentity actor, std::string username, std::string password, std::string role) const;
+    ruvia::task<bool> updateAccount(ruvia::db_executor db, UserIdentity actor, std::string id, std::string role, bool disabled, std::string password) const;
 
   private:
-    DatabaseConfig database_;
     std::string key_;
 };
 } // namespace ultraterimal::server

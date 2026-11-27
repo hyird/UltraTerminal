@@ -22,10 +22,6 @@ target_compile_options(protocol-desktop-optimization-tests PRIVATE
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
 add_test(NAME protocol.desktop_optimization COMMAND protocol-desktop-optimization-tests)
 set_tests_properties(protocol.desktop_optimization PROPERTIES LABELS unit)
-add_executable(protocol-regions-tests regions.cpp)
-target_link_libraries(protocol-regions-tests PRIVATE ultraterimal::protocol)
-add_test(NAME protocol.regions COMMAND protocol-regions-tests)
-set_tests_properties(protocol.regions PROPERTIES LABELS unit)
 target_link_libraries(protocol-desktop-tests PRIVATE ultraterimal::protocol)
 target_compile_options(protocol-desktop-tests PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"

@@ -6,14 +6,16 @@
 #include <mferror.h>
 #include <mfidl.h>
 #include <mftransform.h>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include <windows.h>
 
-#include <boost/json.hpp>
 #include <wels/codec_api.h>
 #include <wrl/client.h>
 
@@ -36,9 +38,40 @@ struct Activations {
         CoTaskMemFree(items);
     }
 };
-boost::json::object encodeFrames() {
+std::string jsonQuote(std::string_view text) {
+    std::string out = "\"";
+    for (const unsigned char ch : text) {
+        if (ch == '"') {
+            out += "\\\"";
+        } else if (ch == '\\') {
+            out += "\\\\";
+        } else if (ch == '\n') {
+            out += "\\n";
+        } else if (ch == '\r') {
+            out += "\\r";
+        } else if (ch == '\t') {
+            out += "\\t";
+        } else if (ch >= 0x20u) {
+            out.push_back(static_cast<char>(ch));
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+struct AdapterReport {
+    bool decoded = false;
+    unsigned framesVerified = 0;
+    double meanMs = 0;
+    double maxMs = 0;
+    std::uint64_t outputBytes = 0;
+    unsigned hardwareFrames = 0;
+    std::string error;
+    bool hasHresult = false;
+    std::uint32_t hresult = 0;
+};
+AdapterReport encodeFrames() {
     using namespace ultraterimal::agent;
-    boost::json::object report{{"decoded", false}};
+    AdapterReport report;
     try {
         VideoEncoder encoder({1280, 720, 4000000, 60});
         unsigned hardwareFrames = 0;
@@ -107,35 +140,33 @@ boost::json::object encodeFrames() {
             maximum = std::max(maximum, elapsed);
             bytes += encoded->annexB.size();
             hardwareFrames += encoder.hardware() ? 1 : 0;
-            report["frames_verified"] = frame + 1;
+            report.framesVerified = frame + 1;
             if (encoder.encode(bgra, 1280 * 4, frame * 16667ULL, false)) {
                 throw std::runtime_error("Duplicate hardware timestamp accepted");
             }
         }
-        report["decoded"] = true;
-        report["mean_encode_decode_ms"] = total / 120;
-        report["max_encode_decode_ms"] = maximum;
-        report["output_bytes"] = bytes;
-        report["single_frame_without_drain"] = true;
-        report["hardware_frames"] = hardwareFrames;
-        report["software_frames"] = 120 - hardwareFrames;
+        report.decoded = true;
+        report.meanMs = total / 120;
+        report.maxMs = maximum;
+        report.outputBytes = bytes;
+        report.hardwareFrames = hardwareFrames;
     } catch (const std::system_error& error) {
-        report["error"] = error.what();
-        report["hresult"] = static_cast<std::uint32_t>(error.code().value());
+        report.error = error.what();
+        report.hasHresult = true;
+        report.hresult = static_cast<std::uint32_t>(error.code().value());
     } catch (const std::exception& error) {
-        report["error"] = error.what();
+        report.error = error.what();
     }
     return report;
 }
-boost::json::object inspect(MediaRuntime& runtime, const GUID& codec) {
+std::string inspect(MediaRuntime& runtime, const GUID& codec) {
     MFT_REGISTER_TYPE_INFO input{MFMediaType_Video, MFVideoFormat_NV12};
     MFT_REGISTER_TYPE_INFO output{MFMediaType_Video, codec};
     Activations candidates;
     const auto result = runtime.enumerate(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
                                           &input, &output, &candidates.items, &candidates.count);
-    boost::json::array activations;
-
-    boost::json::array timeouts;
+    std::vector<std::uint32_t> activations;
+    std::vector<bool> timeouts;
     if (SUCCEEDED(result)) {
         for (UINT32 index = 0; index < candidates.count; ++index) {
             Microsoft::WRL::ComPtr<IMFTransform> transform;
@@ -161,18 +192,47 @@ boost::json::object inspect(MediaRuntime& runtime, const GUID& codec) {
             }
         }
     }
-    return {{"enumeration_hresult", static_cast<std::uint32_t>(result)}, {"candidates", candidates.count}, {"activation_hresult", std::move(activations)}, {"idle_timeout_checks", std::move(timeouts)}};
+    std::ostringstream out;
+    out << "{\"enumeration_hresult\":" << static_cast<std::uint32_t>(result) << ",\"candidates\":" << candidates.count << ",\"activation_hresult\":[";
+    for (std::size_t i = 0; i < activations.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        out << activations[i];
+    }
+    out << "],\"idle_timeout_checks\":[";
+    for (std::size_t i = 0; i < timeouts.size(); ++i) {
+        if (i) {
+            out << ',';
+        }
+        out << (timeouts[i] ? "true" : "false");
+    }
+    out << "]}";
+    return out.str();
 }
 } // namespace
 int main() {
     MediaRuntime runtime;
-    boost::json::object report{{"media_started", runtime.started}, {"startup_hresult", static_cast<std::uint32_t>(runtime.status)}};
+    std::ostringstream out;
+    out << "{\"media_started\":" << (runtime.started ? "true" : "false") << ",\"startup_hresult\":" << static_cast<std::uint32_t>(runtime.status);
     if (runtime.started) {
-        report["h264"] = inspect(runtime, MFVideoFormat_H264);
-        report["h265"] = inspect(runtime, MFVideoFormat_HEVC);
+        out << ",\"h264\":" << inspect(runtime, MFVideoFormat_H264) << ",\"h265\":" << inspect(runtime, MFVideoFormat_HEVC);
     }
-    report["adapter"] = encodeFrames();
-    boost::json::array optional;
+    const auto adapter = encodeFrames();
+    out << ",\"adapter\":{\"decoded\":" << (adapter.decoded ? "true" : "false") << ",\"frames_verified\":" << adapter.framesVerified;
+    if (adapter.decoded) {
+        out << ",\"mean_encode_decode_ms\":" << adapter.meanMs << ",\"max_encode_decode_ms\":" << adapter.maxMs
+            << ",\"output_bytes\":" << adapter.outputBytes << ",\"single_frame_without_drain\":true,\"hardware_frames\":" << adapter.hardwareFrames
+            << ",\"software_frames\":" << (120 - adapter.hardwareFrames);
+    }
+    if (!adapter.error.empty()) {
+        out << ",\"error\":" << jsonQuote(adapter.error);
+    }
+    if (adapter.hasHresult) {
+        out << ",\"hresult\":" << adapter.hresult;
+    }
+    out << "},\"optional_codecs\":[";
+    bool firstOptional = true;
     for (const auto preferred : {ultraterimal::wire::HEVC, ultraterimal::wire::AV1}) {
         using namespace ultraterimal;
         std::vector<std::uint8_t> pixels(1280 * 720 * 4, 90);
@@ -182,13 +242,18 @@ int main() {
         const auto selected = frame && frame->codec.starts_with("hev1.") ? wire::HEVC : frame && frame->codec.starts_with("av01.") ? wire::AV1
                                                                                                                                    : wire::AVC;
         const auto valid = frame && agent::verifyVideoBaseline(selected, frame->annexB, 1280, 720);
-        optional.push_back(boost::json::object{{"requested", wire::VideoCodec_Name(preferred)}, {"codec", frame ? frame->codec : "failed"}, {"hardware", encoder.hardware()}, {"decoded", valid}, {"first_frame_ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()}});
+        if (!firstOptional) {
+            out << ',';
+        }
+        firstOptional = false;
+        out << "{\"requested\":" << jsonQuote(wire::VideoCodec_Name(preferred)) << ",\"codec\":" << jsonQuote(frame ? frame->codec : "failed")
+            << ",\"hardware\":" << (encoder.hardware() ? "true" : "false") << ",\"decoded\":" << (valid ? "true" : "false")
+            << ",\"first_frame_ms\":" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() << '}';
         if (!valid) {
             throw std::runtime_error("Optional hardware codec or fallback is not independently decodable");
         }
     }
-    report["optional_codecs"] = std::move(optional);
-    report["agent_hardware_path_implemented"] = true;
-    std::cout << boost::json::serialize(report) << '\n';
-    return report.at("adapter").as_object().at("decoded").as_bool() ? 0 : 1;
+    out << "],\"agent_hardware_path_implemented\":true}";
+    std::cout << out.str() << '\n';
+    return adapter.decoded ? 0 : 1;
 }

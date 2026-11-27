@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "modules/database/database.config.h"
+#include "config/database.config.h"
 namespace ultraterimal::server {
 struct ServerConfig {
     std::string address = "127.0.0.1";

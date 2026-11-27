@@ -19,13 +19,13 @@ class DesktopPipelineBuffer {
         return static_cast<std::uint32_t>(std::clamp<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(), 0, 60000000));
     }
     static std::optional<wire::DesktopPipelineSample> sample(const wire::Envelope& message, wire::DesktopPipelineSample::Source source) {
-        if (!message.has_video_frame() && !message.has_desktop_region_update() && !message.has_video_refinement()) {
+        if (!message.has_video_frame()) {
             return std::nullopt;
         }
         wire::DesktopPipelineSample result;
         result.set_generation(message.generation());
         result.set_frame_id(message.frame_id());
-        result.set_batch_id(message.has_video_refinement() ? message.video_refinement().batch_id() : 0);
+        result.set_batch_id(0);
         result.set_source(source);
         return result;
     }

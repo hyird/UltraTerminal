@@ -1,12 +1,12 @@
 #pragma once
+#include <db_executor.h>
 #include <expected>
 #include <optional>
 #include <string>
-#include <string_view>
+#include <task.h>
 #include <utility>
 #include <vector>
 
-#include "modules/database/database.config.h"
 #include "modules/devices/device.service.h"
 #include "modules/identity/identity.service.h"
 #include "session.types.h"
@@ -14,24 +14,23 @@
 namespace ultraterimal::server {
 class SessionService {
   public:
-    explicit SessionService(DatabaseConfig database, std::string key = {}) : database_(std::move(database)), key_(std::move(key)) {}
-    std::expected<IssuedSession, SessionFailure> create(const SessionRequest& request) const;
-    std::optional<ChannelAuthorization> consumeBrowser(const UserIdentity& user, std::string_view sessionId, std::string_view channelId, wire::ChannelPurpose purpose, std::string_view ticket) const;
-    std::optional<ChannelAuthorization> consumeAgent(const DeviceIdentity& device, std::string_view sessionId, std::string_view channelId, wire::ChannelPurpose purpose, std::string_view ticket) const;
-    bool close(std::string_view userId, std::string_view sessionId, SessionEnd reason) const;
+    explicit SessionService(std::string key = {}) : key_(std::move(key)) {}
+    ruvia::task<std::expected<IssuedSession, SessionFailure>> create(ruvia::db_executor db, SessionRequest request) const;
+    ruvia::task<std::optional<ChannelAuthorization>> consumeBrowser(ruvia::db_executor db, UserIdentity user, std::string sessionId, std::string channelId, wire::ChannelPurpose purpose, std::string ticket) const;
+    ruvia::task<std::optional<ChannelAuthorization>> consumeAgent(ruvia::db_executor db, DeviceIdentity device, std::string sessionId, std::string channelId, wire::ChannelPurpose purpose, std::string ticket) const;
+    ruvia::task<bool> close(ruvia::db_executor db, std::string userId, std::string sessionId, SessionEnd reason) const;
     // Re-checks grants for an established channel; callers must end its live I/O on false.
-    std::vector<SessionInfo> revalidate(std::string_view userId = {}) const;
-    bool authorized(std::string_view sessionId) const;
-    std::optional<SessionInfo> get(std::string_view userId, std::string_view sessionId) const;
-    bool closeForDevice(const DeviceIdentity& device, std::string_view sessionId, SessionEnd reason) const;
-    void disconnectDevice(const DeviceIdentity& device) const;
-    std::vector<std::string> revokeDevice(std::string_view deviceId) const;
+    ruvia::task<std::vector<SessionInfo>> revalidate(ruvia::db_executor db, std::string userId = {}) const;
+    ruvia::task<bool> authorized(ruvia::db_executor db, std::string sessionId) const;
+    ruvia::task<std::optional<SessionInfo>> get(ruvia::db_executor db, std::string userId, std::string sessionId) const;
+    ruvia::task<bool> closeForDevice(ruvia::db_executor db, DeviceIdentity device, std::string sessionId, SessionEnd reason) const;
+    ruvia::task<void> disconnectDevice(ruvia::db_executor db, DeviceIdentity device) const;
+    ruvia::task<std::vector<std::string>> revokeDevice(ruvia::db_executor db, std::string deviceId) const;
     // Startup only, while holding the single-gateway database lease.
-    void recoverAfterRestart() const;
+    ruvia::task<void> recoverAfterRestart(ruvia::db_executor db) const;
 
   private:
-    std::optional<ChannelAuthorization> consume(const UserIdentity* user, const DeviceIdentity* device, std::string_view sessionId, std::string_view channelId, wire::ChannelPurpose purpose, std::string_view ticket) const;
-    DatabaseConfig database_;
+    ruvia::task<std::optional<ChannelAuthorization>> consume(ruvia::db_executor db, std::optional<UserIdentity> user, std::optional<DeviceIdentity> device, std::string sessionId, std::string channelId, wire::ChannelPurpose purpose, std::string ticket) const;
     std::string key_;
 };
 } // namespace ultraterimal::server

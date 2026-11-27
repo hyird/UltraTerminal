@@ -131,25 +131,8 @@ class DesktopSession {
     void logDiagnostics(std::string_view event) const;
     void logCadence(std::chrono::steady_clock::time_point now);
     void optimizationBarrier(const wire::Envelope& message);
-    void completeRefinement();
-    enum class RefinementAckResult { kForward,
-                                     kIgnore,
-                                     kInvalid };
-    RefinementAckResult refinementAck(const wire::Envelope& message);
-    struct RefinementRecord {
-        DesktopFrameKey key;
-        std::chrono::steady_clock::time_point sent;
-    };
-    // Sent auxiliary lease: only exact cleanup ACK or session end completes it.
-    // Config/frame retirement and timeout must never manufacture new credit.
-    std::optional<RefinementRecord> outstandingRefinement_;
-    std::array<DesktopFrameKey, 128> retiredRefinements_{};
-    std::size_t nextRetiredRefinement_ = 0;
-    DesktopFrameKey evictedRefinement_{};
-    std::uint64_t pausedRefinementGeneration_ = 0;
     std::uint32_t browserOptimizationRequest_ = 0, agentOptimizationCapability_ = 0;
     bool optimizationActive_ = false;
-    DesktopFrameKey cumulativeVideoStages_{};
     ruvia::worker_ref worker_;
     std::shared_ptr<DesktopBudget> global_;
     std::shared_ptr<DesktopBudget> local_ = std::make_shared<DesktopBudget>(32 * 1024 * 1024);

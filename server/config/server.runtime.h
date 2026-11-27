@@ -45,10 +45,9 @@ struct ServerRuntime {
     explicit ServerRuntime(ServerConfig value, std::shared_ptr<ServerSharedState> sharedState = std::make_shared<ServerSharedState>())
         : config(std::move(value)),
           shared(sharedState ? std::move(sharedState) : std::make_shared<ServerSharedState>()),
-          identities(config.database, config.securityKey),
-          devices(config.database),
-          sessions(config.database, config.securityKey),
-          telegram(config.database, config.securityKey) {}
+          identities(config.securityKey),
+          sessions(config.securityKey),
+          telegram(config.securityKey) {}
 };
 
 struct DeviceOnlineState {

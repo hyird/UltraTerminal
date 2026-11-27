@@ -99,33 +99,6 @@ wire::Envelope video(std::uint64_t sequence, std::uint64_t frame, std::uint64_t 
     message.mutable_video_frame()->set_timestamp_microseconds(frame);
     return message;
 }
-wire::Envelope refinement(std::uint64_t sequence = 4, std::uint64_t frame = 1, std::uint64_t batch = 1) {
-    auto message = configuration(sequence);
-    message.set_frame_id(frame);
-    message.set_base_frame_id(frame);
-    auto* detail = message.mutable_video_refinement();
-    detail->set_batch_id(batch);
-    detail->set_kind(batch ? wire::STATIC_DETAIL : wire::UNSPECIFIED);
-    auto* patch = detail->add_patches();
-    patch->mutable_destination()->set_width(128);
-    patch->mutable_destination()->set_height(64);
-    std::string png("\211PNG\r\n\032\n", 8);
-    png.resize(33);
-    png[11] = 13;
-    png.replace(12, 4, "IHDR");
-    png[19] = static_cast<char>(128);
-    png[23] = 64;
-    patch->set_png(png); // Protocol header fixture; no actual decoding here.
-    return message;
-}
-wire::Envelope refinementAck(std::uint64_t sequence = 3, std::uint64_t frame = 1, std::uint64_t batch = 1) {
-    auto message = refresh(sequence);
-    message.set_generation(1);
-    message.set_frame_id(frame);
-    message.mutable_desktop_refinement_ack()->set_batch_id(batch);
-    message.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::APPLIED);
-    return message;
-}
 wire::Envelope pipelineReport(std::uint64_t sequence = 2, std::uint64_t frame = 1) {
     auto message = refresh(sequence);
     auto* sample = message.mutable_desktop_pipeline_report()->add_samples();
@@ -150,7 +123,6 @@ wire::DesktopStageTiming workerStages() {
     timing.set_gpu_sync_wait_microseconds(4);
     timing.set_readback_ready_microseconds(5);
     timing.set_prepare_cpu_microseconds(6);
-    timing.set_png_encode_microseconds(7);
     timing.set_video_encode_microseconds(0);
     return timing;
 }
@@ -210,56 +182,37 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
             require(writers[2].messages.size() == 3 && writers[0].messages.size() == 1);
             auto frame = video(4, 2);
             *frame.mutable_video_frame()->mutable_stage_timing() = workerStages();
-            auto dynamic = refinement(5, 2);
-            dynamic.mutable_video_refinement()->set_kind(wire::DYNAMIC_DETAIL);
-            *dynamic.mutable_video_refinement()->mutable_stage_timing() = workerStages();
             require(co_await session.forward(states[3].endpoint, frame));
-            require(co_await session.forward(states[3].endpoint, dynamic));
             require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::sleep_status::elapsed);
             for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
                 require(pipeline.stages[index].summary().samples == 1);
             }
             require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kWorkerQueue)].summary().meanMicroseconds == 0);
-            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kPngEncode)].summary().meanMicroseconds == 7);
-            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == writes.samples + 2);
-            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoQueueWait)].summary().samples == 4);
-            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoAdmission)].summary().samples == 4);
-            require(writers[2].messages.size() == 5);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == writes.samples + 1);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoQueueWait)].summary().samples == 3);
+            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoAdmission)].summary().samples == 3);
+            require(writers[2].messages.size() == 4);
             require(writers[2].messages[3].SerializeAsString() == frame.SerializeAsString());
-            require(writers[2].messages[4].SerializeAsString() == dynamic.SerializeAsString());
             auto report = pipelineReport(2, 2);
             report.mutable_desktop_pipeline_report()->clear_samples();
-            for (const auto batch : {0u, 1u}) {
-                auto* ipc = report.mutable_desktop_pipeline_report()->add_samples();
-                ipc->set_generation(1);
-                ipc->set_frame_id(2);
-                ipc->set_batch_id(batch);
-                ipc->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
-                ipc->set_ipc_write_microseconds(0);
-                auto* native = report.mutable_desktop_pipeline_report()->add_samples();
-                native->set_generation(1);
-                native->set_frame_id(2);
-                native->set_batch_id(batch);
-                native->set_source(wire::DesktopPipelineSample::AGENT_RELAY);
-                native->set_send_queue_wait_microseconds(0);
-                native->set_native_write_microseconds(0);
-            }
+            auto* ipc = report.mutable_desktop_pipeline_report()->add_samples();
+            ipc->set_generation(1);
+            ipc->set_frame_id(2);
+            ipc->set_batch_id(0);
+            ipc->set_source(wire::DesktopPipelineSample::DESKTOP_WORKER);
+            ipc->set_ipc_write_microseconds(0);
+            auto* native = report.mutable_desktop_pipeline_report()->add_samples();
+            native->set_generation(1);
+            native->set_frame_id(2);
+            native->set_batch_id(0);
+            native->set_source(wire::DesktopPipelineSample::AGENT_RELAY);
+            native->set_send_queue_wait_microseconds(0);
+            native->set_native_write_microseconds(0);
             require(co_await session.forward(states[1].endpoint, report));
             for (const auto stage : {server::DesktopStage::kWorkerIpcWrite, server::DesktopStage::kRelaySendQueueWait, server::DesktopStage::kRelayNativeWrite}) {
                 const auto summary = pipeline.stages[static_cast<std::size_t>(stage)].summary();
-                require(summary.samples == 2 && summary.meanMicroseconds == 0);
+                require(summary.samples == 1 && summary.meanMicroseconds == 0);
             }
-            require(co_await session.forward(states[0].endpoint, refinementAck(3, 2)));
-            auto detail = refinement(6, 2, 2);                                                        // A separate static worker invocation on the same base.
-            detail.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(128); // Not the already-refined dynamic tile.
-            *detail.mutable_video_refinement()->mutable_stage_timing() = workerStages();
-            require(co_await session.forward(states[3].endpoint, detail));
-            require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(20)) == ruvia::sleep_status::elapsed);
-            for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
-                require(pipeline.stages[index].summary().samples == 2);
-            }
-            require(pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kServerVideoWsWrite)].summary().samples == 5);
-            require(writers[2].messages.size() == 6 && writers[2].messages.back().SerializeAsString() == detail.SerializeAsString());
             session.close();
             scopeJoined = true;
             co_await scope.join();
@@ -286,190 +239,11 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
         }
     }
 }
-ruvia::task<void> exerciseDynamicStagePresence(ruvia::worker_ref worker) {
-    auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
-    for (int presence = 0; presence < 6; ++presence) {
-        server::DesktopSession session(worker, budget);
-        auto endpoints = co_await pair(session);
-        co_await requestOptimization(session, endpoints);
-        require(co_await session.forward(endpoints[3], configuration()));
-        require(bool(co_await endpoints[2]->receive({})));
-        auto initial = video(3, 1);
-        *initial.mutable_video_frame()->mutable_stage_timing() = workerStages();
-        require(co_await session.forward(endpoints[3], initial));
-        require(bool(co_await endpoints[2]->receive({})));
-        // Prior cumulative stages cannot suppress a later frame with missing,
-        // empty or incomplete worker diagnostics, including after a barrier.
-        const auto generation = presence >= 3 ? 2u : 1u;
-        const auto frameId = presence >= 3 ? 1u : 2u;
-        if (presence >= 3) {
-            require(co_await session.forward(endpoints[3], configuration(4, generation)));
-            require(bool(co_await endpoints[2]->receive({})));
-        }
-        auto frame = video(5, frameId, generation);
-        if (presence % 3 == 1) {
-            (void)frame.mutable_video_frame()->mutable_stage_timing();
-        } else if (presence % 3 == 2) {
-            frame.mutable_video_frame()->mutable_stage_timing()->set_worker_queue_microseconds(0);
-        }
-        require(co_await session.forward(endpoints[3], frame));
-        require(bool(co_await endpoints[2]->receive({})));
-        auto dynamic = refinement(6, frameId);
-        dynamic.set_generation(generation);
-        dynamic.mutable_video_refinement()->set_kind(wire::DYNAMIC_DETAIL);
-        *dynamic.mutable_video_refinement()->mutable_stage_timing() = workerStages();
-        require(co_await session.forward(endpoints[3], dynamic));
-        auto delivered = co_await endpoints[2]->receive({});
-        require(delivered && delivered->bytes() == *protocol::encodeMessage(dynamic));
-        delivered.reset();
-        const auto& stages = session.diagnostics().pipeline.stages;
-        for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
-            require(stages[index].summary().samples == (presence % 3 == 2 && index == 0 ? 3u : 2u));
-        }
-        require(stages[0].summary().meanMicroseconds == 0 && budget->used == 0);
-    }
-}
-ruvia::task<void> exerciseRefinementCleanup(ruvia::worker_ref worker) {
-    auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
-    for (const auto status : {wire::DesktopRefinementAck::APPLIED, wire::DesktopRefinementAck::SUPERSEDED}) {
-        for (const auto contract : {2u, 0u, 3u}) {
-            server::DesktopSession session(worker, budget);
-            auto endpoints = co_await pair(session);
-            co_await requestOptimization(session, endpoints);
-            require(co_await session.forward(endpoints[3], configuration()));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], video(3, 1)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], refinement()));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], video(5, 2))); // Submission retired; cleanup is still outstanding.
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], configuration(6, 2, contract)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], video(7, 1, 2)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], configuration(8, 3, contract)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], video(9, 1, 3)));
-            require(bool(co_await endpoints[2]->receive({})));
-            auto ack = refinementAck();
-            ack.mutable_desktop_refinement_ack()->set_status(status);
-            const auto beforeCleanup = session.diagnostics().forwardedMessages;
-            require(co_await session.forward(endpoints[0], ack));
-            auto delivered = co_await endpoints[1]->receive({});
-            require(delivered && delivered->bytes() == *protocol::encodeMessage(ack)); // Old generation routed unchanged, once.
-            delivered.reset();
-            require(session.diagnostics().forwardedMessages == beforeCleanup + 1);
-            require(session.diagnostics().refinementApplied == (status == wire::DesktopRefinementAck::APPLIED ? 1u : 0u) &&
-                    session.diagnostics().refinementSuperseded == (status == wire::DesktopRefinementAck::SUPERSEDED ? 1u : 0u) &&
-                    session.diagnostics().refinementAcknowledgement.summary().samples == 1);
-            require(session.diagnostics().feedbackMessages == 0 && session.diagnostics().videoGeneration == 3 && session.diagnostics().latestVideoFrame == 1);
-            auto detail = refinement(10, 1, contract == 2 ? 1 : 0);
-            detail.set_generation(3);
-            require(co_await session.forward(endpoints[3], detail)); // Only real cleanup reopens the single slot.
-            require(bool(co_await endpoints[2]->receive({})));
-            const auto beforeDuplicate = session.diagnostics().forwardedMessages;
-            ack.set_sequence(4);
-            require(co_await session.forward(endpoints[0], ack));
-            require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == beforeDuplicate);
-            require(session.diagnostics().refinementAcknowledgement.summary().samples == 1); // Duplicate cleanup cannot inflate application/age diagnostics.
-            require(co_await session.forward(endpoints[3], video(11, 2, 3)));
-            require(bool(co_await endpoints[2]->receive({})));
-            if (contract == 2) {
-                auto newAck = refinementAck(5);
-                newAck.set_generation(3);
-                require(co_await session.forward(endpoints[0], newAck)); // Duplicate old ACK did not complete the new lease.
-                delivered = co_await endpoints[1]->receive({});
-                require(delivered && delivered->bytes() == *protocol::encodeMessage(newAck));
-                delivered.reset();
-            }
-            require(session.diagnostics().feedbackMessages == 0 && session.diagnostics().latestVideoFrame == 2);
-        }
-    }
-    // No config (including fallback/high-version configs) may create another
-    // auxiliary batch while the old lease is unacknowledged. Future ACKs cannot
-    // impersonate the old tuple, even when generation-local IDs are identical.
-    for (const auto contract : {2u, 0u, 3u}) {
-        for (bool futureAck : {false, true}) {
-            server::DesktopSession session(worker, budget);
-            auto endpoints = co_await pair(session);
-            co_await requestOptimization(session, endpoints);
-            require(co_await session.forward(endpoints[3], configuration()));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], video(3, 1)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], refinement()));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], configuration(5, 2, contract)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], video(6, 1, 2)));
-            require(bool(co_await endpoints[2]->receive({})));
-            const auto messages = session.diagnostics().forwardedMessages;
-            if (futureAck) {
-                auto ack = refinementAck();
-                ack.set_generation(2);
-                require(!(co_await session.forward(endpoints[0], ack)));
-            } else {
-                auto detail = refinement(7, 1, contract == 2 ? 1 : 0);
-                detail.set_generation(2);
-                require(!(co_await session.forward(endpoints[3], detail)));
-            }
-            require(session.closeReason() == server::DesktopCloseReason::kInvalidFrameState);
-            require(session.diagnostics().forwardedMessages == messages && session.diagnostics().feedbackMessages == 0 && budget->used == 0);
-        }
-    }
-    // Timeout preserves the old-generation cleanup route and does not reset its
-    // deadline when configs change. An unfinished PNG lease still blocks a new
-    // batch, but ordinary video keeps flowing until cleanup arrives.
-    for (bool cleanup : {false, true}) {
-        server::DesktopSession session(worker, budget);
-        auto endpoints = co_await pair(session);
-        co_await requestOptimization(session, endpoints);
-        require(co_await session.forward(endpoints[3], configuration()));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], video(3, 1)));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], refinement()));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], configuration(5, 2)));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2100)) == ruvia::sleep_status::elapsed);
-        require(co_await session.forward(endpoints[3], video(6, 1, 2)));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], configuration(7, 3)));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], video(8, 1, 3)));
-        require(bool(co_await endpoints[2]->receive({})));
-        if (cleanup) {
-            auto ack = refinementAck();
-            ack.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::SUPERSEDED);
-            const auto messages = session.diagnostics().forwardedMessages;
-            require(co_await session.forward(endpoints[0], ack));
-            auto delivered = co_await endpoints[1]->receive({});
-            require(delivered && delivered->bytes() == *protocol::encodeMessage(ack));
-            delivered.reset();
-            require(session.diagnostics().forwardedMessages == messages + 1);
-            auto detail = refinement(9);
-            detail.set_generation(3);
-            require(co_await session.forward(endpoints[3], detail));
-            require(bool(co_await endpoints[2]->receive({})));
-            ack.set_sequence(4);
-            const auto beforeDuplicate = session.diagnostics().forwardedMessages;
-            require(co_await session.forward(endpoints[0], ack));
-            require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == beforeDuplicate);
-        } else {
-            auto detail = refinement(9);
-            detail.set_generation(3);
-            require(!(co_await session.forward(endpoints[3], detail))); // Timeout/config did not end the Browser lease.
-        }
-        require(session.diagnostics().feedbackMessages == 0 && budget->used == 0);
-    }
-}
 ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     {
         server::DesktopSession session(worker, budget);
-        auto endpoints = co_await pair(session, false); // Diagnostic ACKs do not require write control.
+        auto endpoints = co_await pair(session, false);
         co_await requestOptimization(session, endpoints);
         require(co_await session.forward(endpoints[1], pipelineReport())); // Report can overtake even config.
         require(session.diagnostics().pipeline.pendingSamples() == 1 && budget->used == 0);
@@ -491,22 +265,9 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         require(session.diagnostics().pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kVideoEncode)].summary().samples == 1);
         require(co_await session.forward(endpoints[1], pipelineReport(3))); // Rate-limited, not session-fatal.
         require(session.ready() && budget->used == 0 && session.diagnostics().pipeline.dropped == 1);
-        require(co_await session.forward(endpoints[3], refinement()));
+        require(co_await session.forward(endpoints[3], video(4, 2)));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], video(5, 2))); // Video never waits for PNG ACK.
-        require(bool(co_await endpoints[2]->receive({})));
-        auto ack = refinementAck();
-        ack.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::SUPERSEDED);
-        require(co_await session.forward(endpoints[0], ack)); // Retired base != latest frame is valid.
-        delivered = co_await endpoints[1]->receive({});
-        auto decoded = protocol::decodeMessage(delivered->bytes());
-        require(decoded && decoded->has_desktop_refinement_ack() && !decoded->has_quality_feedback());
-        delivered.reset();
-        const auto messages = session.diagnostics().forwardedMessages;
-        ack.set_sequence(4);
-        require(co_await session.forward(endpoints[0], ack));
-        require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == messages && session.diagnostics().feedbackMessages == 0);
-        auto feedback = refresh(5);
+        auto feedback = refresh(3);
         auto* quality = feedback.mutable_quality_feedback();
         quality->set_displayed_generation(1);
         quality->set_displayed_frame(2);
@@ -516,23 +277,21 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         quality->mutable_browser_timing()->set_canvas_submit_microseconds(30);
         require(co_await session.forward(endpoints[0], feedback));
         delivered = co_await endpoints[1]->receive({});
-        decoded = protocol::decodeMessage(delivered->bytes());
+        auto decoded = protocol::decodeMessage(delivered->bytes());
         require(decoded && !decoded->quality_feedback().has_browser_timing() && decoded->quality_feedback().decode_microseconds() == 123 && decoded->quality_feedback().queue_depth() == 3);
         delivered.reset();
         require(session.diagnostics().pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kBrowserDecode)].summary().samples == 1);
-        feedback.set_sequence(6);
+        feedback.set_sequence(4);
         quality->set_displayed_frame(3); // Unknown future canvas, stripped but unobserved.
         require(co_await session.forward(endpoints[0], feedback));
         require(bool(co_await endpoints[1]->receive({})));
         require(session.diagnostics().pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kBrowserDecode)].summary().samples == 1);
-        require(co_await session.forward(endpoints[3], configuration(6, 2)));
+        require(co_await session.forward(endpoints[3], configuration(5, 2)));
         require(bool(co_await endpoints[2]->receive({})));
-        ack.set_sequence(7); // Old generation duplicate is still a no-op.
-        require(co_await session.forward(endpoints[0], ack));
         require(session.ready() && budget->used == 0);
         session.logHealth();
     }
-    // Unknown higher versions and either missing declaration retain single-batch legacy.
+    // Unknown higher versions and either missing declaration do not activate v2.
     for (const auto contracts : std::array<std::array<std::uint32_t, 2>, 5>{{{0, 2}, {1, 2}, {3, 2}, {2, 0}, {2, 3}}}) {
         server::DesktopSession session(worker, budget);
         auto endpoints = co_await pair(session);
@@ -542,15 +301,15 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         require(bool(co_await endpoints[2]->receive({})));
         require(co_await session.forward(endpoints[3], video(3, 1)));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], refinement(4, 1, 0)));
-        require(bool(co_await endpoints[2]->receive({})));
         require(session.diagnostics().pipeline.stages[static_cast<std::size_t>(server::DesktopStage::kRelayNativeWrite)].summary().samples == 0);
         for (std::size_t index = 0; index <= static_cast<std::size_t>(server::DesktopStage::kVideoEncode); ++index) {
             require(session.diagnostics().pipeline.stages[index].summary().samples == 0);
         }
-        require(!(co_await session.forward(endpoints[3], refinement(5, 1, 0))));
+        auto timed = video(4, 2);
+        timed.mutable_video_frame()->mutable_stage_timing()->set_worker_queue_microseconds(0);
+        require(!(co_await session.forward(endpoints[3], timed)));
     }
-    for (int diagnostic = 0; diagnostic < 4; ++diagnostic) {
+    for (int diagnostic = 0; diagnostic < 3; ++diagnostic) {
         server::DesktopSession session(worker, budget);
         auto endpoints = co_await pair(session);
         require(co_await session.forward(endpoints[3], configuration()));
@@ -558,11 +317,9 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         require(co_await session.forward(endpoints[3], video(3, 1)));
         require(bool(co_await endpoints[2]->receive({})));
         if (diagnostic == 0) {
-            require(!(co_await session.forward(endpoints[0], refinementAck(2))));
-        } else if (diagnostic == 1) {
             require(co_await session.forward(endpoints[1], pipelineReport()));
             require(session.ready() && budget->used == 0 && session.diagnostics().pipeline.dropped == 1);
-        } else if (diagnostic == 2) {
+        } else if (diagnostic == 1) {
             auto feedback = refresh(2);
             feedback.mutable_quality_feedback()->set_displayed_generation(1);
             feedback.mutable_quality_feedback()->set_displayed_frame(1);
@@ -589,17 +346,15 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
             require(co_await session.forward(endpoints[3], configuration(3, 2)));
             require(bool(co_await endpoints[2]->receive({})));
         }
-        require(co_await session.forward(endpoints[3], video(4, 1, nextGeneration ? 2 : 1)));
-        require(bool(co_await endpoints[2]->receive({})));
-        auto detail = refinement(5);
-        detail.set_generation(nextGeneration ? 2 : 1);
-        require((co_await session.forward(endpoints[3], detail)) == nextGeneration);
+        auto frame = video(4, 1, nextGeneration ? 2 : 1);
+        frame.mutable_video_frame()->mutable_stage_timing()->set_video_encode_microseconds(0);
+        require((co_await session.forward(endpoints[3], frame)) == nextGeneration);
         if (nextGeneration) {
             require(bool(co_await endpoints[2]->receive({})));
         }
     }
-    // Bad correlation and wrong ingress directions cannot acquire credit.
-    for (int invalid = 0; invalid < 9; ++invalid) {
+    // Bad correlation and wrong ingress directions are rejected.
+    for (int invalid = 0; invalid < 4; ++invalid) {
         server::DesktopSession session(worker, budget);
         auto endpoints = co_await pair(session);
         co_await requestOptimization(session, endpoints);
@@ -607,43 +362,25 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         require(bool(co_await endpoints[2]->receive({})));
         require(co_await session.forward(endpoints[3], video(3, 1)));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], refinement()));
-        require(bool(co_await endpoints[2]->receive({})));
-        auto message = refinementAck();
+        wire::Envelope message;
         auto sender = endpoints[0];
         switch (invalid) {
         case 0:
-            message.set_frame_id(2);
-            break;
-        case 1:
-            message.mutable_desktop_refinement_ack()->set_batch_id(2);
-            break;
-        case 2:
-            message.mutable_desktop_refinement_ack()->set_status(wire::DesktopRefinementAck::UNSPECIFIED);
-            break;
-        case 3:
-            sender = endpoints[1];
-            break;
-        case 4:
-            message.set_channel_id("video");
-            sender = endpoints[2];
-            break;
-        case 5:
             message = pipelineReport(3);
             break; // Browser may never report Agent stages.
-        case 6:
-            message = pipelineReport(5);
+        case 1:
+            message = pipelineReport(4);
             message.set_channel_id("video");
             sender = endpoints[3];
             break;
-        case 7:
+        case 2:
             message = pipelineReport(2);
             sender = endpoints[1];
             for (int index = 0; index < 32; ++index) {
                 *message.mutable_desktop_pipeline_report()->add_samples() = message.desktop_pipeline_report().samples(0);
             }
             break;
-        case 8:
+        case 3:
             message = refresh(3);
             message.mutable_quality_feedback()->set_displayed_generation(1);
             message.mutable_quality_feedback()->set_displayed_frame(1);
@@ -652,49 +389,6 @@ ruvia::task<void> exerciseOptimization(ruvia::worker_ref worker) {
         }
         require(!(co_await session.forward(sender, message)) && session.closed());
         require(session.diagnostics().feedbackMessages == 0);
-    }
-    {
-        server::DesktopSession session(worker, budget);
-        auto endpoints = co_await pair(session);
-        co_await requestOptimization(session, endpoints);
-        require(co_await session.forward(endpoints[3], configuration()));
-        require(bool(co_await endpoints[2]->receive({})));
-        for (std::uint64_t batch = 1; batch <= 130; ++batch) {
-            require(co_await session.forward(endpoints[3], video(batch * 2 + 1, batch)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[3], refinement(batch * 2 + 2, batch, batch)));
-            require(bool(co_await endpoints[2]->receive({})));
-            require(co_await session.forward(endpoints[0], refinementAck(batch + 2, batch, batch)));
-            require(bool(co_await endpoints[1]->receive({})));
-        }
-        const auto messages = session.diagnostics().forwardedMessages;
-        require(co_await session.forward(endpoints[0], refinementAck(133))); // Older than bounded exact tombstones.
-        require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == messages);
-        require(session.diagnostics().feedbackMessages == 0);
-    }
-    {
-        server::DesktopSession session(worker, budget);
-        auto endpoints = co_await pair(session);
-        co_await requestOptimization(session, endpoints);
-        require(co_await session.forward(endpoints[3], configuration()));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], video(3, 1)));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], refinement()));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(co_await ruvia::sleep_for(worker, std::chrono::milliseconds(2100)) == ruvia::sleep_status::elapsed);
-        const auto messages = session.diagnostics().forwardedMessages;
-        require(co_await session.forward(endpoints[0], refinementAck()));
-        auto cleanup = co_await endpoints[1]->receive({});
-        require(cleanup && cleanup->bytes() == *protocol::encodeMessage(refinementAck()));
-        cleanup.reset();
-        require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == messages + 1);
-        require(co_await session.forward(endpoints[0], refinementAck(4)));
-        require(session.ready() && budget->used == 0 && session.diagnostics().forwardedMessages == messages + 1);
-        require(co_await session.forward(endpoints[3], video(5, 2))); // Timeout never pauses normal video.
-        require(bool(co_await endpoints[2]->receive({})));
-        require(!(co_await session.forward(endpoints[3], refinement(6, 2, 2)))); // Cleanup does not unpause the timed-out generation.
-        require(session.closeReason() == server::DesktopCloseReason::kInvalidFrameState && session.diagnostics().feedbackMessages == 0);
     }
     require(budget->used == 0);
 }
@@ -714,30 +408,20 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
         require(bool(co_await endpoints[2]->receive({})));
         require(co_await session.forward(endpoints[3], video(3, 1)));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[3], refinement()));
-        require(bool(co_await endpoints[2]->receive({})));
-        auto repeat = video(5, 2);
+        auto repeat = video(4, 2);
         repeat.set_base_frame_id(1);
         repeat.mutable_video_frame()->set_repeated(true);
         require(co_await session.forward(endpoints[3], repeat));
         require(bool(co_await endpoints[2]->receive({})));
-        require(co_await session.forward(endpoints[0], refinementAck()));
-        require(bool(co_await endpoints[1]->receive({})));
-        auto detail = refinement(6, 1, 2);
-        detail.mutable_video_refinement()->mutable_patches(0)->mutable_destination()->set_x(128);
-        require(co_await session.forward(endpoints[3], detail));
-        require(bool(co_await endpoints[2]->receive({})));
-        require(session.diagnostics().videoFrames == 2 && session.diagnostics().refinementMessages == 2);
-        repeat.set_sequence(7);
+        require(session.diagnostics().videoFrames == 2);
+        repeat.set_sequence(5);
         repeat.set_frame_id(3);
         repeat.set_base_frame_id(2);
         repeat.mutable_video_frame()->set_timestamp_microseconds(3);
         require(!(co_await session.forward(endpoints[3], repeat))); // A delivery alias cannot replace the content key.
     }
     co_await exerciseWriters(worker);
-    co_await exerciseDynamicStagePresence(worker);
     co_await exerciseOptimization(worker);
-    co_await exerciseRefinementCleanup(worker);
     auto budget = std::make_shared<server::DesktopBudget>(256 * 1024 * 1024);
     {
         server::DesktopSession session(worker, budget);
@@ -1103,7 +787,6 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
         auto* quality = feedback.mutable_quality_feedback();
         quality->set_displayed_generation(1);
         quality->set_displayed_frame(2);
-        quality->set_video_refinement(true);
         auto* report = quality->mutable_visible_frame_timing();
         report->set_sample_count(48);
         report->set_p95_microseconds(258000);
@@ -1113,7 +796,7 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
         require(co_await session.forward(endpoints[0], feedback));
         received = co_await endpoints[1]->receive({});
         const auto forwarded = protocol::decodeMessage(received->bytes());
-        require(forwarded && !forwarded->quality_feedback().has_visible_frame_timing() && forwarded->quality_feedback().video_refinement());
+        require(forwarded && !forwarded->quality_feedback().has_visible_frame_timing());
         received.reset();
         require(session.diagnostics().visibleFrames.reports == 1 && session.diagnostics().visibleFrames.latestSamples == 48 && session.diagnostics().visibleFrames.latestP95Microseconds == 258000 && session.diagnostics().visibleFrames.latestLongGaps == 5);
         feedback.set_sequence(3);

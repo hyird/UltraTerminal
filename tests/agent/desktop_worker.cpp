@@ -167,7 +167,6 @@ asio::awaitable<void> exchange(agent::NamedPipeTransport& pipe, const Child& chi
                 feedback.set_channel_id("input");
                 feedback.mutable_quality_feedback()->set_displayed_generation(packet->generation());
                 feedback.mutable_quality_feedback()->set_displayed_frame(packet->frame_id());
-                feedback.mutable_quality_feedback()->set_video_refinement(true);
                 co_await send(pipe, feedback);
             }
             if (!firstFrame) {

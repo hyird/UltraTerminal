@@ -459,8 +459,6 @@ test("DesktopSession negotiates video only and acknowledges decoded repeats", as
     const capabilities = h.control.sent
       .filter((message) => message.desktopVideoCapabilities)
       .at(-1)?.desktopVideoCapabilities;
-    expect(capabilities?.regionUpdates).toBe(false);
-    expect(capabilities?.tileCache).toBe(false);
     expect(capabilities?.continuousFrames).toBe(true);
     h.video.push({
       generation: 2,
@@ -479,7 +477,6 @@ test("DesktopSession negotiates video only and acknowledges decoded repeats", as
       .filter((message) => message.qualityFeedback)
       .at(-1)?.qualityFeedback;
     expect(feedback?.displayedFrame.toString()).toBe("2");
-    expect(feedback?.videoRefinement).toBe(false);
     h.frame(2, 3);
     await until(() => h.decoders[1].chunks.length === 3);
     h.decoders[1].output();

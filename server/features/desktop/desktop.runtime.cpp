@@ -185,10 +185,7 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
     const auto admissionStarted = std::chrono::steady_clock::now();
     const auto slot = static_cast<std::size_t>(found - endpoints_.begin());
     const auto origin = originForSlot(slot);
-    if (!optimizationActive_ &&
-        ((message.has_video_frame() && message.video_frame().has_stage_timing()) ||
-         (message.has_desktop_region_update() && message.desktop_region_update().has_stage_timing()) ||
-         (message.has_video_refinement() && message.video_refinement().has_stage_timing()))) {
+    if (!optimizationActive_ && message.has_video_frame() && message.video_frame().has_stage_timing()) {
         close(DesktopCloseReason::kInvalidFrameState, origin);
         co_return false;
     }
@@ -224,26 +221,6 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
         }
         logCadence(std::chrono::steady_clock::now());
         co_return true; // Never enters the browser queue or creates more diagnostics.
-    }
-    if (outstandingRefinement_ && std::chrono::steady_clock::now() - outstandingRefinement_->sent >= std::chrono::seconds(2)) {
-        pausedRefinementGeneration_ = outstandingRefinement_->key.generation;
-        // Keep the exact unacknowledged tuple, including across generation
-        // barriers. Timeout cannot prove the Browser's PNG lease has ended.
-    }
-    if (message.has_desktop_refinement_ack()) {
-        const auto result = refinementAck(message);
-        if (result == RefinementAckResult::kInvalid) {
-            close(DesktopCloseReason::kInvalidFrameState, origin);
-            co_return false;
-        }
-        if (result == RefinementAckResult::kIgnore) {
-            co_return true;
-        }
-    }
-    if (message.has_video_refinement() && (outstandingRefinement_ || (optimizationActive_ && pausedRefinementGeneration_ == message.generation()))) {
-        // A new video frame may retire a batch, but cannot manufacture credit.
-        close(DesktopCloseReason::kInvalidFrameState, origin);
-        co_return false;
     }
     // Browser diagnostics terminate here; they never consume worker IPC or
     // influence Agent QoS. Strip only present diagnostics, preserving QoS fields.
@@ -289,7 +266,7 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
     auto delivery = std::unique_ptr<DesktopDelivery>(new DesktopDelivery());
     delivery->bytes_ = std::move(*bytes);
     delivery->browserVideo_ = slot == 3;
-    delivery->primaryVideo_ = message.has_video_frame() || message.has_desktop_region_update() || message.has_full_frame() || message.has_diff_batch();
+    delivery->primaryVideo_ = message.has_video_frame();
     delivery->local_ = local_;
     delivery->global_ = global_;
     diagnostics_.peakPendingBytes = std::max(diagnostics_.peakPendingBytes, local_->used.load(std::memory_order_relaxed));
@@ -321,7 +298,7 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
             }
             ++diagnostics_.forwardedMessages;
             diagnostics_.forwardedBytes += size;
-            diagnostics_.videoFrames += message.has_video_frame() || message.has_full_frame() || message.has_diff_batch() || message.has_desktop_region_update();
+            diagnostics_.videoFrames += message.has_video_frame();
             diagnostics_.inputEvents += message.has_input_event();
             if (message.has_video_config()) {
                 cadence_ = {};
@@ -338,63 +315,27 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 diagnostics_.latestHardwareEncoding = false;
                 diagnostics_.latestGpuEncoding = false;
             }
-            if (message.has_full_frame() && message.generation() != diagnostics_.videoGeneration) {
-                // Lossless fallback retires submission eligibility, not the
-                // unacknowledged v2 lease or its cleanup ACK route.
-                optimizationActive_ = false;
-                endpoints_[0]->validator_.setOptimizationContract(0);
-                endpoints_[1]->validator_.setOptimizationContract(0);
-                diagnostics_.pipeline.generation(message.generation(), admittedAt);
-                diagnostics_.videoGeneration = message.generation();
-            }
-            if (message.has_video_frame() || message.has_desktop_region_update() || message.has_full_frame() || message.has_diff_batch()) {
+            if (message.has_video_frame()) {
                 if (optimizationActive_) {
                     diagnostics_.pipeline.frame({message.generation(), message.frame_id(), 0}, admittedAt);
                 }
-            }
-            if (message.has_video_frame()) {
                 const auto& video = message.video_frame();
                 cadence_.frame(video.stage_timing(), admittedAt);
                 cadence_.keyFrames += video.key_frame();
                 cadence_.keyBytes += video.key_frame() ? video.data().size() : 0;
                 cadence_.videoBytes += video.data().size();
                 cadence_.repeatedFrames += video.repeated();
-                // v2 writes the final cumulative worker stages after dynamic
-                // detail preparation. A present encode stage (including zero)
-                // identifies that complete sample, unlike an absent/empty body.
-                cumulativeVideoStages_ = optimizationActive_ && message.video_frame().has_stage_timing() && message.video_frame().stage_timing().has_video_encode_microseconds()
-                                             ? DesktopFrameKey{message.generation(), message.frame_id(), 0}
-                                             : DesktopFrameKey{};
-                if (optimizationActive_ && message.video_frame().has_stage_timing()) {
-                    diagnostics_.pipeline.observe(message.video_frame().stage_timing());
+                if (optimizationActive_ && video.has_stage_timing()) {
+                    diagnostics_.pipeline.observe(video.stage_timing());
                 }
                 diagnostics_.latestVideoFrame = message.frame_id();
-                const auto& frame = message.video_frame();
-                diagnostics_.encoding.observe(frame.encode_microseconds());
-                diagnostics_.latestHardwareEncoding = frame.hardware_encoding();
-                diagnostics_.latestGpuEncoding = frame.gpu_encoding();
-                diagnostics_.latestTargetFramesPerSecond = frame.target_frames_per_second();
-                diagnostics_.latestTargetBitrate = frame.target_bitrate();
-                if (frame.key_frame()) {
-                    diagnostics_.latestKeyFrameEncodeMicroseconds = frame.encode_microseconds();
-                }
-            }
-            if (message.has_desktop_region_update()) {
-                const auto& update = message.desktop_region_update();
-                cadence_.frame(update.stage_timing(), admittedAt);
-                if (optimizationActive_ && message.desktop_region_update().has_stage_timing()) {
-                    diagnostics_.pipeline.observe(message.desktop_region_update().stage_timing());
-                }
-                diagnostics_.latestVideoFrame = message.frame_id();
-                ++diagnostics_.regionMessages;
-                diagnostics_.regionBytes += size;
-                diagnostics_.latestTargetFramesPerSecond = message.desktop_region_update().target_frames_per_second();
-                diagnostics_.latestTargetBitrate = message.desktop_region_update().target_bitrate();
-                for (const auto& copy : message.desktop_region_update().copies()) {
-                    diagnostics_.copiedPixels += static_cast<std::uint64_t>(copy.destination().width()) * copy.destination().height();
-                }
-                for (const auto& patch : message.desktop_region_update().patches()) {
-                    diagnostics_.tileCacheHits += patch.cache_slot() && patch.png().empty();
+                diagnostics_.encoding.observe(video.encode_microseconds());
+                diagnostics_.latestHardwareEncoding = video.hardware_encoding();
+                diagnostics_.latestGpuEncoding = video.gpu_encoding();
+                diagnostics_.latestTargetFramesPerSecond = video.target_frames_per_second();
+                diagnostics_.latestTargetBitrate = video.target_bitrate();
+                if (video.key_frame()) {
+                    diagnostics_.latestKeyFrameEncodeMicroseconds = video.encode_microseconds();
                 }
             }
             if (message.has_quality_feedback()) {
@@ -410,23 +351,6 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
                 if (feedback.background()) {
                     diagnostics_.renderReportedAt = {};
                     diagnostics_.visibleFrames.clear();
-                }
-            }
-            if (message.has_video_refinement()) {
-                if (optimizationActive_) {
-                    const DesktopFrameKey key{message.generation(), message.frame_id(), message.video_refinement().batch_id()};
-                    outstandingRefinement_ = RefinementRecord{key, admittedAt};
-                    diagnostics_.pipeline.frame(key, admittedAt);
-                    const bool duplicateWorkerStages = message.video_refinement().kind() == wire::DYNAMIC_DETAIL &&
-                                                       cumulativeVideoStages_ == DesktopFrameKey{message.generation(), message.frame_id(), 0};
-                    if (message.video_refinement().has_stage_timing() && !duplicateWorkerStages) {
-                        diagnostics_.pipeline.observe(message.video_refinement().stage_timing());
-                    }
-                }
-                ++diagnostics_.refinementMessages;
-                diagnostics_.refinementBytes += size;
-                for (const auto& patch : message.video_refinement().patches()) {
-                    diagnostics_.tileCacheHits += patch.cache_slot() && patch.png().empty();
                 }
             }
             cadence_.inputs += message.has_input_event();
@@ -448,47 +372,11 @@ ruvia::task<bool> DesktopSession::forward(std::shared_ptr<DesktopEndpoint> sende
     co_return false;
 }
 void DesktopSession::optimizationBarrier(const wire::Envelope& message) {
-    // The validator retires the old canvas. Preserve the sent tuple and its
-    // original deadline: a new config is NOT an auxiliary-lease completion.
-    // The timeout marker remains generation-scoped; outstanding credit remains
-    // session-scoped until an exact cleanup ACK, regardless of this barrier.
-    cumulativeVideoStages_ = {};
     agentOptimizationCapability_ = message.video_config().desktop_optimization_contract();
     optimizationActive_ = browserOptimizationRequest_ == 2 && agentOptimizationCapability_ == 2;
     // Both native and WSS ingress use these same authenticated endpoints.
     endpoints_[0]->validator_.setOptimizationContract(optimizationActive_ ? 2 : 0);
     endpoints_[1]->validator_.setOptimizationContract(optimizationActive_ ? 2 : 0);
-}
-void DesktopSession::completeRefinement() {
-    if (outstandingRefinement_) {
-        evictedRefinement_ = retiredRefinements_[nextRetiredRefinement_];
-        retiredRefinements_[nextRetiredRefinement_] = outstandingRefinement_->key;
-        nextRetiredRefinement_ = (nextRetiredRefinement_ + 1) % retiredRefinements_.size();
-        outstandingRefinement_.reset();
-    }
-}
-DesktopSession::RefinementAckResult DesktopSession::refinementAck(const wire::Envelope& message) {
-    const DesktopFrameKey key{message.generation(), message.frame_id(), message.desktop_refinement_ack().batch_id()};
-    // Beyond bounded exact tombstones, a monotonically older ACK is harmless:
-    // it is consumed, never forwarded and can never release any credit.
-    if (evictedRefinement_.generation && (key.generation < evictedRefinement_.generation ||
-                                          (key.generation == evictedRefinement_.generation && key.batch <= evictedRefinement_.batch))) {
-        return RefinementAckResult::kIgnore;
-    }
-    if (outstandingRefinement_ && outstandingRefinement_->key == key) {
-        // Cleanup releases the exact lease even after a config/frame change or
-        // timeout. Forward once; never synthesize a video QualityFeedback ACK.
-        diagnostics_.refinementApplied += message.desktop_refinement_ack().status() == wire::DesktopRefinementAck::APPLIED;
-        diagnostics_.refinementSuperseded += message.desktop_refinement_ack().status() == wire::DesktopRefinementAck::SUPERSEDED;
-        diagnostics_.refinementAcknowledgement.observePresent(static_cast<std::uint32_t>(std::clamp<std::int64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - outstandingRefinement_->sent).count(), 0, 60000000)));
-        completeRefinement();
-        return RefinementAckResult::kForward;
-    }
-    if (std::ranges::find(retiredRefinements_, key) != retiredRefinements_.end()) {
-        return RefinementAckResult::kIgnore;
-    }
-    return RefinementAckResult::kInvalid;
 }
 DesktopWriteTiming DesktopSession::captureWriteTiming(const DesktopDelivery& delivery, std::chrono::steady_clock::duration elapsed) {
     return DesktopWriteTiming{
@@ -567,8 +455,6 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
                      identity_.sessionId, kDesktopStageNames[index], stage.samples, stage.meanMicroseconds, stage.p95Microseconds, stage.p99Microseconds, stage.maximumMicroseconds,
                      diagnostics_.pipeline.dropped, diagnostics_.pipeline.pendingSamples(), browserOptimizationRequest_, agentOptimizationCapability_, optimizationActive_ ? 2 : 0);
     }
-    spdlog::info("desktop_region_transport session_id={} region_messages={} region_bytes={} copied_pixels={} tile_cache_hits={}",
-                 identity_.sessionId, diagnostics_.regionMessages, diagnostics_.regionBytes, diagnostics_.copiedPixels, diagnostics_.tileCacheHits);
     const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_).count();
     const auto encoding = diagnostics_.encoding.summary();
     const auto rafAge = diagnostics_.renderReportedAt == std::chrono::steady_clock::time_point{} ? -1 : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - diagnostics_.renderReportedAt).count();
@@ -584,11 +470,9 @@ void DesktopSession::logDiagnostics(std::string_view event) const {
                  encoding.p95Microseconds, encoding.p99Microseconds, encoding.maximumMicroseconds, diagnostics_.latestKeyFrameEncodeMicroseconds,
                  diagnostics_.latestTargetFramesPerSecond, diagnostics_.latestTargetBitrate);
     const auto& raf = diagnostics_.visibleFrames;
-    const auto refinementAck = diagnostics_.refinementAcknowledgement.summary();
-    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} raf_fps_milli={} raf_min_fps_milli={} raf_max_fps_milli={} raf_max_p95_us={} raf_max_p99_us={} raf_max_long_gaps={} report_age_ms={} background={} gpu_encoding={} refinement_messages={} refinement_bytes={} refinement_applied={} refinement_superseded={} refinement_ack_samples={} refinement_ack_p99_us={} refinement_ack_max_us={}",
+    spdlog::info("desktop_browser_render session_id={} device_id={} reports={} raf_samples={} raf_p95_us={} raf_p99_us={} raf_ge100ms={} raf_fps_milli={} raf_min_fps_milli={} raf_max_fps_milli={} raf_max_p95_us={} raf_max_p99_us={} raf_max_long_gaps={} report_age_ms={} background={} gpu_encoding={}",
                  identity_.sessionId, identity_.deviceId, raf.reports, raf.latestSamples, raf.latestP95Microseconds, raf.latestP99Microseconds, raf.latestLongGaps,
                  raf.latestFpsMilli, raf.minimumFpsMilli, raf.maximumFpsMilli, raf.maximumP95Microseconds, raf.maximumP99Microseconds, raf.maximumLongGaps,
-                 rafAge, diagnostics_.latestBackground, diagnostics_.latestGpuEncoding, diagnostics_.refinementMessages, diagnostics_.refinementBytes,
-                 diagnostics_.refinementApplied, diagnostics_.refinementSuperseded, refinementAck.samples, refinementAck.p99Microseconds, refinementAck.maximumMicroseconds);
+                 rafAge, diagnostics_.latestBackground, diagnostics_.latestGpuEncoding);
 }
 } // namespace ultraterimal::server

@@ -1,43 +1,41 @@
 #pragma once
-#include <array>
 #include <context.h>
 #include <http_client.h>
+#include <model.h>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <task.h>
 
-#include <boost/json.hpp>
-
 namespace ultraterimal::server {
+RUVIA_MODEL(TelegramApiResponse,
+            RUVIA_REQUIRED_FIELD(ok, bool),
+            RUVIA_OPTIONAL_FIELD(result, ruvia::json_value));
 inline bool validBotToken(std::string_view token) {
     const auto colon = token.find(':');
     return colon >= 1 && colon <= 20 && token.size() >= colon + 21 && token.size() <= 160 && token.substr(0, colon).find_first_not_of("0123456789") == std::string_view::npos && token.substr(colon + 1).find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == std::string_view::npos;
 }
-inline ruvia::task<std::optional<boost::json::value>> telegramCall(ruvia::context& context, std::string token, std::string method, boost::json::object body) {
+template <typename T>
+inline ruvia::task<std::optional<std::string>> telegramCall(ruvia::context& context, std::string token, std::string method, const T& body) {
     if (!validBotToken(token)) {
         co_return std::nullopt;
     }
     const auto target = "/bot" + token + "/" + method;
-    const auto bytes = boost::json::serialize(body);
-    const std::array<ruvia::http_header_view, 1> headers{{{"Content-Type", "application/json"}}};
     try {
-        auto response = co_await context.http_client("telegram").request("POST", target).headers(headers).body(bytes).send();
-        const auto result = co_await response.collect_body(65536);
+        auto response = co_await context.http_client("telegram").post(target).json(body).send();
         if (response.status() != ruvia::http_status::ok) {
             co_return std::nullopt;
         }
-        boost::system::error_code error;
-        const auto responseBytes = result.bytes();
-        auto value = boost::json::parse(std::string_view(reinterpret_cast<const char*>(responseBytes.data()), responseBytes.size()), error);
-        if (error || !value.is_object()) {
+        auto parsedResult = co_await response.json<TelegramApiResponse>(65536);
+        if (!parsedResult.has_value()) {
             co_return std::nullopt;
         }
-        const auto* ok = value.as_object().if_contains("ok");
-        const auto* data = value.as_object().if_contains("result");
-        if (!ok || !ok->is_bool() || !ok->as_bool() || !data) {
+        const auto parsed = std::move(parsedResult).take_value();
+        const auto& resultField = parsed.get<"result">();
+        if (!parsed.get<"ok">() || !resultField.has_value()) {
             co_return std::nullopt;
         }
-        co_return *data;
+        co_return std::string(resultField->view());
     } catch (const std::exception&) {
         // Upstream errors can contain a URL with the token; never expose them.
         co_return std::nullopt;

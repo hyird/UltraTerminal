@@ -25,7 +25,6 @@ void stagePresence() {
     timing.set_gpu_sync_wait_microseconds(0);
     timing.set_readback_ready_microseconds(0);
     timing.set_prepare_cpu_microseconds(0);
-    timing.set_png_encode_microseconds(0);
     timing.set_video_encode_microseconds(0);
     diagnostics.observe(timing);
     diagnostics.observe(wire::DesktopStageTiming{});

@@ -38,11 +38,6 @@ export default function Application() {
         <Route path="/workbench/devices" element={<DevicesPage />} />
         <Route path="/workbench/sessions" element={<SessionRoute />} />
         <Route path="/account/security" element={<SecurityPage />} />
-        {/* 已发布书签的迁移入口，前端 0.2.0 发布时移除。 */}
-        <Route
-          path="/console/assets"
-          element={<Navigate to="/workbench/devices" replace />}
-        />
         <Route element={<AdminOnly />}>
           <Route path="/console/grants" element={<DeviceGrantsPage />} />
           <Route path="/console/users" element={<AccountsPage />} />

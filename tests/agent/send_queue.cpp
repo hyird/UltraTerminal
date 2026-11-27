@@ -143,9 +143,9 @@ void diagnostics() {
     Envelope frame;
     frame.set_generation(7);
     frame.set_frame_id(9);
-    frame.mutable_video_refinement()->set_batch_id(13);
+    frame.mutable_video_frame()->set_data("v");
     auto sample = DesktopPipelineBuffer::sample(frame, DesktopPipelineSample::DESKTOP_WORKER);
-    require(sample && sample->generation() == 7 && sample->frame_id() == 9 && sample->batch_id() == 13, "Pipeline key lost refinement tuple");
+    require(sample && sample->generation() == 7 && sample->frame_id() == 9 && sample->batch_id() == 0, "Pipeline key lost frame tuple");
     sample->set_ipc_write_microseconds(0);
     for (unsigned index = 0; index < 100; ++index) {
         buffer.add(*sample);

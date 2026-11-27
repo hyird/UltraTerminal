@@ -355,7 +355,6 @@ export class DesktopSession {
             (this.videoChannel?.budget.queuedMessageCount ?? 0),
           background: document.hidden || !this.visible,
           maximumPendingVideoFrames,
-          videoRefinement: false,
           ...(renderReport ? { visibleFrameTiming: renderReport } : {}),
           ...(this.optimizationV2 && this.browserTiming
             ? { browserTiming: this.browserTiming }
@@ -372,8 +371,6 @@ export class DesktopSession {
     this.send(channel, {
       desktopVideoCapabilities: {
         codecs: this.supportedCodecs,
-        regionUpdates: false,
-        tileCache: false,
         desktopOptimizationContract: contract,
         continuousFrames: contract === 2 && this.continuousReadiness.size === 2,
       },
