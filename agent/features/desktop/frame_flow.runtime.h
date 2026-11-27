@@ -31,8 +31,29 @@ class DesktopFrameFlow {
     // decide the actual cadence below this ceiling.
     static constexpr std::uint32_t kMinimumFramesPerSecond = 5, kMaximumFramesPerSecond = 60;
     static constexpr std::uint32_t kMinimumVideoBitrate = 64000, kMaximumVideoBitrate = 100000000;
-    static constexpr std::uint32_t kTargetVideoBitrate = 12000000;
+    static constexpr std::uint32_t kTargetVideoBitrate = 16000000;
     static constexpr std::uint32_t kLegacyMaximumInFlightFrames = 16;
+    // Public-internet recommended target bitrate by resolution:
+    // <=720p: 8 Mbps, 1080p: 16 Mbps, 1440p: 24 Mbps, 4K: 32 Mbps.
+    static std::uint32_t targetBitrateForGeometry(std::uint32_t width, std::uint32_t height) noexcept {
+        const std::uint64_t pixels = static_cast<std::uint64_t>(width) * height;
+        constexpr std::uint64_t k720p = 1280ull * 720ull;
+        constexpr std::uint64_t k1080p = 1920ull * 1080ull;
+        constexpr std::uint64_t k1440p = 2560ull * 1440ull;
+        constexpr std::uint64_t k2160p = 3840ull * 2160ull;
+        if (pixels <= k720p) {
+            return 8000000u;
+        }
+        if (pixels <= k1080p) {
+            return static_cast<std::uint32_t>(8000000ull + (pixels - k720p) * 8000000ull / (k1080p - k720p));
+        }
+        if (pixels <= k1440p) {
+            return static_cast<std::uint32_t>(16000000ull + (pixels - k1080p) * 8000000ull / (k1440p - k1080p));
+        }
+        const auto clamped = std::min(pixels, k2160p);
+        return static_cast<std::uint32_t>(24000000ull + (clamped - k1440p) * 8000000ull / (k2160p - k1440p));
+    }
+    std::uint32_t targetBitrate() const noexcept { return targetBitrateForGeometry(width_, height_); }
     Rate rate() const { return rate_; }
     bool background() const { return background_; }
     std::pair<std::uint32_t, std::uint32_t> geometry() const { return {width_, height_}; }
@@ -40,8 +61,16 @@ class DesktopFrameFlow {
         if (width < 16 || height < 16 || width > 4096 || height > 4096 || (width & 1) || (height & 1) || static_cast<std::uint64_t>(width) * height > 4096ull * 2160) {
             return false;
         }
+        const auto previousTarget = targetBitrate();
         width_ = width;
         height_ = height;
+        const auto nextTarget = targetBitrate();
+        if (rate_.bitrate > nextTarget || (!congestionSamples_ && rate_.bitrate == previousTarget)) {
+            rate_.bitrate = nextTarget;
+        }
+        if (recoveryRate_ && recoveryRate_->bitrate > nextTarget) {
+            recoveryRate_->bitrate = nextTarget;
+        }
         scenePixels_.reset();
         videoFrameBytes_ = videoPacingBytes_ = 0;
         videoPacingActive_ = false;
@@ -330,7 +359,7 @@ class DesktopFrameFlow {
                     const auto deliveryDiv = severeStall ? 5u : 10u;
                     target = std::min(target, std::max<std::uint64_t>(rate_.bitrate / floorRatio, deliveryBytesPerSecond_ * 8 * deliveryScale / deliveryDiv));
                 }
-                rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, kTargetVideoBitrate));
+                rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, targetBitrate()));
             }
             if (decoderPressure) {
                 receiverFrameRate_ = std::max(kMinimumFramesPerSecond, rate_.framesPerSecond * 4 / 5);
@@ -346,11 +375,12 @@ class DesktopFrameFlow {
             // Do not inflate target bitrate far above measured link capacity during
             // app-limited small-frame/idle periods; allow active probing when actual
             // changed-frame load utilizes at least half of the current bitrate budget.
+            const auto maxTarget = static_cast<std::uint64_t>(targetBitrate());
             const bool activeLoad = videoPacingActive_ && videoFrameBytes_ * 8 * rate_.framesPerSecond >= static_cast<std::uint64_t>(rate_.bitrate) / 2;
             const auto measuredCeiling = deliveryBytesPerSecond_ && !activeLoad
-                                             ? std::clamp<std::uint64_t>(deliveryBytesPerSecond_ * 8 * 5 / 4, kMinimumVideoBitrate, kTargetVideoBitrate)
-                                             : static_cast<std::uint64_t>(kTargetVideoBitrate);
-            const auto recoveryLimit = recoveryRate_ ? std::min<std::uint64_t>(kTargetVideoBitrate, recoveryRate_->bitrate) : static_cast<std::uint64_t>(kTargetVideoBitrate);
+                                             ? std::clamp<std::uint64_t>(deliveryBytesPerSecond_ * 8 * 5 / 4, kMinimumVideoBitrate, maxTarget)
+                                             : maxTarget;
+            const auto recoveryLimit = recoveryRate_ ? std::min<std::uint64_t>(maxTarget, recoveryRate_->bitrate) : maxTarget;
             const auto bitrateLimit = static_cast<std::uint32_t>(std::min(recoveryLimit, measuredCeiling));
             const bool restoring = recoveryRate_ && now >= restoreBlockedUntil_;
             const auto step = restoring ? std::max(4u, rate_.framesPerSecond / 4) : 2u;

@@ -171,12 +171,24 @@ void fixedSharpCapacityChange() {
     const auto beforeRecovery = link.videoTimes.size();
     link.run(30s, 10000000, 40ms, {.fixedBytes = 100000});
     std::cout << "fixed_sharp_recovery frames_30s=" << link.videoTimes.size() - beforeRecovery << " bitrate=" << link.flow.rate().bitrate << " fps=" << link.flow.rate().framesPerSecond << '\n';
-    require(link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && link.flow.rate().framesPerSecond >= 14 && link.flow.rate().framesPerSecond <= 16, "Stale delivery/frame-cost history prevented capacity recovery");
+    require(link.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && link.flow.rate().framesPerSecond >= 19 && link.flow.rate().framesPerSecond <= 21, "Stale delivery/frame-cost history prevented capacity recovery");
     link.run(20s, 125000, 40ms, {.fixedBytes = 100000});
     require(link.flow.rate().bitrate < 2000000 && link.flow.rate().framesPerSecond == 5, "Restoration hysteresis ignored renewed fixed-sharp congestion");
     Link distant;
     distant.run(12s, 10000000, 600ms, {.fixedBytes = 100000});
-    require(distant.videoTimes.size() > 150 && distant.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && distant.flow.rate().framesPerSecond >= 14, "High RTT alone throttled fixed sharp pictures");
+    require(distant.videoTimes.size() > 200 && distant.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && distant.flow.rate().framesPerSecond >= 19, "High RTT alone throttled fixed sharp pictures");
+}
+
+void resolutionRecommendedBitrates() {
+    require(DesktopFrameFlow::targetBitrateForGeometry(1280, 720) == 8000000u, "720p target bitrate mismatch");
+    require(DesktopFrameFlow::targetBitrateForGeometry(1920, 1080) == 16000000u, "1080p target bitrate mismatch");
+    require(DesktopFrameFlow::targetBitrateForGeometry(2560, 1440) == 24000000u, "1440p target bitrate mismatch");
+    require(DesktopFrameFlow::targetBitrateForGeometry(3840, 2160) == 32000000u, "4K target bitrate mismatch");
+    DesktopFrameFlow flow;
+    require(flow.setGeometry(1280, 720) && flow.rate().bitrate == 8000000u, "setGeometry(720p) did not adopt 8 Mbps target");
+    require(flow.setGeometry(2560, 1440) && flow.rate().bitrate == 24000000u, "setGeometry(1440p) did not adopt 24 Mbps target");
+    require(flow.setGeometry(3840, 2160) && flow.rate().bitrate == 32000000u, "setGeometry(4K) did not adopt 32 Mbps target");
+    require(flow.setGeometry(1920, 1080) && flow.rate().bitrate == 16000000u, "setGeometry(1080p) did not clamp back to 16 Mbps");
 }
 
 void weakNetworkSevereStallBackoff() {
@@ -204,6 +216,7 @@ int main() {
         twoHopAsymmetricRttWindowDrag();
         normalVbvAfterBurst();
         fixedSharpCapacityChange();
+        resolutionRecommendedBitrates();
         weakNetworkSevereStallBackoff();
         auto now = DesktopFrameFlow::Clock::time_point{1s};
         DesktopFrameFlow flow;
