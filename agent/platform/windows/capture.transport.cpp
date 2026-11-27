@@ -551,12 +551,26 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
     };
     if (!hasMode()) {
         if (!state_->iddCapture || !idd::isValidCustomMode(width, height) ||
-            !state_->iddCapture->requestCustomMode(width, height)) {
+            !state_->iddCapture->requestCustomMode(width, height, std::chrono::milliseconds(2500))) {
             return false;
         }
-        const auto deadline = Clock::now() + std::chrono::milliseconds(400);
+        // Re-arrival of the virtual monitor may briefly change display name or
+        // activate the software fallback display; re-assert IDD primary and
+        // refresh the GDI display name if needed.
+        Sleep(150);
+        (void)ensureIddPrimaryIfSoftwareDisplay();
+        DISPLAY_DEVICEW dd{};
+        dd.cb = sizeof(dd);
+        for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
+            if ((dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) != 0 && isUltraterimalIddAdapter(dd.DeviceString)) {
+                state_->displayName = dd.DeviceName;
+                break;
+            }
+            dd.cb = sizeof(dd);
+        }
+        const auto deadline = Clock::now() + std::chrono::milliseconds(1500);
         while (!hasMode() && Clock::now() < deadline) {
-            Sleep(20);
+            Sleep(30);
         }
         if (!hasMode()) {
             return false;
@@ -566,6 +580,9 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
     current.dmSize = sizeof(current);
     if (!EnumDisplaySettingsW(state_->displayName.c_str(), ENUM_CURRENT_SETTINGS, &current)) {
         return false;
+    }
+    if (current.dmPelsWidth == width && current.dmPelsHeight == height) {
+        return true;
     }
     // Preserve orientation, position, depth and refresh rate. The driver must
     // validate the complete mode before saving it for all users. Even an

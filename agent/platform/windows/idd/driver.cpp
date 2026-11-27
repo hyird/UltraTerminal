@@ -53,14 +53,19 @@ std::mutex gCustomModeMutex;
 DisplayModeSpec gCustomMode{0, 0, 60};
 
 std::vector<DisplayModeSpec> collectActiveModes() {
-    std::vector<DisplayModeSpec> result(std::begin(kModes), std::end(kModes));
-    std::lock_guard lock(gCustomModeMutex);
-    if (isValidCustomMode(gCustomMode.width, gCustomMode.height)) {
-        const bool exists = std::any_of(result.begin(), result.end(), [&](const DisplayModeSpec& m) {
-            return m.width == gCustomMode.width && m.height == gCustomMode.height;
+    std::vector<DisplayModeSpec> result;
+    {
+        std::lock_guard lock(gCustomModeMutex);
+        if (isValidCustomMode(gCustomMode.width, gCustomMode.height)) {
+            result.push_back(gCustomMode);
+        }
+    }
+    for (const auto& m : kModes) {
+        const bool exists = std::any_of(result.begin(), result.end(), [&](const DisplayModeSpec& cur) {
+            return cur.width == m.width && cur.height == m.height;
         });
         if (!exists) {
-            result.push_back(gCustomMode);
+            result.push_back(m);
         }
     }
     return result;
@@ -375,39 +380,11 @@ class SwapChainProcessor {
             cachedFormat = format;
         };
 
-        auto handleCustomModeRequest = [&]() noexcept {
-            UINT reqW = 0;
-            UINT reqH = 0;
-            std::uint32_t reqSeq = 0;
-            if (!publisher.pollCustomModeRequest(reqW, reqH, reqSeq)) {
-                return;
-            }
-            if (monitor_ && isValidCustomMode(reqW, reqH)) {
-                {
-                    std::lock_guard lock(gCustomModeMutex);
-                    gCustomMode = {reqW, reqH, 60};
-                }
-                const auto modes = collectActiveModes();
-                std::vector<IDDCX_TARGET_MODE> targetModes;
-                targetModes.reserve(modes.size());
-                for (const auto& m : modes) {
-                    targetModes.push_back(createTargetMode(m.width, m.height, m.vSync));
-                }
-                IDARG_IN_UPDATEMODES updateIn{};
-                updateIn.Reason = IDDCX_UPDATE_REASON_HOST_LINK_BANDWIDTH;
-                updateIn.TargetModeCount = static_cast<UINT>(targetModes.size());
-                updateIn.pTargetModes = targetModes.data();
-                (void)IddCxMonitorUpdateModes(monitor_, &updateIn);
-            }
-            publisher.acknowledgeCustomMode(reqSeq);
-        };
-
         HANDLE waitHandles[2] = {availableEvent_, stopEvent_};
         while (true) {
             if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0) {
                 break;
             }
-            handleCustomModeRequest();
             const auto acqStart = std::chrono::steady_clock::now();
             if (inSysMem) {
                 IDDCX_METADATA meta{};
@@ -518,6 +495,8 @@ struct DeviceContext {
     WDFDEVICE device = nullptr;
     IDDCX_ADAPTER adapter = nullptr;
     IDDCX_MONITOR monitor = nullptr;
+    std::atomic<bool> stopModeWatcher{false};
+    std::thread modeWatcher;
 };
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DeviceContext, getDeviceContext)
 
@@ -604,11 +583,7 @@ void EvtMonitorContextCleanup(WDFOBJECT object) noexcept {
     ctx->~MonitorContext();
 }
 
-NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_INIT_FINISHED* inArgs) noexcept {
-    if (!NT_SUCCESS(inArgs->AdapterInitStatus)) {
-        return STATUS_SUCCESS;
-    }
-    auto* devCtx = getAdapterContext(adapter)->deviceCtx;
+NTSTATUS createAndArriveMonitor(DeviceContext* devCtx) noexcept {
     WDF_OBJECT_ATTRIBUTES attr;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attr, MonitorContext);
     attr.EvtCleanupCallback = EvtMonitorContextCleanup;
@@ -627,7 +602,7 @@ NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_IN
     createIn.ObjectAttributes = &attr;
     createIn.pMonitorInfo = &info;
     IDARG_OUT_MONITORCREATE createOut{};
-    NTSTATUS status = IddCxMonitorCreate(adapter, &createIn, &createOut);
+    NTSTATUS status = IddCxMonitorCreate(devCtx->adapter, &createIn, &createOut);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -637,6 +612,55 @@ NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_IN
 
     IDARG_OUT_MONITORARRIVAL arrivalOut{};
     return IddCxMonitorArrival(devCtx->monitor, &arrivalOut);
+}
+
+void runModeWatcher(DeviceContext* devCtx) noexcept {
+    SharedMemoryPublisher watcher;
+    while (!devCtx->stopModeWatcher.load(std::memory_order_acquire)) {
+        UINT reqW = 0;
+        UINT reqH = 0;
+        std::uint32_t reqSeq = 0;
+        if (watcher.pollCustomModeRequest(reqW, reqH, reqSeq)) {
+            if (isValidCustomMode(reqW, reqH) && devCtx->adapter) {
+                {
+                    std::lock_guard lock(gCustomModeMutex);
+                    gCustomMode = {reqW, reqH, 60};
+                }
+                if (devCtx->monitor) {
+                    (void)IddCxMonitorDeparture(devCtx->monitor);
+                    devCtx->monitor = nullptr;
+                }
+                (void)createAndArriveMonitor(devCtx);
+            }
+            watcher.acknowledgeCustomMode(reqSeq);
+        }
+        Sleep(30);
+    }
+}
+
+void EvtDeviceContextCleanup(WDFOBJECT object) noexcept {
+    auto* ctx = getDeviceContext(object);
+    ctx->stopModeWatcher.store(true, std::memory_order_release);
+    if (ctx->modeWatcher.joinable()) {
+        ctx->modeWatcher.join();
+    }
+    ctx->~DeviceContext();
+}
+
+NTSTATUS EvtAdapterInitFinished(IDDCX_ADAPTER adapter, const IDARG_IN_ADAPTER_INIT_FINISHED* inArgs) noexcept {
+    if (!NT_SUCCESS(inArgs->AdapterInitStatus)) {
+        return STATUS_SUCCESS;
+    }
+    auto* devCtx = getAdapterContext(adapter)->deviceCtx;
+    NTSTATUS status = createAndArriveMonitor(devCtx);
+    if (NT_SUCCESS(status) && !devCtx->modeWatcher.joinable()) {
+        try {
+            devCtx->stopModeWatcher.store(false, std::memory_order_release);
+            devCtx->modeWatcher = std::thread(runModeWatcher, devCtx);
+        } catch (...) {
+        }
+    }
+    return status;
 }
 
 NTSTATUS EvtDeviceD0Entry(WDFDEVICE device, WDF_POWER_DEVICE_STATE) noexcept {
@@ -699,15 +723,15 @@ NTSTATUS EvtDriverDeviceAdd(WDFDRIVER, PWDFDEVICE_INIT deviceInit) noexcept {
 
     WDF_OBJECT_ATTRIBUTES attr;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attr, DeviceContext);
+    attr.EvtCleanupCallback = EvtDeviceContextCleanup;
     WDFDEVICE device = nullptr;
     status = WdfDeviceCreate(&deviceInit, &attr, &device);
     if (!NT_SUCCESS(status)) {
         return status;
     }
     auto* ctx = getDeviceContext(device);
+    new (ctx) DeviceContext();
     ctx->device = device;
-    ctx->adapter = nullptr;
-    ctx->monitor = nullptr;
     return IddCxDeviceInitialize(device);
 }
 

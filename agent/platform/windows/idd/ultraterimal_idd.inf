@@ -4,7 +4,7 @@ Class=Display
 ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}
 Provider=%ManufacturerName%
 CatalogFile=ultraterimal_idd.cat
-DriverVer=11/27/2026,1.0.65.4
+DriverVer=11/27/2026,1.0.65.5
 PnpLockdown=1
 
 [Manufacturer]
