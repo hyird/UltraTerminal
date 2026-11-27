@@ -22,7 +22,7 @@ export function DashboardNavbar({
         <h1
           ref={headingRef}
           tabIndex={-1}
-          className={`text-foreground min-w-0 text-xl font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${children ? "shrink-0 whitespace-nowrap max-sm:sr-only" : "break-words"}`}
+          className={`text-foreground min-w-0 text-xl font-semibold outline-none ${children ? "shrink-0 whitespace-nowrap max-sm:sr-only" : "break-words"}`}
         >
           {title}
         </h1>

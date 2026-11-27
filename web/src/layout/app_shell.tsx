@@ -51,7 +51,7 @@ export function AppShell() {
           ref={content}
           id="main-content"
           tabIndex={-1}
-          className="min-h-0 min-w-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
+          className="min-h-0 min-w-0 outline-none"
         >
           <Outlet />
           <DesktopWorkspace />
