@@ -262,7 +262,6 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             self->lastCreditWaitMicroseconds = *initialStages.pacingCreditWait;
             self->creditClosedAt.reset();
         }
-        const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
         const bool resetNow = std::exchange(self->reset, false);
         std::optional<PrefetchedCapture> prefetched;
@@ -272,6 +271,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                 prefetched = std::move(completed);
             }
         }
+        const auto queuedAt = VideoClock::now();
         auto prepareOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, display = self->display, refresh, reset = resetNow, rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt, prefetched = std::move(prefetched)]() mutable {
             const auto computeStarted = VideoClock::now();
             initialStages.workerQueue = DesktopVideoStages::microseconds(queuedAt, computeStarted);

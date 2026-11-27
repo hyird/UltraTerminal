@@ -19,7 +19,7 @@ std::expected<wire::NativeConnect, MessageError> decodeNativeConnect(std::string
         if (!request.credential().empty() || !token(request.enrollment_code()) || request.device_name().empty() || request.device_name().size() > 128 || request.device_name().find('\0') != std::string::npos) {
             return std::unexpected(MessageError::kInvalidField);
         }
-    } else if (request.purpose() == wire::NativeConnect::CONTROL || request.purpose() == wire::NativeConnect::DESKTOP_CHANNEL || request.purpose() == wire::NativeConnect::AGENT_UPDATE || request.purpose() == wire::NativeConnect::FILE_TRANSFER) {
+    } else if (request.purpose() == wire::NativeConnect::CONTROL || request.purpose() == wire::NativeConnect::DESKTOP_CHANNEL || request.purpose() == wire::NativeConnect::AGENT_UPDATE || request.purpose() == wire::NativeConnect::FILE_TRANSFER || request.purpose() == wire::NativeConnect::TERMINAL_CHANNEL) {
         if (!token(request.credential()) || !request.enrollment_code().empty() || !request.device_name().empty()) {
             return std::unexpected(MessageError::kInvalidField);
         }

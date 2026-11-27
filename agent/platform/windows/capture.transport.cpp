@@ -102,6 +102,14 @@ struct DesktopCapture::State {
     ComPtr<IDXGIOutputDuplication> duplication;
     std::array<ComPtr<ID3D11Texture2D>, 2> staging;
     std::size_t stagingIndex = 0;
+    struct PendingStagingFrame {
+        std::size_t slot = 0;
+        CapturedFrame frame;
+        std::uint32_t rowBegin = 0;
+        std::uint32_t rowEnd = 0;
+        bool incremental = false;
+    };
+    std::optional<PendingStagingFrame> pendingStaging;
     ComPtr<ID3D11Texture2D> latest;
     std::optional<CapturedFrame> deferred;
     DXGI_OUTDUPL_DESC description{};
@@ -164,15 +172,15 @@ struct DesktopCapture::State {
         }
         return !dirtyRects.empty() && dirtyRects.size() <= 64 && totalArea <= static_cast<std::uint64_t>(width) * height * 3 / 5;
     }
-    ID3D11Texture2D* ensureStaging(const D3D11_TEXTURE2D_DESC& textureDescription) {
-        auto& slot = staging[stagingIndex];
-        stagingIndex = (stagingIndex + 1) % staging.size();
+    ID3D11Texture2D* ensureStagingSlot(std::size_t index, const D3D11_TEXTURE2D_DESC& textureDescription) {
+        auto& slot = staging[index];
         D3D11_TEXTURE2D_DESC previous{};
         if (slot) {
             slot->GetDesc(&previous);
         }
         if (!slot || previous.Width != textureDescription.Width || previous.Height != textureDescription.Height) {
             if (slot && (previous.Width != textureDescription.Width || previous.Height != textureDescription.Height)) {
+                pendingStaging.reset();
                 for (auto& entry : staging) {
                     entry.Reset();
                 }
@@ -185,6 +193,43 @@ struct DesktopCapture::State {
             require(device->CreateTexture2D(&stagingDescription, nullptr, &slot), "Create staging texture");
         }
         return slot.Get();
+    }
+    ID3D11Texture2D* ensureStaging(const D3D11_TEXTURE2D_DESC& textureDescription) {
+        const auto index = stagingIndex;
+        stagingIndex = (stagingIndex + 1) % staging.size();
+        return ensureStagingSlot(index, textureDescription);
+    }
+    bool mapStagingSlotDirect(std::size_t slot, CapturedFrame& frame, std::uint32_t rowBegin, std::uint32_t rowEnd, bool incremental, const DirectPixelConsumer& consumer, CaptureTiming* timing) {
+        auto* target = staging[slot].Get();
+        if (!target) {
+            return false;
+        }
+        const auto mapStarted = timing ? Clock::now() : Clock::time_point{};
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        require(context->Map(target, 0, D3D11_MAP_READ, 0, &mapped), "Map desktop texture");
+        const auto rowsStarted = timing ? Clock::now() : Clock::time_point{};
+        Clock::time_point rowsEnded;
+        bool consumed = false;
+        {
+            MappedTexture mapping{context.Get(), target};
+            const auto pitch = static_cast<std::size_t>(mapped.RowPitch);
+            consumed = consumer(std::span<const std::uint8_t>(static_cast<const std::uint8_t*>(mapped.pData), pitch * frame.height), pitch,
+                                frame.width, frame.height, rowBegin, rowEnd, frame.captureEpoch, frame.sourceSerial, incremental);
+            rowsEnded = timing ? Clock::now() : Clock::time_point{};
+        }
+        if (timing) {
+            timing->mapMilliseconds = milliseconds(mapStarted, rowsStarted);
+            timing->rowCopyMilliseconds = milliseconds(rowsStarted, rowsEnded);
+            timing->stages.mapMicroseconds = microseconds(mapStarted, rowsStarted);
+            timing->stages.rowCopyMicroseconds = microseconds(rowsStarted, rowsEnded);
+        }
+        if (consumed) {
+            lastDirectSerial = frame.sourceSerial;
+            lastReadbackSerial = 0;
+            lastReadbackData = nullptr;
+            frame.bgra.clear();
+        }
+        return consumed;
     }
     void copyStagingPixels(const ComPtr<ID3D11Texture2D>& source, const D3D11_TEXTURE2D_DESC& textureDescription, CapturedFrame& frame, CaptureTiming* timing, AcquiredFrame* releaseBeforeMap = nullptr) {
         auto* target = ensureStaging(textureDescription);
@@ -613,6 +658,20 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         timing->stages.acquireWaitMicroseconds = microseconds(acquireStarted, acquireEnded);
     }
     if (result == DXGI_ERROR_WAIT_TIMEOUT) {
+        if (readPixels && state_->pendingStaging && directConsumer && *directConsumer) {
+            auto pending = std::move(*state_->pendingStaging);
+            state_->pendingStaging.reset();
+            if (state_->mapStagingSlotDirect(pending.slot, pending.frame, pending.rowBegin, pending.rowEnd, pending.incremental, *directConsumer, timing)) {
+                state_->pixelsCaptured = true;
+                state_->lastPixelsWidth = pending.frame.width;
+                state_->lastPixelsHeight = pending.frame.height;
+                if (requireInputDesktop() != state_->desktopGeneration) {
+                    throw CaptureReset();
+                }
+                pending.frame.stageTiming = timing->stages;
+                return std::move(pending.frame);
+            }
+        }
         if (readPixels && state_->deferred) {
             auto frame = std::move(*state_->deferred);
             state_->deferred.reset();
@@ -693,6 +752,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
         }
         if (!state_->latest || previous.Width != description.Width || previous.Height != description.Height) {
             state_->latest.Reset();
+            state_->pendingStaging.reset();
             for (auto& entry : state_->staging) {
                 entry.Reset();
             }
@@ -738,6 +798,75 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
             frame.captureTicks = state_->deferred->captureTicks;
         }
         const DirectPixelConsumer* activeDirect = (directConsumer && *directConsumer && !DesktopCursor::requiresBackground(frame)) ? directConsumer : nullptr;
+        const bool useAsyncStaging = activeDirect && !state_->description.DesktopImageInSystemMemory &&
+                                     !(timing && timing->verifyWithStaging) && desktopUpdated && !hadDeferred && !geometryChanged;
+        if (useAsyncStaging) {
+            std::uint64_t dirtyArea = 0;
+            const std::uint64_t expectedPrevSerial = state_->pendingStaging ? state_->pendingStaging->frame.sourceSerial : state_->lastDirectSerial;
+            const bool incremental = state_->sourceSerial == expectedPrevSerial + 1 &&
+                                     state_->extractDirtyRects(info, frame.width, frame.height, dirtyArea);
+            std::uint32_t rowBegin = 0;
+            std::uint32_t rowEnd = frame.height;
+            frame.dirtyRowBegin = 0;
+            frame.dirtyRowEnd = frame.height;
+            frame.changedPixels = static_cast<std::uint64_t>(frame.width) * frame.height;
+            if (incremental) {
+                std::uint32_t minTop = frame.height;
+                std::uint32_t maxBottom = 0;
+                for (const auto& rect : state_->dirtyRects) {
+                    minTop = std::min(minTop, rect.top);
+                    maxBottom = std::max(maxBottom, rect.bottom);
+                }
+                rowBegin = minTop & ~1u;
+                rowEnd = std::min(frame.height, (maxBottom + 1u) & ~1u);
+                frame.dirtyRowBegin = rowBegin;
+                frame.dirtyRowEnd = rowEnd;
+                frame.changedPixels = std::min<std::uint64_t>(dirtyArea, static_cast<std::uint64_t>(frame.width) * frame.height);
+            }
+            const std::size_t newSlot = state_->pendingStaging ? (1u - state_->pendingStaging->slot) : state_->stagingIndex;
+            state_->stagingIndex = 1u - newSlot;
+            auto* target = state_->ensureStagingSlot(newSlot, description);
+            const auto copyStarted = timing ? Clock::now() : Clock::time_point{};
+            state_->context->CopyResource(target, source.Get());
+            state_->context->Flush();
+            acquired.release();
+            if (timing) {
+                timing->copyDispatchMilliseconds = milliseconds(copyStarted, Clock::now());
+            }
+            if (state_->pendingStaging && state_->pendingStaging->frame.width == frame.width && state_->pendingStaging->frame.height == frame.height) {
+                auto prev = std::move(*state_->pendingStaging);
+                // Keep cursor at 0-frame latency by forwarding the newest pointer state.
+                prev.frame.pointerVisible = frame.pointerVisible;
+                prev.frame.pointerX = frame.pointerX;
+                prev.frame.pointerY = frame.pointerY;
+                prev.frame.pointerShape = frame.pointerShape;
+                prev.frame.pointerType = frame.pointerType;
+                prev.frame.pointerWidth = frame.pointerWidth;
+                prev.frame.pointerHeight = frame.pointerHeight;
+                prev.frame.pointerPitch = frame.pointerPitch;
+                prev.frame.hotspotX = frame.hotspotX;
+                prev.frame.hotspotY = frame.hotspotY;
+                state_->pendingStaging = DesktopCapture::State::PendingStagingFrame{newSlot, std::move(frame), rowBegin, rowEnd, incremental};
+                if (state_->mapStagingSlotDirect(prev.slot, prev.frame, prev.rowBegin, prev.rowEnd, prev.incremental, *activeDirect, timing)) {
+                    state_->deferred.reset();
+                    state_->pixelsCaptured = true;
+                    state_->lastPixelsWidth = prev.frame.width;
+                    state_->lastPixelsHeight = prev.frame.height;
+                    if (requireInputDesktop() != state_->desktopGeneration) {
+                        throw CaptureReset();
+                    }
+                    prev.frame.stageTiming = timing->stages;
+                    return std::move(prev.frame);
+                }
+                // Consumer rejected (e.g. resolution/epoch mismatch): fall back by clearing pipeline.
+                state_->pendingStaging.reset();
+                return std::nullopt;
+            }
+            state_->pendingStaging = DesktopCapture::State::PendingStagingFrame{newSlot, std::move(frame), rowBegin, rowEnd, incremental};
+            state_->deferred.reset();
+            return std::nullopt;
+        }
+        state_->pendingStaging.reset();
         state_->copyPixels(source, &info, desktopUpdated && !hadDeferred && !geometryChanged, frame, reusablePixels, timing, &acquired, activeDirect);
         state_->deferred.reset();
         state_->pixelsCaptured = true;
@@ -746,6 +875,7 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     } else if (!readPixels && desktopUpdated) {
         // ReleaseFrame invalidates the acquired resource. Own exactly one GPU
         // snapshot before releasing it; replace raw pixels, never encoded AVC.
+        state_->pendingStaging.reset();
         state_->pixelsCaptured = false;
         state_->lastReadbackSerial = 0;
         state_->lastDirectSerial = 0;

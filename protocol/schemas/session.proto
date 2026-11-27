@@ -4,7 +4,7 @@ option optimize_for = LITE_RUNTIME;
 
 // First record of an authenticated TLS/QUIC connection, before Envelope traffic.
 message NativeConnect {
-  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; AGENT_UPDATE = 4; FILE_TRANSFER = 5; }
+  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; AGENT_UPDATE = 4; FILE_TRANSFER = 5; TERMINAL_CHANNEL = 6; }
   uint32 protocol_version = 1;
   Purpose purpose = 2;
   bytes credential = 3;
