@@ -34,7 +34,7 @@ function storageFixture() {
 }
 
 const key = "ultraterimal.desktop.v1:user:device";
-const defaults = { scale: "fit", resolution: null };
+const defaults = { scale: "fit", resolution: "auto" };
 
 test("desktop preferences persist scale and resolution for each user and device", () => {
   const storage = storageFixture();

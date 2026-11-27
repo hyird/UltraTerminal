@@ -13,7 +13,7 @@ export function loadDesktopPreferences(
 ): DesktopPreferences {
   const defaults: DesktopPreferences = {
     scale: "fit",
-    resolution: null,
+    resolution: "auto",
   };
   try {
     const value: unknown = JSON.parse(

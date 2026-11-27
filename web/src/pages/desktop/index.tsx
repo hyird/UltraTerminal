@@ -141,7 +141,9 @@ function DesktopPanel({
   const [restart, setRestart] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [autoResolution, setAutoResolution] = useState(
-    () => initialPreferences.current.resolution === "auto",
+    () =>
+      initialPreferences.current.resolution === "auto" ||
+      initialPreferences.current.resolution === null,
   );
   const [resizingTarget, setResizingTarget] = useState<{
     width: number;
