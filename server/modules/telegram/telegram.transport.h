@@ -26,11 +26,11 @@ inline ruvia::task<std::optional<std::string>> telegramCall(ruvia::context& cont
         if (response.status() != ruvia::http_status::ok) {
             co_return std::nullopt;
         }
-        auto parsedResult = co_await response.json<TelegramApiResponse>(65536);
+        auto parsedResult = co_await response.template json<TelegramApiResponse>(65536);
         if (!parsedResult.has_value()) {
             co_return std::nullopt;
         }
-        const auto parsed = std::move(parsedResult).take_value();
+        const TelegramApiResponse parsed = std::move(parsedResult).take_value();
         const auto& resultField = parsed.get<"result">();
         if (!parsed.get<"ok">() || !resultField.has_value()) {
             co_return std::nullopt;
