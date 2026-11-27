@@ -84,6 +84,8 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
     ruvia::event_loop loop;
     ruvia::blocking_pool& pool;
     std::shared_ptr<DesktopVideoWorker> worker = std::make_shared<DesktopVideoWorker>();
+    std::optional<ruvia::one_shot_receiver<PoolOutcome<PrefetchedCapture>>> pendingPrefetch;
+    std::shared_future<void> pendingPrefetchDone;
     std::optional<ruvia::one_shot_receiver<PoolOutcome<std::pair<DesktopVideoDiagnostics, bool>>>> pendingRelease;
     std::shared_future<void> pendingReleaseDone;
     WindowsDeadlineTimer pace;
@@ -132,6 +134,10 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
     }
     ~State() {
+        pendingPrefetch.reset();
+        if (pendingPrefetchDone.valid()) {
+            pendingPrefetchDone.wait(); // Shutdown only: wait for bounded 16 ms prefetch before release.
+        }
         pendingRelease.reset();
         if (pendingReleaseDone.valid()) {
             pendingReleaseDone.wait(); // Shutdown only, never the event-loop hot path.
@@ -151,14 +157,19 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         if (pendingRelease) {
             return;
         }
+        auto waitPrefetch = std::exchange(pendingPrefetchDone, {});
+        pendingPrefetch.reset();
         std::promise<void> doneSignal;
         pendingReleaseDone = doneSignal.get_future().share();
         try {
-            pendingRelease.emplace(startOnPool(loop.worker(), pool, [owned = worker, doneSignal = std::move(doneSignal)]() mutable {
+            pendingRelease.emplace(startOnPool(loop.worker(), pool, [owned = worker, waitPrefetch = std::move(waitPrefetch), doneSignal = std::move(doneSignal)]() mutable {
                 struct SignalGuard {
                     std::promise<void>& signal;
                     ~SignalGuard() { signal.set_value(); }
                 } guard{doneSignal};
+                if (waitPrefetch.valid()) {
+                    waitPrefetch.wait();
+                }
                 owned->discard();
                 return std::pair{owned->diagnostics, !owned->encoder};
             }));
@@ -166,6 +177,16 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             pendingReleaseDone = {};
             throw std::logic_error("Desktop timer release could not be queued");
         }
+    }
+    static asio::awaitable<std::optional<PrefetchedCapture>> takePrefetch(std::shared_ptr<State> self) {
+        if (!self->pendingPrefetch) {
+            co_return std::nullopt;
+        }
+        auto receiver = std::move(*self->pendingPrefetch);
+        self->pendingPrefetch.reset();
+        auto result = co_await ruvia::as_awaitable(awaitPoolReceiver(std::move(receiver)));
+        self->pendingPrefetchDone = {};
+        co_return result;
     }
     static asio::awaitable<void> awaitCaptureRelease(std::shared_ptr<State> self) {
         if (!self->pendingRelease) {
@@ -243,10 +264,18 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         }
         const auto queuedAt = VideoClock::now();
         const auto revision = self->worker->requestedRevision.load();
-        auto prepareOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, display = self->display, refresh, reset = std::exchange(self->reset, false), rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt]() mutable {
+        const bool resetNow = std::exchange(self->reset, false);
+        std::optional<PrefetchedCapture> prefetched;
+        if (self->pendingPrefetch) {
+            auto completed = co_await takePrefetch(self);
+            if (!resetNow && !self->stopped && !self->flow.background()) {
+                prefetched = std::move(completed);
+            }
+        }
+        auto prepareOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, display = self->display, refresh, reset = resetNow, rate, flowWidth, flowHeight, allowEncode, capabilities = self->capabilities, requestedV2, requestedContinuous, revision, initialStages, queuedAt, prefetched = std::move(prefetched)]() mutable {
             const auto computeStarted = VideoClock::now();
             initialStages.workerQueue = DesktopVideoStages::microseconds(queuedAt, computeStarted);
-            return owned->prepare(display, refresh, reset, rate, flowWidth, flowHeight, allowEncode, capabilities, requestedV2, requestedContinuous, revision, initialStages, computeStarted);
+            return owned->prepare(display, refresh, reset, rate, flowWidth, flowHeight, allowEncode, capabilities, requestedV2, requestedContinuous, revision, initialStages, computeStarted, std::move(prefetched));
         });
         auto step = ((co_await ruvia::as_awaitable(std::move(prepareOperation))).take_value());
         if (step.deferredEncode) {
@@ -268,8 +297,8 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                 for (std::size_t slot = 0; slot < sliceCount; ++slot) {
                     const auto rowBegin = deferred.rowBegin + static_cast<std::uint32_t>((pairCount * slot / sliceCount) * 2u);
                     const auto rowEnd = deferred.rowBegin + static_cast<std::uint32_t>((pairCount * (slot + 1) / sliceCount) * 2u);
-                    sliceReceivers.push_back(startOnPool(self->loop.worker(), self->pool, [owned = self->worker, rowBegin, rowEnd, format = deferred.pixelFormat] {
-                        return owned->convertRowSlice(rowBegin, rowEnd, format);
+                    sliceReceivers.push_back(startOnPool(self->loop.worker(), self->pool, [owned = self->worker, yuvSlot = deferred.yuvSlot, rowBegin, rowEnd, format = deferred.pixelFormat] {
+                        return owned->convertRowSlice(yuvSlot, rowBegin, rowEnd, format);
                     }));
                 }
                 bool allOk = true;
@@ -283,6 +312,25 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
                     deferred.stages.prepareCpu = std::min(60000000u, deferred.stages.prepareCpu.value_or(0) + elapsed);
                 }
                 preconverted = allOk;
+            }
+            // Overlap next frame's DXGI capture + direct I420 conversion into the
+            // alternate YUV buffer while OpenH264 encodes the current YUV buffer.
+            if (preconverted && deferred.canPrefetchNext && poolThreads > 1 && !self->pendingPrefetch &&
+                !self->stopped && !self->reset && !self->flow.background()) {
+                const std::size_t nextYuvSlot = 1u - deferred.yuvSlot;
+                std::promise<void> doneSignal;
+                self->pendingPrefetchDone = doneSignal.get_future().share();
+                try {
+                    self->pendingPrefetch.emplace(startOnPool(self->loop.worker(), self->pool, [owned = self->worker, nextYuvSlot, width = deferred.width, height = deferred.height, epoch = deferred.sourceEpoch, doneSignal = std::move(doneSignal)]() mutable {
+                        struct SignalGuard {
+                            std::promise<void>& signal;
+                            ~SignalGuard() { signal.set_value(); }
+                        } guard{doneSignal};
+                        return owned->prefetchCapture(nextYuvSlot, width, height, epoch);
+                    }));
+                } catch (...) {
+                    self->pendingPrefetchDone = {};
+                }
             }
             auto encodeOperation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, deferred = std::move(deferred), preconverted]() mutable {
                 return owned->encodeDeferred(std::move(deferred), preconverted);
@@ -373,6 +421,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
             ~Pending() { value = false; }
         } guard{self->pending};
         self->pending = true;
+        (void)co_await takePrefetch(self);
         co_await awaitCaptureRelease(self);
         auto operation = ruvia::run_blocking_joined(self->loop.worker(), [owned = self->worker, width, height] {
             return owned->resize(width, height);

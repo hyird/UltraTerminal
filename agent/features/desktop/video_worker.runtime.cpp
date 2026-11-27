@@ -57,8 +57,12 @@ void DesktopVideoWorker::discard() {
     encoder.reset();
     retained.reset();
     capture.reset();
-    convertedYuvEpoch = convertedYuvSerial = 0;
-    convertedYuvWidth = convertedYuvHeight = 0;
+    for (auto& buffer : yuvBuffers) {
+        buffer.epoch = buffer.serial = 0;
+        buffer.width = buffer.height = 0;
+    }
+    activeYuvSlot = 0;
+    cachedDisplayModes.clear();
     cursor = DesktopCursor{};
     configurationPending = true;
     pixelsPending = false;
@@ -76,34 +80,78 @@ void DesktopVideoWorker::beginGeneration() {
     consecutiveRepeatedFrames = 0;
     configurationPending = true;
 }
-bool DesktopVideoWorker::convertRowSlice(std::uint32_t rowBegin, std::uint32_t rowEnd, VideoPixelFormat format) {
-    if (!retained || retained->bgra.empty() || convertedYuv.size() < static_cast<std::size_t>(width) * height * 3 / 2) {
+bool DesktopVideoWorker::convertRowSlice(std::size_t yuvSlot, std::uint32_t rowBegin, std::uint32_t rowEnd, VideoPixelFormat format) {
+    auto& buffer = yuvBuffers[yuvSlot];
+    if (!retained || retained->bgra.empty() || buffer.bytes.size() < static_cast<std::size_t>(width) * height * 3 / 2) {
         return false;
     }
-    return convertVideoPixelRows(retained->bgra, static_cast<std::size_t>(width) * 4, width, height, rowBegin, rowEnd, format, convertedYuv);
+    return convertVideoPixelRows(retained->bgra, static_cast<std::size_t>(width) * 4, width, height, rowBegin, rowEnd, format, buffer.bytes);
+}
+PrefetchedCapture DesktopVideoWorker::prefetchCapture(std::size_t targetYuvSlot, std::uint32_t expectedWidth, std::uint32_t expectedHeight, std::uint64_t expectedEpoch) {
+    PrefetchedCapture result;
+    result.yuvSlot = targetYuvSlot;
+    if (!capture) {
+        return result;
+    }
+    auto& buffer = yuvBuffers[targetYuvSlot];
+    DesktopCapture::DirectPixelConsumer directConsumer = [&](std::span<const std::uint8_t> bgra, std::size_t rowPitch,
+                                                             std::uint32_t frameW, std::uint32_t frameH,
+                                                             std::uint32_t rowBegin, std::uint32_t rowEnd,
+                                                             std::uint64_t capEpoch, std::uint64_t serial, bool incremental) -> bool {
+        if (frameW != expectedWidth || frameH != expectedHeight || capEpoch != expectedEpoch) {
+            return false;
+        }
+        const auto yuvBytes = static_cast<std::size_t>(frameW) * frameH * 3 / 2;
+        const bool hadStorage = buffer.bytes.size() >= yuvBytes;
+        buffer.bytes.resize(yuvBytes);
+        const bool cacheContinuous = hadStorage && incremental && buffer.epoch == capEpoch &&
+                                     buffer.width == frameW && buffer.height == frameH &&
+                                     buffer.format == VideoPixelFormat::kI420 &&
+                                     buffer.serial + 1 == serial;
+        const std::uint32_t convBegin = cacheContinuous ? (rowBegin & ~1u) : 0u;
+        const std::uint32_t convEnd = cacheContinuous ? std::min(frameH, (rowEnd + 1u) & ~1u) : frameH;
+        if (!convertVideoPixelRows(bgra, rowPitch, frameW, frameH, convBegin, convEnd, VideoPixelFormat::kI420, buffer.bytes)) {
+            buffer.epoch = buffer.serial = 0;
+            return false;
+        }
+        buffer.epoch = capEpoch;
+        buffer.serial = serial;
+        buffer.width = frameW;
+        buffer.height = frameH;
+        buffer.format = VideoPixelFormat::kI420;
+        return true;
+    };
+    try {
+        result.frame = capture->nextFrame(std::chrono::milliseconds(16), nullptr, &result.timing, true, false, &directConsumer);
+    } catch (const DesktopChanged& error) {
+        result.desktopChanged = true;
+        result.faultCode = error.code();
+    }
+    return result;
 }
 PreparedVideoStep DesktopVideoWorker::encodeDeferred(DeferredCpuEncode deferred, bool preconverted) {
+    auto& buffer = yuvBuffers[deferred.yuvSlot];
     const auto convertStarted = VideoClock::now();
     if (!preconverted) {
-        preconverted = convertRowSlice(deferred.rowBegin, deferred.rowEnd, deferred.pixelFormat);
+        preconverted = convertRowSlice(deferred.yuvSlot, deferred.rowBegin, deferred.rowEnd, deferred.pixelFormat);
         if (preconverted && deferred.rowBegin < deferred.rowEnd) {
             addDuration(deferred.stages.prepareCpu, DesktopVideoStages::microseconds(convertStarted, VideoClock::now()));
         }
     }
     if (preconverted) {
-        convertedYuvEpoch = deferred.sourceEpoch;
-        convertedYuvSerial = deferred.sourceSerial;
-        convertedYuvWidth = deferred.width;
-        convertedYuvHeight = deferred.height;
-        convertedYuvFormat = deferred.pixelFormat;
+        buffer.epoch = deferred.sourceEpoch;
+        buffer.serial = deferred.sourceSerial;
+        buffer.width = deferred.width;
+        buffer.height = deferred.height;
+        buffer.format = deferred.pixelFormat;
     } else {
-        convertedYuvEpoch = convertedYuvSerial = 0;
-        convertedYuvWidth = convertedYuvHeight = 0;
+        buffer.epoch = buffer.serial = 0;
+        buffer.width = buffer.height = 0;
     }
     const auto encodeStarted = VideoClock::now();
     encoder->setRate(deferred.rate.framesPerSecond, deferred.rate.bitrate);
     ++diagnostics.videoEncodeCalls;
-    auto encoded = preconverted ? encoder->encodePreconverted(retained->bgra, static_cast<std::size_t>(width) * 4, convertedYuv, deferred.pixelFormat, deferred.timestamp, deferred.keyRequired)
+    auto encoded = preconverted ? encoder->encodePreconverted(retained->bgra, static_cast<std::size_t>(width) * 4, buffer.bytes, deferred.pixelFormat, deferred.timestamp, deferred.keyRequired)
                                 : encoder->encode(retained->bgra, static_cast<std::size_t>(width) * 4, deferred.timestamp, deferred.keyRequired);
     auto finishStep = [&](std::optional<DesktopVideoUpdate> update) {
         const auto completedAt = VideoClock::now();
@@ -155,7 +203,7 @@ PreparedVideoStep DesktopVideoWorker::encodeDeferred(DeferredCpuEncode deferred,
         *configuration.mutable_session_capabilities() = protocol::desktopSessionCapabilities();
         configuration.set_session_version(sessionAgreement.version);
         configuration.set_session_features(sessionAgreement.features);
-        for (const auto& mode : capture->displayModes()) {
+        for (const auto& mode : cachedDisplayModes) {
             auto* advertised = configuration.add_display_modes();
             advertised->set_width(mode.width);
             advertised->set_height(mode.height);
@@ -185,7 +233,8 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
                                               std::uint32_t flowWidth, std::uint32_t flowHeight, bool allowEncode,
                                               const wire::DesktopVideoCapabilities& capabilities, bool requestedV2,
                                               bool requestedContinuous, std::uint64_t revision, DesktopVideoStages stages,
-                                              std::chrono::steady_clock::time_point computeStarted) {
+                                              std::chrono::steady_clock::time_point computeStarted,
+                                              std::optional<PrefetchedCapture> prefetched) {
     auto finishImmediate = [&](std::optional<DesktopVideoUpdate> update, std::optional<std::pair<std::uint32_t, std::uint32_t>> geometryChanged = std::nullopt) {
         const auto completedAt = VideoClock::now();
         if (update) {
@@ -209,12 +258,14 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
         diagnostics.lastJobAcquired = false;
         if (reset) {
             discard();
+            prefetched.reset();
         }
         if (!recovery.ready(started)) {
             return finishImmediate(std::nullopt);
         }
         if (!capture) {
             capture = std::make_unique<DesktopCapture>(display);
+            cachedDisplayModes = capture->displayModes();
         }
         std::vector<wire::VideoCodec> codecs{wire::AVC};
         for (const auto codec : capabilities.codecs()) {
@@ -227,45 +278,62 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
                                           requestedContinuous != continuousFrames || agreement != sessionAgreement;
         refresh = refresh || configurationChanged;
         CaptureTiming timing;
-        // Acquire while backpressured, retaining only the latest raw snapshot.
-        // CPU readback starts only when a frame can actually be encoded.
-        const bool readPixels = allowEncode && (!encoder || !encoder->gpu()) &&
-                                (refresh || configurationPending || started >= encodeAt);
-        const auto preferredFormat = (encoder && !encoder->gpu()) ? encoder->preferredPixelFormat() : std::nullopt;
-        const bool canDirectI420 = readPixels && preferredFormat && *preferredFormat == VideoPixelFormat::kI420 && !configurationChanged;
-        DesktopCapture::DirectPixelConsumer directConsumer;
-        if (canDirectI420) {
-            directConsumer = [&](std::span<const std::uint8_t> bgra, std::size_t rowPitch,
-                                 std::uint32_t frameW, std::uint32_t frameH,
-                                 std::uint32_t rowBegin, std::uint32_t rowEnd,
-                                 std::uint64_t capEpoch, std::uint64_t serial, bool incremental) -> bool {
-                if (frameW != width || frameH != height || capEpoch != configuredCaptureEpoch) {
-                    return false;
+        std::optional<CapturedFrame> pixels;
+        if (prefetched) {
+            if (prefetched->desktopChanged) {
+                throw DesktopChanged("Desktop capture invalidated during prefetch", prefetched->faultCode);
+            }
+            timing = prefetched->timing;
+            pixels = std::move(prefetched->frame);
+            if (pixels) {
+                const auto& prefetchedYuv = yuvBuffers[prefetched->yuvSlot];
+                if (prefetchedYuv.epoch == pixels->captureEpoch && prefetchedYuv.serial == pixels->sourceSerial &&
+                    prefetchedYuv.width == pixels->width && prefetchedYuv.height == pixels->height) {
+                    activeYuvSlot = prefetched->yuvSlot;
                 }
-                const auto yuvBytes = static_cast<std::size_t>(frameW) * frameH * 3 / 2;
-                const bool hadStorage = convertedYuv.size() >= yuvBytes;
-                convertedYuv.resize(yuvBytes);
-                const bool cacheContinuous = hadStorage && incremental && convertedYuvEpoch == capEpoch &&
-                                             convertedYuvWidth == frameW && convertedYuvHeight == frameH &&
-                                             convertedYuvFormat == VideoPixelFormat::kI420 &&
-                                             convertedYuvSerial + 1 == serial;
-                const std::uint32_t convBegin = cacheContinuous ? (rowBegin & ~1u) : 0u;
-                const std::uint32_t convEnd = cacheContinuous ? std::min(frameH, (rowEnd + 1u) & ~1u) : frameH;
-                if (!convertVideoPixelRows(bgra, rowPitch, frameW, frameH, convBegin, convEnd, VideoPixelFormat::kI420, convertedYuv)) {
-                    convertedYuvEpoch = convertedYuvSerial = 0;
-                    return false;
-                }
-                convertedYuvEpoch = capEpoch;
-                convertedYuvSerial = serial;
-                convertedYuvWidth = frameW;
-                convertedYuvHeight = frameH;
-                convertedYuvFormat = VideoPixelFormat::kI420;
-                return true;
-            };
+            }
+        } else {
+            // Acquire while backpressured, retaining only the latest raw snapshot.
+            // CPU readback starts only when a frame can actually be encoded.
+            const bool readPixels = allowEncode && (!encoder || !encoder->gpu()) &&
+                                    (refresh || configurationPending || started >= encodeAt);
+            const auto preferredFormat = (encoder && !encoder->gpu()) ? encoder->preferredPixelFormat() : std::nullopt;
+            const bool canDirectI420 = readPixels && preferredFormat && *preferredFormat == VideoPixelFormat::kI420 && !configurationChanged;
+            auto& activeBuffer = yuvBuffers[activeYuvSlot];
+            DesktopCapture::DirectPixelConsumer directConsumer;
+            if (canDirectI420) {
+                directConsumer = [&](std::span<const std::uint8_t> bgra, std::size_t rowPitch,
+                                     std::uint32_t frameW, std::uint32_t frameH,
+                                     std::uint32_t rowBegin, std::uint32_t rowEnd,
+                                     std::uint64_t capEpoch, std::uint64_t serial, bool incremental) -> bool {
+                    if (frameW != width || frameH != height || capEpoch != configuredCaptureEpoch) {
+                        return false;
+                    }
+                    const auto yuvBytes = static_cast<std::size_t>(frameW) * frameH * 3 / 2;
+                    const bool hadStorage = activeBuffer.bytes.size() >= yuvBytes;
+                    activeBuffer.bytes.resize(yuvBytes);
+                    const bool cacheContinuous = hadStorage && incremental && activeBuffer.epoch == capEpoch &&
+                                                 activeBuffer.width == frameW && activeBuffer.height == frameH &&
+                                                 activeBuffer.format == VideoPixelFormat::kI420 &&
+                                                 activeBuffer.serial + 1 == serial;
+                    const std::uint32_t convBegin = cacheContinuous ? (rowBegin & ~1u) : 0u;
+                    const std::uint32_t convEnd = cacheContinuous ? std::min(frameH, (rowEnd + 1u) & ~1u) : frameH;
+                    if (!convertVideoPixelRows(bgra, rowPitch, frameW, frameH, convBegin, convEnd, VideoPixelFormat::kI420, activeBuffer.bytes)) {
+                        activeBuffer.epoch = activeBuffer.serial = 0;
+                        return false;
+                    }
+                    activeBuffer.epoch = capEpoch;
+                    activeBuffer.serial = serial;
+                    activeBuffer.width = frameW;
+                    activeBuffer.height = frameH;
+                    activeBuffer.format = VideoPixelFormat::kI420;
+                    return true;
+                };
+            }
+            const bool retainTexture = !encoder || encoder->gpu() || !readPixels;
+            const auto wait = allowEncode && !pixelsPending ? std::chrono::milliseconds(16) : std::chrono::milliseconds(0);
+            pixels = capture->nextFrame(wait, retained ? &retained->bgra : nullptr, &timing, readPixels, retainTexture, canDirectI420 ? &directConsumer : nullptr);
         }
-        const bool retainTexture = !encoder || encoder->gpu() || !readPixels;
-        const auto wait = allowEncode && !pixelsPending ? std::chrono::milliseconds(16) : std::chrono::milliseconds(0);
-        auto pixels = capture->nextFrame(wait, retained ? &retained->bgra : nullptr, &timing, readPixels, retainTexture, canDirectI420 ? &directConsumer : nullptr);
         ++diagnostics.captureCalls;
         addDuration(stages.acquireWait, timing.stages.acquireWaitMicroseconds);
         addDuration(stages.gpuSyncWait, timing.stages.mapMicroseconds);
@@ -334,6 +402,7 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
                                                source.captureEpoch != configuredCaptureEpoch || source.desktopLeft != configuredLeft || source.desktopTop != configuredTop);
         if (!encoder || sourceChanged || configurationChanged) {
             encoder = std::make_unique<VideoEncoder>(VideoEncoderConfig{source.width, source.height, rate.bitrate, rate.framesPerSecond, false, codecs}, capture->device());
+            cachedDisplayModes = capture->displayModes();
             width = source.width;
             height = source.height;
             configuredCaptureEpoch = source.captureEpoch;
@@ -347,11 +416,12 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
         }
         const bool gpuEncoding = encoder->gpu();
         const auto directFormat = !gpuEncoding ? encoder->preferredPixelFormat() : std::nullopt;
+        auto& activeBuffer = yuvBuffers[activeYuvSlot];
         const bool alreadyConvertedDirect = directFormat && *directFormat == VideoPixelFormat::kI420 &&
-                                            convertedYuv.size() >= static_cast<std::size_t>(width) * height * 3 / 2 &&
-                                            convertedYuvEpoch == source.captureEpoch && convertedYuvSerial == source.sourceSerial &&
-                                            convertedYuvWidth == width && convertedYuvHeight == height &&
-                                            convertedYuvFormat == VideoPixelFormat::kI420;
+                                            activeBuffer.bytes.size() >= static_cast<std::size_t>(width) * height * 3 / 2 &&
+                                            activeBuffer.epoch == source.captureEpoch && activeBuffer.serial == source.sourceSerial &&
+                                            activeBuffer.width == width && activeBuffer.height == height &&
+                                            activeBuffer.format == VideoPixelFormat::kI420;
         const auto materialize = [&] {
             if (source.bgra.empty()) {
                 CaptureTiming readbackTiming;
@@ -383,24 +453,26 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
         const auto changedArea = source.changedPixels ? source.changedPixels : static_cast<std::uint64_t>(width) * height;
         if (const auto pixelFormat = encoder->preferredPixelFormat(); pixelFormat && !gpuEncoding) {
             const auto yuvBytes = static_cast<std::size_t>(width) * height * 3 / 2;
-            const bool hadStorage = convertedYuv.size() >= yuvBytes;
-            convertedYuv.resize(yuvBytes);
-            const bool sameCachedYuv = hadStorage && convertedYuvEpoch == source.captureEpoch && convertedYuvWidth == width &&
-                                       convertedYuvHeight == height && convertedYuvFormat == *pixelFormat;
+            const bool hadStorage = activeBuffer.bytes.size() >= yuvBytes;
+            activeBuffer.bytes.resize(yuvBytes);
+            const bool sameCachedYuv = hadStorage && activeBuffer.epoch == source.captureEpoch && activeBuffer.width == width &&
+                                       activeBuffer.height == height && activeBuffer.format == *pixelFormat;
             std::uint32_t rowBegin = 0;
             std::uint32_t rowEnd = height;
-            if (sameCachedYuv && convertedYuvSerial == source.sourceSerial) {
+            if (sameCachedYuv && activeBuffer.serial == source.sourceSerial) {
                 rowBegin = 0;
                 rowEnd = 0;
-            } else if (sameCachedYuv && convertedYuvSerial + 1 == source.sourceSerial &&
+            } else if (sameCachedYuv && activeBuffer.serial + 1 == source.sourceSerial &&
                        source.dirtyRowBegin <= source.dirtyRowEnd && source.dirtyRowEnd <= height) {
                 rowBegin = source.dirtyRowBegin & ~1u;
                 rowEnd = std::min(height, (source.dirtyRowEnd + 1u) & ~1u);
             }
-            DeferredCpuEncode deferred{std::move(update), stages, rate, *pixelFormat, width, height, rowBegin, rowEnd, source.captureEpoch, source.sourceSerial, changedArea, computeStarted, timestamp, keyRequired, repeated};
+            const bool canPrefetchNext = !configurationPending && !keyRequired && !repeated &&
+                                         *pixelFormat == VideoPixelFormat::kI420 && !DesktopCursor::requiresBackground(source);
+            DeferredCpuEncode deferred{std::move(update), stages, rate, *pixelFormat, width, height, rowBegin, rowEnd, source.captureEpoch, source.sourceSerial, changedArea, computeStarted, timestamp, activeYuvSlot, keyRequired, repeated, canPrefetchNext};
             const auto convertHeight = rowEnd > rowBegin ? rowEnd - rowBegin : 0u;
             const auto dirtyPixels = static_cast<std::uint64_t>(width) * convertHeight;
-            if (convertHeight == 0 || dirtyPixels < 640ull * 360) {
+            if (!canPrefetchNext && (convertHeight == 0 || dirtyPixels < 640ull * 360)) {
                 return encodeDeferred(std::move(deferred), convertHeight == 0);
             }
             PreparedVideoStep step;
@@ -495,7 +567,8 @@ std::optional<DesktopVideoUpdate> DesktopVideoWorker::next(std::uint32_t display
                                                            DesktopVideoStages stages) {
     auto step = prepare(display, refresh, reset, rate, flowWidth, flowHeight, allowEncode, capabilities, requestedV2, requestedContinuous, revision, stages, VideoClock::now());
     if (step.deferredEncode) {
-        step = encodeDeferred(std::move(*step.deferredEncode), false);
+        const bool preconverted = step.deferredEncode->rowBegin == step.deferredEncode->rowEnd;
+        step = encodeDeferred(std::move(*step.deferredEncode), preconverted);
     }
     geometryChanged = step.geometryChanged;
     return std::move(step.immediate);
