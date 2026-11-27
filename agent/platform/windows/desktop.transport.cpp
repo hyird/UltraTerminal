@@ -1,6 +1,7 @@
 #include "desktop.transport.h"
 
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -40,13 +41,24 @@ bool systemIdentity() {
 struct ThreadDesktop {
     HDESK original = GetThreadDesktop(GetCurrentThreadId());
     HDESK attached = nullptr;
-    std::uint64_t generation = 1;
     ~ThreadDesktop() {
         if (attached && SetThreadDesktop(original)) {
             CloseDesktop(attached);
         }
     }
 };
+// Capture runs on a multi-threaded blocking pool. Generation tracks actual
+// interactive desktop transitions process-wide so pool threads never disagree
+// and ping-pong CaptureReset after switching between Default and Winlogon.
+struct ProcessDesktopState {
+    std::mutex mutex;
+    std::wstring activeDesktop;
+    std::uint64_t generation = 1;
+};
+ProcessDesktopState& processDesktopState() {
+    static ProcessDesktopState state;
+    return state;
+}
 } // namespace
 std::uint64_t requireInputDesktop() {
     static const bool system = systemIdentity();
@@ -83,9 +95,6 @@ std::uint64_t requireInputDesktop() {
         throw DesktopChanged("Interactive desktop is in transition");
     }
     if (system && target != current) {
-        if (context.generation == std::numeric_limits<std::uint64_t>::max()) {
-            throw std::overflow_error("Desktop generation exhausted");
-        }
         if (!SetThreadDesktop(input.handle)) {
             throw DesktopChanged("Cannot attach the input desktop");
         }
@@ -93,8 +102,18 @@ std::uint64_t requireInputDesktop() {
             CloseDesktop(context.attached);
         }
         context.attached = std::exchange(input.handle, nullptr);
-        ++context.generation;
     }
-    return context.generation;
+    auto& state = processDesktopState();
+    std::lock_guard lock(state.mutex);
+    if (state.activeDesktop.empty()) {
+        state.activeDesktop = target;
+    } else if (state.activeDesktop != target) {
+        if (state.generation == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::overflow_error("Desktop generation exhausted");
+        }
+        state.activeDesktop = target;
+        ++state.generation;
+    }
+    return state.generation;
 }
 } // namespace ultraterimal::agent

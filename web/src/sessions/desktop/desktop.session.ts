@@ -555,6 +555,7 @@ export class DesktopSession {
         throw new Error("Invalid cursor channel");
       const cursor = wire.CursorUpdate.create(message.cursorUpdate);
       const rgba = cursor.rgba;
+      this.cursor = { x: cursor.x, y: cursor.y, visible: cursor.visible };
       if (rgba.length) {
         const width = integer(cursor.width, 1),
           height = integer(cursor.height, 1);
@@ -572,9 +573,8 @@ export class DesktopSession {
           height,
         );
         this.hotspot = { x: cursor.hotspotX, y: cursor.hotspotY };
-        this.updateLocalCursor();
       }
-      this.cursor = { x: cursor.x, y: cursor.y, visible: cursor.visible };
+      this.updateLocalCursor();
       this.drawCursor();
       return;
     }
@@ -1011,7 +1011,12 @@ export class DesktopSession {
     );
   }
   private updateLocalCursor(): void {
-    if (!this.ticket.writeControl || this.stopped || !this.cursorShape) return;
+    if (!this.ticket.writeControl || this.stopped) return;
+    if (!this.cursor.visible) {
+      this.canvas.style.setProperty("--desktop-cursor", "none");
+      return;
+    }
+    if (!this.cursorShape) return;
     const shape = this.cursorShape;
     const bounds = this.canvas.getBoundingClientRect();
     let scaleX = bounds.width / this.overlay.width;

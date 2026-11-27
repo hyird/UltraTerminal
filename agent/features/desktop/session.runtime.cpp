@@ -44,7 +44,7 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
     DesktopHandoffState binding;
     bool writeControl;
     std::uint32_t desktopInputContract;
-    bool started = false, stopping = false, ended = false, joined = false;
+    bool started = false, stopping = false, ended = false, joined = false, autoLoginAllowed = true;
     Resources resources;
     DesktopSessionResult result;
     DesktopHandoffBudget handoffs;
@@ -255,7 +255,8 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                         throw std::runtime_error("Console changed during worker pairing");
                     }
                     stage = "login_broker";
-                    if (writeControl) {
+                    if (writeControl && autoLoginAllowed) {
+                        autoLoginAllowed = false;
                         login = WindowsLoginBroker::create(loop, loginCredential, binding.session());
                     }
                     stage = "session_bridge";
