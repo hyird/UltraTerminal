@@ -1,14 +1,21 @@
 #include "cursor.transport.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <windows.h>
 
 #include <dxgi1_2.h>
+
+#include "desktop.transport.h"
 
 namespace ultraterimal::agent {
 namespace {
@@ -199,5 +206,309 @@ std::optional<wire::CursorUpdate> DesktopCursor::update(const CapturedFrame& fra
         current.clear_hotspot_y();
     }
     return current;
+}
+
+namespace {
+constexpr std::array<UINT, 13> kSystemCursorIds = {
+    32512, // OCR_NORMAL
+    32513, // OCR_IBEAM
+    32514, // OCR_WAIT
+    32515, // OCR_CROSS
+    32516, // OCR_UP
+    32642, // OCR_SIZENWSE
+    32643, // OCR_SIZENESW
+    32644, // OCR_SIZEWE
+    32645, // OCR_SIZENS
+    32646, // OCR_SIZEALL
+    32648, // OCR_NO
+    32649, // OCR_HAND
+    32650, // OCR_APPSTARTING
+};
+
+struct CachedCursorShape {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::int32_t hotspotX = 0;
+    std::int32_t hotspotY = 0;
+    std::vector<std::uint8_t> bgra;
+};
+
+struct ScopedGdiObject {
+    HGDIOBJ handle = nullptr;
+    ~ScopedGdiObject() {
+        if (handle) {
+            DeleteObject(handle);
+        }
+    }
+};
+
+struct ScopedScreenDc {
+    HDC dc = GetDC(nullptr);
+    ~ScopedScreenDc() {
+        if (dc) {
+            ReleaseDC(nullptr, dc);
+        }
+    }
+};
+
+bool readBitmapBgra(HDC dc, HBITMAP bitmap, std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t>& out) {
+    if (!dc || !bitmap || !width || !height || width > 1024 || height > 2048) {
+        return false;
+    }
+    BITMAPINFO header{};
+    header.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    header.bmiHeader.biWidth = static_cast<LONG>(width);
+    header.bmiHeader.biHeight = -static_cast<LONG>(height);
+    header.bmiHeader.biPlanes = 1;
+    header.bmiHeader.biBitCount = 32;
+    header.bmiHeader.biCompression = BI_RGB;
+    out.resize(static_cast<std::size_t>(width) * height * 4);
+    return GetDIBits(dc, bitmap, 0, height, out.data(), &header, DIB_RGB_COLORS) != 0;
+}
+
+std::optional<CachedCursorShape> extractCursorShape(HCURSOR cursor) {
+    if (!cursor) {
+        return std::nullopt;
+    }
+    ICONINFO info{};
+    if (!GetIconInfo(cursor, &info)) {
+        return std::nullopt;
+    }
+    ScopedGdiObject maskGuard{info.hbmMask};
+    ScopedGdiObject colorGuard{info.hbmColor};
+    ScopedScreenDc screenDc;
+    if (!screenDc.dc) {
+        return std::nullopt;
+    }
+
+    CachedCursorShape shape;
+    if (info.hbmColor) {
+        BITMAP colorBitmap{};
+        if (!GetObjectW(info.hbmColor, sizeof(colorBitmap), &colorBitmap) || colorBitmap.bmWidth <= 0 || colorBitmap.bmHeight == 0) {
+            return std::nullopt;
+        }
+        const auto width = static_cast<std::uint32_t>(colorBitmap.bmWidth);
+        const auto height = static_cast<std::uint32_t>(std::abs(colorBitmap.bmHeight));
+        if (width > 1024 || height > 1024) {
+            return std::nullopt;
+        }
+        if (!readBitmapBgra(screenDc.dc, info.hbmColor, width, height, shape.bgra)) {
+            return std::nullopt;
+        }
+        bool hasAlpha = false;
+        for (std::size_t i = 3; i < shape.bgra.size(); i += 4) {
+            if (shape.bgra[i] != 0) {
+                hasAlpha = true;
+                break;
+            }
+        }
+        if (!hasAlpha && info.hbmMask) {
+            std::vector<std::uint8_t> mask;
+            if (readBitmapBgra(screenDc.dc, info.hbmMask, width, height, mask)) {
+                for (std::size_t i = 0; i + 3 < shape.bgra.size(); i += 4) {
+                    const bool transparent = (mask[i] | mask[i + 1] | mask[i + 2]) != 0;
+                    if (transparent) {
+                        shape.bgra[i] = 0;
+                        shape.bgra[i + 1] = 0;
+                        shape.bgra[i + 2] = 0;
+                        shape.bgra[i + 3] = 0;
+                    } else {
+                        shape.bgra[i + 3] = 255;
+                    }
+                }
+            }
+        }
+        shape.width = width;
+        shape.height = height;
+    } else if (info.hbmMask) {
+        BITMAP maskBitmap{};
+        if (!GetObjectW(info.hbmMask, sizeof(maskBitmap), &maskBitmap) || maskBitmap.bmWidth <= 0 || maskBitmap.bmHeight == 0) {
+            return std::nullopt;
+        }
+        const auto width = static_cast<std::uint32_t>(maskBitmap.bmWidth);
+        const auto fullHeight = static_cast<std::uint32_t>(std::abs(maskBitmap.bmHeight));
+        if (width > 1024 || fullHeight < 2 || (fullHeight % 2) != 0 || fullHeight > 2048) {
+            return std::nullopt;
+        }
+        const auto height = fullHeight / 2;
+        std::vector<std::uint8_t> mask;
+        if (!readBitmapBgra(screenDc.dc, info.hbmMask, width, fullHeight, mask)) {
+            return std::nullopt;
+        }
+        shape.bgra.assign(static_cast<std::size_t>(width) * height * 4, 0);
+        const std::size_t halfBytes = static_cast<std::size_t>(width) * height * 4;
+        for (std::size_t i = 0; i + 3 < halfBytes; i += 4) {
+            const bool andWhite = (mask[i] | mask[i + 1] | mask[i + 2]) != 0;
+            const bool xorWhite = (mask[halfBytes + i] | mask[halfBytes + i + 1] | mask[halfBytes + i + 2]) != 0;
+            if (!andWhite && !xorWhite) {
+                shape.bgra[i] = 0;
+                shape.bgra[i + 1] = 0;
+                shape.bgra[i + 2] = 0;
+                shape.bgra[i + 3] = 255;
+            } else if (!andWhite && xorWhite) {
+                shape.bgra[i] = 255;
+                shape.bgra[i + 1] = 255;
+                shape.bgra[i + 2] = 255;
+                shape.bgra[i + 3] = 255;
+            } else if (andWhite && xorWhite) {
+                // Local CSS cursors cannot XOR against remote pixels; render
+                // inverted pixels (such as I-beam stems) as solid dark ink.
+                shape.bgra[i] = 0;
+                shape.bgra[i + 1] = 0;
+                shape.bgra[i + 2] = 0;
+                shape.bgra[i + 3] = 255;
+            }
+        }
+        shape.width = width;
+        shape.height = height;
+    } else {
+        return std::nullopt;
+    }
+
+    shape.hotspotX = std::clamp<std::int32_t>(static_cast<std::int32_t>(info.xHotspot), 0, static_cast<std::int32_t>(shape.width - 1));
+    shape.hotspotY = std::clamp<std::int32_t>(static_cast<std::int32_t>(info.yHotspot), 0, static_cast<std::int32_t>(shape.height - 1));
+    return shape;
+}
+
+void populateFrameCursor(CapturedFrame& frame, const CachedCursorShape& shape, POINT screenPos, std::int32_t desktopLeft, std::int32_t desktopTop) {
+    frame.pointerVisible = true;
+    frame.pointerX = static_cast<std::int32_t>(screenPos.x) - desktopLeft - shape.hotspotX;
+    frame.pointerY = static_cast<std::int32_t>(screenPos.y) - desktopTop - shape.hotspotY;
+    frame.pointerType = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR;
+    frame.pointerWidth = shape.width;
+    frame.pointerHeight = shape.height;
+    frame.pointerPitch = shape.width * 4;
+    frame.hotspotX = shape.hotspotX;
+    frame.hotspotY = shape.hotspotY;
+    frame.pointerShape = shape.bgra;
+}
+} // namespace
+
+struct SystemCursorSuppression::State {
+    bool suppressed = false;
+    bool lastVisible = false;
+    HCURSOR lastHandle = nullptr;
+    std::unordered_map<HCURSOR, CachedCursorShape> systemShapes;
+    std::unordered_map<HCURSOR, CachedCursorShape> customShapes;
+
+    void activateSuppression() {
+        if (suppressed) {
+            return;
+        }
+        systemShapes.clear();
+        for (const UINT id : kSystemCursorIds) {
+            auto* handle = static_cast<HCURSOR>(LoadImageW(nullptr, MAKEINTRESOURCEW(id), IMAGE_CURSOR, 0, 0, LR_SHARED));
+            if (!handle) {
+                continue;
+            }
+            if (auto shape = extractCursorShape(handle)) {
+                systemShapes.emplace(handle, std::move(*shape));
+            }
+        }
+        constexpr BYTE kAndMask = 0xFF;
+        constexpr BYTE kXorMask = 0x00;
+        HCURSOR blank = CreateCursor(nullptr, 0, 0, 1, 1, &kAndMask, &kXorMask);
+        if (!blank) {
+            return;
+        }
+        bool replacedAny = false;
+        for (const UINT id : kSystemCursorIds) {
+            auto* copy = static_cast<HCURSOR>(CopyImage(blank, IMAGE_CURSOR, 0, 0, 0));
+            if (!copy) {
+                continue;
+            }
+            if (SetSystemCursor(copy, id)) {
+                replacedAny = true;
+            } else {
+                DestroyCursor(copy);
+            }
+        }
+        DestroyCursor(blank);
+        suppressed = replacedAny;
+    }
+
+    const CachedCursorShape* resolveShape(HCURSOR handle) {
+        if (const auto it = systemShapes.find(handle); it != systemShapes.end()) {
+            return &it->second;
+        }
+        if (const auto it = customShapes.find(handle); it != customShapes.end()) {
+            return &it->second;
+        }
+        if (auto shape = extractCursorShape(handle)) {
+            if (customShapes.size() >= 32) {
+                customShapes.clear();
+            }
+            auto [inserted, _] = customShapes.emplace(handle, std::move(*shape));
+            return &inserted->second;
+        }
+        return nullptr;
+    }
+};
+
+SystemCursorSuppression::SystemCursorSuppression() : state_(std::make_unique<State>()) {}
+
+SystemCursorSuppression::~SystemCursorSuppression() {
+    restore();
+}
+
+bool SystemCursorSuppression::active() const {
+    return state_ && state_->suppressed;
+}
+
+void SystemCursorSuppression::applyFallbackCursor(CapturedFrame& frame, std::int32_t desktopLeft, std::int32_t desktopTop) {
+    CURSORINFO ci{};
+    ci.cbSize = sizeof(ci);
+    if (!GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING) || !ci.hCursor) {
+        state_->lastVisible = false;
+        state_->lastHandle = nullptr;
+        return;
+    }
+    state_->activateSuppression();
+    state_->lastVisible = true;
+    state_->lastHandle = ci.hCursor;
+    if (const auto* shape = state_->resolveShape(ci.hCursor)) {
+        populateFrameCursor(frame, *shape, ci.ptScreenPos, desktopLeft, desktopTop);
+    }
+}
+
+bool SystemCursorSuppression::pollCursorChange(CapturedFrame& frame, std::int32_t desktopLeft, std::int32_t desktopTop) {
+    if (!state_ || !state_->suppressed) {
+        return false;
+    }
+    CURSORINFO ci{};
+    ci.cbSize = sizeof(ci);
+    const bool visible = GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && ci.hCursor != nullptr;
+    HCURSOR handle = visible ? ci.hCursor : nullptr;
+    if (visible == state_->lastVisible && handle == state_->lastHandle) {
+        return false;
+    }
+    state_->lastVisible = visible;
+    state_->lastHandle = handle;
+    if (!visible) {
+        frame.pointerVisible = false;
+        frame.pointerShape.clear();
+        return true;
+    }
+    if (const auto* shape = state_->resolveShape(handle)) {
+        populateFrameCursor(frame, *shape, ci.ptScreenPos, desktopLeft, desktopTop);
+        return true;
+    }
+    return false;
+}
+
+void SystemCursorSuppression::restore() {
+    if (!state_ || !state_->suppressed) {
+        return;
+    }
+    try {
+        (void)requireInputDesktop();
+    } catch (...) {
+    }
+    SystemParametersInfoW(SPI_SETCURSORS, 0, nullptr, 0);
+    state_->suppressed = false;
+    state_->lastVisible = false;
+    state_->lastHandle = nullptr;
+    state_->systemShapes.clear();
+    state_->customShapes.clear();
 }
 } // namespace ultraterimal::agent

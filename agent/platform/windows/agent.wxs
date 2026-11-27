@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-    <Package Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.54" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7" ProductCode="F9A1C538-2D6E-4B7A-8E19-3C4F7B2D9E61" InstallerVersion="500" Compressed="yes" Scope="perMachine">
+    <Package Name="Ultraterimal Windows Agent" Language="1033" Version="1.0.55" Manufacturer="Ultraterimal" UpgradeCode="B8EDB4D4-61A0-46D6-8FC2-493609A94AF7" ProductCode="C4E8A219-6F3B-4D17-9A52-7E83C1F4B602" InstallerVersion="500" Compressed="yes" Scope="perMachine">
         <MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer Ultraterimal Agent is already installed." />
         <MediaTemplate EmbedCab="yes" />
         <Feature Id="Agent" Title="Ultraterimal Agent" Level="1">

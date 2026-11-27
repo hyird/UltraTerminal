@@ -18,6 +18,7 @@
 #include <wrl/client.h>
 
 #include "capture_pixels.protocol.h"
+#include "cursor.transport.h"
 #include "desktop.transport.h"
 #include "handle.types.h"
 
@@ -118,6 +119,7 @@ struct DesktopCapture::State {
     std::vector<CapturePixelRect> dirtyRects;
     bool pixelsCaptured = false;
     std::uint32_t lastPixelsWidth = 0, lastPixelsHeight = 0;
+    SystemCursorSuppression cursorSuppression;
     bool extractDirtyRects(const DXGI_OUTDUPL_FRAME_INFO& info, std::uint32_t width, std::uint32_t height, std::uint64_t& totalArea) {
         totalArea = 0;
         dirtyRects.clear();
@@ -542,6 +544,20 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
             frame.stageTiming = timing->stages;
             return frame;
         }
+        if (state_->cursorSuppression.active() && state_->pixelsCaptured && state_->lastPixelsWidth && state_->lastPixelsHeight) {
+            CapturedFrame cursorFrame;
+            cursorFrame.width = state_->lastPixelsWidth;
+            cursorFrame.height = state_->lastPixelsHeight;
+            cursorFrame.desktopLeft = state_->bounds.left;
+            cursorFrame.desktopTop = state_->bounds.top;
+            cursorFrame.rotation = static_cast<std::uint32_t>(state_->description.Rotation);
+            cursorFrame.captureEpoch = state_->captureEpoch;
+            cursorFrame.sourceSerial = state_->sourceSerial;
+            if (state_->cursorSuppression.pollCursorChange(cursorFrame, state_->bounds.left, state_->bounds.top)) {
+                cursorFrame.stageTiming = timing->stages;
+                return cursorFrame;
+            }
+        }
         return std::nullopt;
     }
     if (FAILED(result)) {
@@ -618,6 +634,11 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
     frame.pointerPitch = state_->pointerInfo.Pitch;
     frame.hotspotX = state_->pointerInfo.HotSpot.x;
     frame.hotspotY = state_->pointerInfo.HotSpot.y;
+    if (frame.pointerVisible) {
+        state_->cursorSuppression.restore();
+    } else {
+        state_->cursorSuppression.applyFallbackCursor(frame, state_->bounds.left, state_->bounds.top);
+    }
     if (readPixels && (desktopUpdated || state_->deferred)) {
         const bool hadDeferred = state_->deferred.has_value();
         if (hadDeferred && !frame.captureTicks) {
