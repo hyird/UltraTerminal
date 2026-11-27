@@ -179,6 +179,24 @@ void fixedSharpCapacityChange() {
     require(distant.videoTimes.size() > 300 && distant.flow.rate().bitrate == ultraterimal::agent::DesktopFrameFlow::kTargetVideoBitrate && distant.flow.rate().framesPerSecond >= 30, "High RTT alone throttled fixed sharp pictures");
 }
 
+void weakNetworkSevereStallBackoff() {
+    // A single severe saturated stall past maximumFrameAge (e.g. packet-loss
+    // recovery on a weak link) must immediately reduce bitrate instead of
+    // waiting for three separate stalls.
+    DesktopFrameFlow flow;
+    flow.setFixedPictureCost(false);
+    auto now = DesktopFrameFlow::Clock::time_point{1s};
+    flow.observeRoundTrip(20ms, now);
+    flow.sent(1, 1, now, 12000, FrameType::kKeyFrame);
+    require(flow.acknowledge(1, 1, 1000, 0, now + 22ms, false, 128), "Severe stall baseline ACK failed");
+    now += 100ms;
+    flow.sent(1, 2, now, 80000, FrameType::kVideo);
+    flow.sent(1, 3, now + 16ms, 80000, FrameType::kVideo);
+    const auto before = flow.rate().bitrate;
+    require(flow.acknowledge(1, 3, 1000, 0, now + 600ms, false, 128), "Severe stall ACK failed");
+    require(flow.rate().bitrate <= before * 2 / 3, "Severe saturated stall did not trigger immediate bitrate backoff");
+}
+
 } // namespace
 int main() {
     try {
@@ -186,6 +204,7 @@ int main() {
         twoHopAsymmetricRttWindowDrag();
         normalVbvAfterBurst();
         fixedSharpCapacityChange();
+        weakNetworkSevereStallBackoff();
         auto now = DesktopFrameFlow::Clock::time_point{1s};
         DesktopFrameFlow flow;
         DesktopFrameFlow motionCredit;

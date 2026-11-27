@@ -163,7 +163,7 @@ class DesktopFrameFlow {
     }
     std::size_t byteWindow() const {
         const auto delivery = deliveryBytesPerSecond_ ? std::min<std::uint64_t>(deliveryBytesPerSecond_, rate_.bitrate / 8) : rate_.bitrate / 8;
-        const auto bytes = delivery * static_cast<std::uint64_t>(pathDelay().count() + 50000) / 1000000;
+        const auto bytes = delivery * static_cast<std::uint64_t>(pathDelay().count() + 60000) / 1000000;
         // ACK delay and codec-size variation need a normal two-picture
         // cushion, just as frameWindow has slots beyond the path BDP.
         // Keyframes and repeats cannot inflate it; age/frame guards remain.
@@ -293,33 +293,42 @@ class DesktopFrameFlow {
         // Require an ordinary byte-saturated flight before reducing bitrate;
         // frame/byte credit and frame age still bound unsaturated delayed work.
         const bool networkPressure = ordinaryDelivery && byteSaturated && transit > pathDelay() + std::chrono::milliseconds(50);
+        // A severe queue stall past maximumFrameAge indicates genuine link
+        // collapse or packet-loss recovery; back off immediately instead of
+        // waiting for three consecutive stalled ACKs.
+        const bool severeStall = networkPressure && transit > maximumFrameAge();
         // Browser WebCodecs keeps up to 4 frames in its decode pipeline. Only
         // sustained backlog (>= 4 frames across 6 ACKs) or slow decoding reduces FPS.
         queueBacklogSamples_ = queueDepth >= 4 ? std::min(6u, queueBacklogSamples_ + 1) : 0;
         const bool decoderPressure = decodeMicroseconds_ > 25000 || queueBacklogSamples_ >= 6;
         const bool congested = networkPressure || decoderPressure;
-        congestionSamples_ = congested ? std::min(3u, congestionSamples_ + 1) : 0;
+        congestionSamples_ = severeStall ? 3u : congested ? std::min(3u, congestionSamples_ + 1)
+                                                          : 0;
         if (congested) {
             videoBudgetFrames_ = 0;
             healthySince_.reset();
         } else if (!healthySince_) {
             healthySince_ = now;
         }
-        if (now >= adjustAt_ && congestionSamples_ >= 3) {
+        if ((now >= adjustAt_ || severeStall) && congestionSamples_ >= 3) {
             const bool failedRestore = restoredAt_ && now - *restoredAt_ < std::chrono::seconds(5);
             if (!recoveryRate_) {
                 recoveryRate_ = rate_;
             } else if (failedRestore) {
                 // A failed probe pauses fast restoration without permanently
                 // erasing the bounded pre-congestion capacity ceiling.
-                restoreBlockedUntil_ = now + std::chrono::seconds(5);
+                restoreBlockedUntil_ = now + std::chrono::seconds(8);
             }
             recoveryExpiresAt_ = now + std::chrono::seconds(30);
             restoredAt_.reset();
             if (networkPressure) {
-                auto target = static_cast<std::uint64_t>(rate_.bitrate) * 4 / 5;
+                auto target = severeStall ? static_cast<std::uint64_t>(rate_.bitrate) * 2 / 3
+                                          : static_cast<std::uint64_t>(rate_.bitrate) * 4 / 5;
                 if (deliveryBytesPerSecond_) {
-                    target = std::min(target, std::max<std::uint64_t>(rate_.bitrate / 2, deliveryBytesPerSecond_ * 8 * 9 / 10));
+                    const auto floorRatio = severeStall ? 3u : 2u;
+                    const auto deliveryScale = severeStall ? 4u : 9u;
+                    const auto deliveryDiv = severeStall ? 5u : 10u;
+                    target = std::min(target, std::max<std::uint64_t>(rate_.bitrate / floorRatio, deliveryBytesPerSecond_ * 8 * deliveryScale / deliveryDiv));
                 }
                 rate_.bitrate = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(target, kMinimumVideoBitrate, kTargetVideoBitrate));
             }
@@ -345,7 +354,7 @@ class DesktopFrameFlow {
             const auto bitrateLimit = static_cast<std::uint32_t>(std::min(recoveryLimit, measuredCeiling));
             const bool restoring = recoveryRate_ && now >= restoreBlockedUntil_;
             const auto step = restoring ? std::max(4u, rate_.framesPerSecond / 4) : 2u;
-            auto nextBitrate = static_cast<std::uint64_t>(rate_.bitrate) + std::max(64000u, rate_.bitrate / (restoring ? 2 : 20));
+            auto nextBitrate = static_cast<std::uint64_t>(rate_.bitrate) + std::max(64000u, rate_.bitrate / (restoring ? 4 : 20));
             if (restoring && deliveryBytesPerSecond_) {
                 nextBitrate = std::max(nextBitrate, deliveryBytesPerSecond_ * 8 * 4 / 5);
             }
