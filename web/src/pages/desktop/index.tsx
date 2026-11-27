@@ -393,20 +393,22 @@ function DesktopPanel({
         className="desktop-toolbar flex shrink-0 flex-wrap items-center gap-1.5 px-3 py-1.5 max-md:px-2"
         hidden={fullscreen}
       >
-        <Choice
-          compact
-          label="显示比例"
-          value={scale}
-          onChange={(value) => {
-            const mode = value === "native" ? "native" : "fit";
-            updatePreferences({ scale: mode });
-            session.current?.setScaleMode(mode);
-          }}
-          items={[
-            { id: "fit", label: "适应大小" },
-            { id: "native", label: "原始大小" },
-          ]}
-        />
+        {(!autoResolution || !entry.ticket.writeControl || !modes.length) && (
+          <Choice
+            compact
+            label="显示比例"
+            value={scale}
+            onChange={(value) => {
+              const mode = value === "native" ? "native" : "fit";
+              updatePreferences({ scale: mode });
+              session.current?.setScaleMode(mode);
+            }}
+            items={[
+              { id: "fit", label: "适应大小" },
+              { id: "native", label: "原始大小" },
+            ]}
+          />
+        )}
         {entry.ticket.writeControl && (
           <>
             <Dropdown>
@@ -454,7 +456,8 @@ function DesktopPanel({
                     resolutionRestored.current = true;
                     lastAutoResize.current = "";
                     setAutoResolution(true);
-                    updatePreferences({ resolution: "auto" });
+                    session.current?.setScaleMode("fit");
+                    updatePreferences({ scale: "fit", resolution: "auto" });
                     return;
                   }
                   const mode = modes.find(
