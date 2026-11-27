@@ -393,22 +393,6 @@ function DesktopPanel({
         className="desktop-toolbar flex shrink-0 flex-wrap items-center gap-1.5 px-3 py-1.5 max-md:px-2"
         hidden={fullscreen}
       >
-        {(!autoResolution || !entry.ticket.writeControl || !modes.length) && (
-          <Choice
-            compact
-            label="显示比例"
-            value={scale}
-            onChange={(value) => {
-              const mode = value === "native" ? "native" : "fit";
-              updatePreferences({ scale: mode });
-              session.current?.setScaleMode(mode);
-            }}
-            items={[
-              { id: "fit", label: "适应大小" },
-              { id: "native", label: "原始大小" },
-            ]}
-          />
-        )}
         {entry.ticket.writeControl && (
           <>
             <Dropdown>
@@ -486,6 +470,22 @@ function DesktopPanel({
               />
             )}
           </>
+        )}
+        {(!autoResolution || !entry.ticket.writeControl || !modes.length) && (
+          <Choice
+            compact
+            label="显示比例"
+            value={scale}
+            onChange={(value) => {
+              const mode = value === "native" ? "native" : "fit";
+              updatePreferences({ scale: mode });
+              session.current?.setScaleMode(mode);
+            }}
+            items={[
+              { id: "fit", label: "适应大小" },
+              { id: "native", label: "原始大小" },
+            ]}
+          />
         )}
         <div className="text-muted flex shrink-0 flex-wrap items-center gap-2 p-0 text-xs max-md:gap-1">
           <span>
