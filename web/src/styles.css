@@ -153,7 +153,3 @@ body {
 .desktop-menu :is(.list-box-item, .menu-item) {
   white-space: nowrap;
 }
-[data-desktop-viewport] canvas[data-control="ready"]:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
-}
