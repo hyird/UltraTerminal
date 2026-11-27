@@ -89,31 +89,24 @@ void verifyGate() {
     require(defaultBinding.accept(frame(9, 3)).has_value(), "Disabled key rejected");
     require(!defaultBinding.accept(repeatedFrame(10, 3, 2, 1)), "Disabled permission persisted into next generation");
 }
-// Reflection tests every duration field and its independent optional presence.
-void checkDurationFields(wire::Envelope& value, google::protobuf::Message& timing, int fields, int first = 1) {
-    for (int index = first; index <= fields; ++index) {
-        const auto* field = timing.GetDescriptor()->FindFieldByNumber(index);
-        if (!field) {
-            continue;
-        }
-        const auto* reflection = timing.GetReflection();
-        require(field->has_presence(), "Duration lacks presence");
-        reflection->ClearField(&timing, field);
-        require(!reflection->HasField(timing, field), "Absent duration reported present");
-        for (auto duration : {0u, 60000000u, 60000001u, std::numeric_limits<std::uint32_t>::max()}) {
-            reflection->SetUInt32(&timing, field, duration);
-            require(validateMessage(value).has_value() == (duration <= 60000000), "Duration hard bound failed");
-        }
-        reflection->SetUInt32(&timing, field, 0);
-        require(reflection->HasField(timing, field), "Measured zero lost presence");
-        const auto encoded = encodeMessage(value);
-        require(encoded.has_value(), "Zero presence encode failed");
-        const auto decoded = decodeMessage(*encoded);
-        require(decoded && decoded->SerializeAsString() == value.SerializeAsString(), "Presence lost in wire roundtrip");
-        reflection->ClearField(&timing, field);
-        const auto absent = encodeMessage(value);
-        require(absent && decodeMessage(*absent)->SerializeAsString() == value.SerializeAsString(), "Absent duration changed on wire");
+// Tests every duration field's hard bound and independent optional presence.
+template <typename Has, typename Set, typename Clear>
+void checkDurationField(wire::Envelope& value, Has has, Set set, Clear clear) {
+    clear();
+    require(!has(), "Absent duration reported present");
+    for (auto duration : {0u, 60000000u, 60000001u, std::numeric_limits<std::uint32_t>::max()}) {
+        set(duration);
+        require(validateMessage(value).has_value() == (duration <= 60000000), "Duration hard bound failed");
     }
+    set(0);
+    require(has(), "Measured zero lost presence");
+    const auto encoded = encodeMessage(value);
+    require(encoded.has_value(), "Zero presence encode failed");
+    const auto decoded = decodeMessage(*encoded);
+    require(decoded && decoded->SerializeAsString() == value.SerializeAsString(), "Presence lost in wire roundtrip");
+    clear();
+    const auto absent = encodeMessage(value);
+    require(absent && decodeMessage(*absent)->SerializeAsString() == value.SerializeAsString(), "Absent duration changed on wire");
 }
 wire::Envelope report(std::uint64_t sequence = 2) {
     auto value = envelope(sequence, "input");
@@ -125,11 +118,23 @@ wire::Envelope report(std::uint64_t sequence = 2) {
 }
 void verifyTimingAndMalformed() {
     auto value = frame();
-    checkDurationFields(value, *value.mutable_video_frame()->mutable_stage_timing(), 9);
+    auto* stage = value.mutable_video_frame()->mutable_stage_timing();
+    checkDurationField(value, [&] { return stage->has_worker_queue_microseconds(); }, [&](std::uint32_t v) { stage->set_worker_queue_microseconds(v); }, [&] { stage->clear_worker_queue_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_acquire_wait_microseconds(); }, [&](std::uint32_t v) { stage->set_acquire_wait_microseconds(v); }, [&] { stage->clear_acquire_wait_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_source_age_microseconds(); }, [&](std::uint32_t v) { stage->set_source_age_microseconds(v); }, [&] { stage->clear_source_age_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_pacing_credit_wait_microseconds(); }, [&](std::uint32_t v) { stage->set_pacing_credit_wait_microseconds(v); }, [&] { stage->clear_pacing_credit_wait_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_gpu_sync_wait_microseconds(); }, [&](std::uint32_t v) { stage->set_gpu_sync_wait_microseconds(v); }, [&] { stage->clear_gpu_sync_wait_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_readback_ready_microseconds(); }, [&](std::uint32_t v) { stage->set_readback_ready_microseconds(v); }, [&] { stage->clear_readback_ready_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_prepare_cpu_microseconds(); }, [&](std::uint32_t v) { stage->set_prepare_cpu_microseconds(v); }, [&] { stage->clear_prepare_cpu_microseconds(); });
+    checkDurationField(value, [&] { return stage->has_video_encode_microseconds(); }, [&](std::uint32_t v) { stage->set_video_encode_microseconds(v); }, [&] { stage->clear_video_encode_microseconds(); });
     auto feedback = envelope(2, "input");
     feedback.mutable_quality_feedback()->set_displayed_generation(1);
     feedback.mutable_quality_feedback()->set_displayed_frame(1);
-    checkDurationFields(feedback, *feedback.mutable_quality_feedback()->mutable_browser_timing(), 5);
+    auto* browser = feedback.mutable_quality_feedback()->mutable_browser_timing();
+    checkDurationField(feedback, [&] { return browser->has_receive_queue_microseconds(); }, [&](std::uint32_t v) { browser->set_receive_queue_microseconds(v); }, [&] { browser->clear_receive_queue_microseconds(); });
+    checkDurationField(feedback, [&] { return browser->has_decode_microseconds(); }, [&](std::uint32_t v) { browser->set_decode_microseconds(v); }, [&] { browser->clear_decode_microseconds(); });
+    checkDurationField(feedback, [&] { return browser->has_canvas_submit_microseconds(); }, [&](std::uint32_t v) { browser->set_canvas_submit_microseconds(v); }, [&] { browser->clear_canvas_submit_microseconds(); });
+    checkDurationField(feedback, [&] { return browser->has_baseline_wait_microseconds(); }, [&](std::uint32_t v) { browser->set_baseline_wait_microseconds(v); }, [&] { browser->clear_baseline_wait_microseconds(); });
     feedback.mutable_quality_feedback()->set_displayed_frame(0);
     require(!validateMessage(feedback), "Unassociated browser duration accepted");
     feedback.mutable_quality_feedback()->set_displayed_frame(1);
@@ -138,8 +143,10 @@ void verifyTimingAndMalformed() {
     feedback.mutable_quality_feedback()->clear_browser_timing();
     require(validateMessage(feedback).has_value(), "Plain feedback rejected");
     auto diagnostic = report();
-    checkDurationFields(diagnostic, *diagnostic.mutable_desktop_pipeline_report()->mutable_samples(0), 7, 5);
     auto* sample = diagnostic.mutable_desktop_pipeline_report()->mutable_samples(0);
+    checkDurationField(diagnostic, [&] { return sample->has_ipc_write_microseconds(); }, [&](std::uint32_t v) { sample->set_ipc_write_microseconds(v); }, [&] { sample->clear_ipc_write_microseconds(); });
+    checkDurationField(diagnostic, [&] { return sample->has_send_queue_wait_microseconds(); }, [&](std::uint32_t v) { sample->set_send_queue_wait_microseconds(v); }, [&] { sample->clear_send_queue_wait_microseconds(); });
+    checkDurationField(diagnostic, [&] { return sample->has_native_write_microseconds(); }, [&](std::uint32_t v) { sample->set_native_write_microseconds(v); }, [&] { sample->clear_native_write_microseconds(); });
     sample->set_source(static_cast<wire::DesktopPipelineSample::Source>(99));
     require(!validateMessage(diagnostic), "Unknown diagnostic source accepted");
     sample->set_source(wire::DesktopPipelineSample::UNSPECIFIED);

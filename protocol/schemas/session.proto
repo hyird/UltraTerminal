@@ -1,5 +1,6 @@
 syntax = "proto3";
 package ultraterimal.wire;
+option optimize_for = LITE_RUNTIME;
 
 // First record of an authenticated TLS/QUIC connection, before Envelope traffic.
 message NativeConnect {

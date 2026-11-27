@@ -119,7 +119,14 @@ void pipeline() {
     require(bounded.pendingSamples() == 32 && bounded.dropped == 64);
     bounded.expire(now + std::chrono::seconds(5));
     // Byte budget includes wire unknown fields without retaining their payload.
-    report.mutable_samples(0)->GetReflection()->MutableUnknownFields(report.mutable_samples(0))->AddLengthDelimited(100, std::string(8193, 'x'));
+    // Field 100 wire type 2 (length-delimited): tag = (100 << 3) | 2 = 802 (0xA2, 0x06), length = 8193 (0x81, 0x40).
+    std::string unknownField;
+    unknownField.push_back(static_cast<char>(0xA2));
+    unknownField.push_back(static_cast<char>(0x06));
+    unknownField.push_back(static_cast<char>(0x81));
+    unknownField.push_back(static_cast<char>(0x40));
+    unknownField.append(8193, 'x');
+    require(report.mutable_samples(0)->MergeFromString(unknownField));
     bounded.report(report, now + std::chrono::seconds(6));
     require(bounded.pendingSamples() == 31 && bounded.dropped == 97);
     report.add_samples();
