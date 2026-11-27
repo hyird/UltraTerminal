@@ -3,13 +3,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog } from "../../components/form";
 import {
   deviceFileDownloadUrl,
-  joinWindowsPath,
+  joinRemotePath,
   listDeviceFiles,
   statDeviceFile,
   uploadDeviceFile,
   type ActiveUploadHandle,
   type DeviceFileEntry,
 } from "./files.api";
+import type { DevicePlatform } from "../devices/device.types";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -44,15 +45,20 @@ export function DesktopFilesPanel({
   deviceId,
   sessionId,
   writeControl,
+  platform = "windows-x64",
 }: {
   deviceId: string;
   sessionId: string;
   writeControl: boolean;
+  platform?: DevicePlatform;
 }) {
+  const isLinux = platform === "linux-x64";
   const [currentPath, setCurrentPath] = useState("");
+  const [pathInput, setPathInput] = useState("");
   const [parentPath, setParentPath] = useState("");
   const [entries, setEntries] = useState<DeviceFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
+  const [initialized, setInitialized] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState<UploadProgressState | null>(null);
@@ -62,23 +68,27 @@ export function DesktopFilesPanel({
   const fileInput = useRef<HTMLInputElement>(null);
   const activeUpload = useRef<ActiveUploadHandle | null>(null);
   const mounted = useRef(true);
+  const loadSeq = useRef(0);
 
   const loadDirectory = useCallback(
     async (targetPath: string) => {
+      const seq = ++loadSeq.current;
       setLoading(true);
       setError("");
       try {
         const result = await listDeviceFiles(deviceId, sessionId, targetPath);
-        if (!mounted.current) return;
+        if (!mounted.current || seq !== loadSeq.current) return;
         setCurrentPath(result.normalizedPath);
+        setPathInput(result.normalizedPath);
         setParentPath(result.parentPath);
         setEntries(result.entries);
         setTruncated(result.truncated);
+        setInitialized(true);
       } catch (err) {
-        if (!mounted.current) return;
+        if (!mounted.current || seq !== loadSeq.current) return;
         setError(err instanceof Error ? err.message : "读取目录失败");
       } finally {
-        if (mounted.current) setLoading(false);
+        if (mounted.current && seq === loadSeq.current) setLoading(false);
       }
     },
     [deviceId, sessionId],
@@ -113,7 +123,7 @@ export function DesktopFilesPanel({
     let uploadedAny = false;
     for (const file of list) {
       if (!mounted.current) break;
-      const targetPath = joinWindowsPath(currentPath, file.name);
+      const targetPath = joinRemotePath(currentPath, file.name, platform);
       let overwrite = false;
       try {
         const info = await statDeviceFile(deviceId, sessionId, targetPath);
@@ -166,7 +176,7 @@ export function DesktopFilesPanel({
   }
 
   function triggerDownload(entry: DeviceFileEntry) {
-    const targetPath = joinWindowsPath(currentPath, entry.name);
+    const targetPath = joinRemotePath(currentPath, entry.name, platform);
     const link = document.createElement("a");
     link.href = deviceFileDownloadUrl(deviceId, sessionId, targetPath);
     link.download = entry.directory ? `${entry.name}.zip` : entry.name;
@@ -198,15 +208,15 @@ export function DesktopFilesPanel({
           <Button
             size="sm"
             variant="tertiary"
-            isDisabled={loading || !currentPath}
-            onPress={() => void loadDirectory("")}
+            isDisabled={isLinux ? currentPath === "/" : !currentPath}
+            onPress={() => void loadDirectory(isLinux ? "/" : "")}
           >
-            全部磁盘
+            {isLinux ? "根目录 /" : "全部磁盘"}
           </Button>
           <Button
             size="sm"
             variant="tertiary"
-            isDisabled={loading || !currentPath}
+            isDisabled={!currentPath || (isLinux && currentPath === "/")}
             onPress={() => void loadDirectory(parentPath)}
           >
             上一级
@@ -214,14 +224,38 @@ export function DesktopFilesPanel({
           <Button
             size="sm"
             variant="tertiary"
-            isDisabled={loading}
             onPress={() => void loadDirectory(currentPath)}
           >
             刷新
           </Button>
-          <div className="text-muted min-w-0 flex-1 truncate rounded bg-default/50 px-2.5 py-1 text-xs">
-            {currentPath || "此电脑（磁盘列表）"}
-          </div>
+          <form
+            className="flex min-w-44 flex-1 items-center gap-1"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void loadDirectory(pathInput.trim());
+            }}
+          >
+            <input
+              type="text"
+              aria-label="远程路径"
+              value={pathInput}
+              onChange={(event) => setPathInput(event.target.value)}
+              onKeyDown={(event) => event.stopPropagation()}
+              placeholder={isLinux ? "/var/log" : "C:\\Users（留空查看磁盘）"}
+              spellCheck={false}
+              autoCapitalize="none"
+              autoCorrect="off"
+              className="border-border bg-default/40 text-foreground placeholder:text-muted min-w-0 flex-1 rounded border px-2.5 py-1 font-mono text-xs outline-none focus:border-accent"
+            />
+            <Button
+              size="sm"
+              type="submit"
+              variant="tertiary"
+              isDisabled={loading}
+            >
+              跳转
+            </Button>
+          </form>
           {writeControl && (
             <>
               <input
@@ -240,7 +274,7 @@ export function DesktopFilesPanel({
               <Button
                 size="sm"
                 variant="primary"
-                isDisabled={loading || !currentPath || Boolean(uploading)}
+                isDisabled={!currentPath || Boolean(uploading)}
                 onPress={() => fileInput.current?.click()}
               >
                 上传文件
@@ -299,9 +333,9 @@ export function DesktopFilesPanel({
           </div>
         )}
 
-        <div className="border-border max-h-[50vh] overflow-y-auto rounded border">
+        <div className="border-border h-[min(50vh,24rem)] min-h-48 overflow-y-auto rounded border">
           <table className="w-full text-left text-xs">
-            <thead className="bg-default/50 text-muted sticky top-0">
+            <thead className="bg-default/50 text-muted sticky top-0 z-10 backdrop-blur-xs">
               <tr>
                 <th className="px-3 py-2 font-medium">名称</th>
                 <th className="w-24 px-3 py-2 font-medium">大小</th>
@@ -311,8 +345,12 @@ export function DesktopFilesPanel({
                 <th className="w-32 px-3 py-2 text-right font-medium">操作</th>
               </tr>
             </thead>
-            <tbody className="divide-border divide-y">
-              {loading ? (
+            <tbody
+              className={`divide-border divide-y transition-opacity duration-150 ${
+                loading && initialized ? "opacity-60" : ""
+              }`}
+            >
+              {!initialized && loading ? (
                 <tr>
                   <td colSpan={4} className="text-muted px-3 py-8 text-center">
                     正在加载目录…
@@ -334,7 +372,7 @@ export function DesktopFilesPanel({
                           className="text-accent hover:underline cursor-pointer text-left font-medium"
                           onClick={() =>
                             void loadDirectory(
-                              joinWindowsPath(currentPath, entry.name),
+                              joinRemotePath(currentPath, entry.name, platform),
                             )
                           }
                         >

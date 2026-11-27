@@ -188,9 +188,13 @@ int main() {
         resize.set_protocol_version(1);
         resize.set_sequence(1);
         resize.set_session_id("session");
+        resize.set_channel_id("ssh");
         resize.mutable_terminal_resize()->set_columns(80);
         resize.mutable_terminal_resize()->set_rows(25);
         require(protocol::validateMessage(resize).has_value(), "Valid resize rejected");
+        resize.clear_channel_id();
+        require(!protocol::validateMessage(resize), "Terminal resize without channel rejected failed");
+        resize.set_channel_id("ssh");
         resize.mutable_terminal_resize()->set_columns(0);
         require(!protocol::validateMessage(resize), "Zero terminal size accepted");
         require(!protocol::purposeMatches(wire::SSH, wire::DESKTOP_INPUT), "Cross-protocol channel accepted");
@@ -238,7 +242,14 @@ int main() {
         require(!protocol::validateMessage(ready), "Channel readiness with a data sequence accepted");
         ready.set_sequence(1);
         ready.mutable_channel_ready()->set_purpose(wire::SSH_STREAM);
-        require(!protocol::validateMessage(ready), "Non-desktop readiness accepted");
+        require(protocol::validateMessage(ready).has_value(), "SSH stream readiness rejected");
+        ready.mutable_channel_ready()->set_continuous_frames(true);
+        ready.mutable_channel_ready()->set_desktop_optimization_contract(2);
+        require(!protocol::validateMessage(ready), "SSH stream readiness accepted desktop optimization");
+        ready.mutable_channel_ready()->set_continuous_frames(false);
+        ready.mutable_channel_ready()->set_desktop_optimization_contract(0);
+        ready.mutable_channel_ready()->set_purpose(wire::VNC_STREAM);
+        require(!protocol::validateMessage(ready), "VNC stream readiness accepted");
         wire::InputEvent input;
         require(!protocol::validateInputEvent(input), "Unspecified input accepted");
         input.set_kind(wire::InputEvent::POINTER_MOVE);
@@ -388,6 +399,38 @@ int main() {
         require(fileListDecoded && fileListDecoded->has_file_list_request() && fileListDecoded->file_list_request().path() == "C:\\", "FileListRequest round trip failed");
         fileList.set_session_id("session");
         require(!protocol::encodeMessage(fileList), "FileListRequest accepted session_id");
+
+        wire::Envelope platformHello;
+        platformHello.set_protocol_version(protocol::kVersion);
+        platformHello.set_sequence(1);
+        platformHello.mutable_hello()->set_device_id("linux-dev");
+        platformHello.mutable_hello()->set_agent_version("0.2.0");
+        platformHello.mutable_hello()->mutable_capabilities()->set_platform("linux-x64");
+        platformHello.mutable_hello()->mutable_capabilities()->set_terminal(true);
+        require(protocol::encodeMessage(platformHello).has_value(), "Linux hello rejected");
+        platformHello.mutable_hello()->mutable_capabilities()->set_platform("macos-arm64");
+        require(!protocol::encodeMessage(platformHello), "Unsupported platform accepted");
+
+        wire::Envelope termData;
+        termData.set_protocol_version(protocol::kVersion);
+        termData.set_sequence(4);
+        termData.set_session_id("session");
+        termData.set_channel_id("ssh");
+        termData.mutable_terminal_data()->set_data("ls -la\n");
+        require(protocol::encodeMessage(termData).has_value(), "Valid terminal data rejected");
+        termData.mutable_terminal_data()->set_data(std::string(64 * 1024 + 1, 'a'));
+        require(!protocol::encodeMessage(termData), "Oversized terminal data accepted");
+
+        wire::Envelope termExit;
+        termExit.set_protocol_version(protocol::kVersion);
+        termExit.set_sequence(5);
+        termExit.set_session_id("session");
+        termExit.set_channel_id("ssh");
+        termExit.mutable_terminal_exit()->set_exit_code(0);
+        require(protocol::encodeMessage(termExit).has_value(), "Valid terminal exit rejected");
+        termExit.clear_channel_id();
+        require(!protocol::encodeMessage(termExit), "Terminal exit without channel accepted");
+
         std::cout << "Protocol bounds, compatibility and channel type checks passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -14,8 +14,12 @@ RUVIA_MODEL(StatusDeviceItem,
             RUVIA_OPTIONAL_FIELD(agent_version, ruvia::string, RUVIA_NULLABLE, RUVIA_EMIT_NULL),
             RUVIA_REQUIRED_FIELD(id, ruvia::string),
             RUVIA_REQUIRED_FIELD(name, ruvia::string),
+            RUVIA_REQUIRED_FIELD(platform, ruvia::string),
             RUVIA_REQUIRED_FIELD(owner_username, ruvia::string),
             RUVIA_REQUIRED_FIELD(online, bool),
+            RUVIA_REQUIRED_FIELD(capture_available, bool),
+            RUVIA_REQUIRED_FIELD(terminal_available, bool),
+            RUVIA_REQUIRED_FIELD(windows_login_available, bool),
             RUVIA_REQUIRED_FIELD(enrolled, bool),
             RUVIA_REQUIRED_FIELD(can_manage, bool),
             RUVIA_REQUIRED_FIELD(desktop, bool),
@@ -59,8 +63,12 @@ StatusDeviceItem deviceModel(const DeviceInfo& device, const DeviceOnlineState& 
     }
     item.set<"id">(device.id)
         .set<"name">(device.name)
+        .set<"platform">(state.online && !state.platform.empty() ? state.platform : device.platform)
         .set<"owner_username">(device.ownerUsername)
         .set<"online">(state.online)
+        .set<"capture_available">(state.online ? state.captureAvailable : false)
+        .set<"terminal_available">(state.online ? state.terminalAvailable : false)
+        .set<"windows_login_available">(state.online ? state.windowsLoginAvailable : false)
         .set<"enrolled">(device.enrolled)
         .set<"can_manage">(device.canManage)
         .set<"desktop">(device.desktop)

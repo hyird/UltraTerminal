@@ -1,5 +1,5 @@
 import { LoadingSkeleton } from "../../components/loading";
-import { Button, Card, Chip } from "@heroui/react";
+import { Button, Chip } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { KPI } from "@heroui-pro/react/kpi";
 import { useNavigate } from "react-router";
@@ -75,40 +75,6 @@ export function OverviewPage() {
                 </KPI.Content>
               </KPI>
             ))}
-          </div>
-          <div className="grid gap-3 @min-[36rem]:grid-cols-2">
-            <Card>
-              <Card.Header>
-                <Card.Title>远程访问</Card.Title>
-                <Card.Description>
-                  查看获授权设备并发起远程连接。
-                </Card.Description>
-              </Card.Header>
-              <Card.Footer>
-                <Button
-                  variant="secondary"
-                  onPress={() => navigate("/workbench/devices")}
-                >
-                  我的设备
-                </Button>
-              </Card.Footer>
-            </Card>
-            <Card>
-              <Card.Header>
-                <Card.Title>账号安全</Card.Title>
-                <Card.Description>
-                  管理双重验证、恢复码与 Telegram 绑定。
-                </Card.Description>
-              </Card.Header>
-              <Card.Footer>
-                <Button
-                  variant="secondary"
-                  onPress={() => navigate("/account/security")}
-                >
-                  个人安全
-                </Button>
-              </Card.Footer>
-            </Card>
           </div>
           <div className="mt-2 flex items-center justify-between">
             <h2 className="text-sm font-semibold">设备一览</h2>

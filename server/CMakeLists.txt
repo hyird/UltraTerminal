@@ -1,7 +1,9 @@
 find_package(spdlog CONFIG REQUIRED)
 set(ULTRATERIMAL_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/devices/install.ps1")
+set(ULTRATERIMAL_LINUX_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/modules/devices/install.sh")
 file(READ "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}" ULTRATERIMAL_INSTALL_SCRIPT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}")
+file(READ "${ULTRATERIMAL_LINUX_INSTALL_SCRIPT_FILE}" ULTRATERIMAL_LINUX_INSTALL_SCRIPT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ULTRATERIMAL_INSTALL_SCRIPT_FILE}" "${ULTRATERIMAL_LINUX_INSTALL_SCRIPT_FILE}")
 configure_file(config/installer.script.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/installer.script.h" @ONLY)
 add_library(ultraterimal-server-core STATIC
     config/server.config.cpp
@@ -37,6 +39,15 @@ target_compile_options(ultraterimal-desktop-runtime PRIVATE
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>"
     "$<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-ffunction-sections;-fdata-sections>")
 target_link_libraries(ultraterimal-desktop-runtime PUBLIC ruvia::core ultraterimal::protocol PRIVATE spdlog::spdlog)
+add_library(ultraterimal-terminal-runtime STATIC features/terminal/terminal.runtime.cpp)
+target_include_directories(ultraterimal-terminal-runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(ultraterimal-terminal-runtime PUBLIC cxx_std_23)
+set_target_properties(ultraterimal-terminal-runtime PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_options(ultraterimal-terminal-runtime PRIVATE
+    "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>"
+    "$<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-ffunction-sections;-fdata-sections>")
+target_link_libraries(ultraterimal-terminal-runtime PUBLIC ruvia::core ultraterimal::protocol PRIVATE spdlog::spdlog)
 add_executable(ultraterimal-server main.cpp
     config/server.runtime.cpp
     features/native/native.runtime.cpp
@@ -50,6 +61,7 @@ add_executable(ultraterimal-server main.cpp
     modules/devices/device.controller.cpp
     modules/sessions/session.controller.cpp
     features/desktop/desktop.controller.cpp
+    features/terminal/terminal.controller.cpp
     features/file/file.runtime.cpp
     features/file/file.controller.cpp)
 target_compile_features(ultraterimal-server PRIVATE cxx_std_23)
@@ -61,6 +73,6 @@ target_compile_options(ultraterimal-server PRIVATE
     "$<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-ffunction-sections;-fdata-sections>")
 target_link_options(ultraterimal-server PRIVATE
     "$<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:Release>>:-Wl,--gc-sections,--icf=safe,-s>")
-target_link_libraries(ultraterimal-server PRIVATE ultraterimal-server-core ultraterimal-control-runtime ultraterimal-desktop-runtime ruvia::web spdlog::spdlog)
+target_link_libraries(ultraterimal-server PRIVATE ultraterimal-server-core ultraterimal-control-runtime ultraterimal-desktop-runtime ultraterimal-terminal-runtime ruvia::web spdlog::spdlog)
 
 install(TARGETS ultraterimal-server RUNTIME DESTINATION bin)

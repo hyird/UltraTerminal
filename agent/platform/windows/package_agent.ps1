@@ -10,7 +10,8 @@ param(
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayHost,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayAddress,
-    [ValidateRange(1,65535)][int]$GatewayPort = 7443
+    [ValidateRange(1,65535)][int]$GatewayPort = 7443,
+    [string]$IddDriverDir = ''
 )
 $ErrorActionPreference = 'Stop'
 $product = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent.wxs') -Raw)).Wix.Package
@@ -67,9 +68,29 @@ $sourceMetadata = @{ project_commit=$commit; ruvia_commit=$ruvia; vcpkg_commit=$
 $sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProject source and build instructions: $sourceUrl`nProject download: https://github.com/hyird/UltraTerminal/archive/$commit.tar.gz`nRuvia source location and exact revision: $sourceUrl/CMakeLists.txt`nDependency recipes: https://github.com/microsoft/vcpkg/tree/$vcpkgCommit`nDependency source locations and checksums (SPDX):`n$sourceMetadata`n"
 [IO.File]::WriteAllText((Join-Path $payload 'source_info.txt'), $sourceNotice, (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install_agent.ps1') -Destination (Join-Path $payload 'install_agent.ps1') -Force
+$wixDefines = @('-d', "Payload=$payload")
+if ($IddDriverDir -and (Test-Path -LiteralPath (Join-Path $IddDriverDir 'ultraterimal_idd.inf'))) {
+    $iddStage = Join-Path $payload 'idd'
+    New-Item -ItemType Directory -Path $iddStage -Force | Out-Null
+    foreach ($name in @('ultraterimal_idd.dll', 'ultraterimal_idd.inf', 'ultraterimal_idd.cat')) {
+        $src = Join-Path $IddDriverDir $name
+        if (-not (Test-Path -LiteralPath $src)) { throw "Missing IDD driver file: $src" }
+        Copy-Item -LiteralPath $src -Destination (Join-Path $iddStage $name) -Force
+    }
+    $wixDefines += @('-d', 'IncludeIdd=1')
+    $cerSrc = Join-Path $IddDriverDir 'ultraterimal_idd.cer'
+    if (Test-Path -LiteralPath $cerSrc) {
+        Copy-Item -LiteralPath $cerSrc -Destination (Join-Path $iddStage 'ultraterimal_idd.cer') -Force
+        $wixDefines += @('-d', 'IncludeIddCert=1')
+    } else {
+        $wixDefines += @('-d', 'IncludeIddCert=0')
+    }
+} else {
+    $wixDefines += @('-d', 'IncludeIdd=0', '-d', 'IncludeIddCert=0')
+}
 $resolvedOutput = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedOutput) -Force | Out-Null
-& $wixExe build -acceptEula wix7 -arch x64 -d "Payload=$payload" -out $resolvedOutput (Join-Path $PSScriptRoot 'agent.wxs')
+& $wixExe build -acceptEula wix7 -arch x64 @wixDefines -out $resolvedOutput (Join-Path $PSScriptRoot 'agent.wxs')
 if ($LASTEXITCODE -ne 0) { throw 'WiX build failed; WiX 7 requires the build owner to accept its OSMF EULA' }
 $outputDirectory = Split-Path -Parent $resolvedOutput
 $manifest = @{ source = $sourceUrl; source_commit = $commit; version = [string]$product.Version; file = '/assets/' + [IO.Path]::GetFileName($resolvedOutput); sha256 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash.ToLowerInvariant(); native_host = $GatewayHost; native_address = $GatewayAddress; native_port = $GatewayPort }

@@ -3,14 +3,39 @@
 #include <iostream>
 #include <string>
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "features/connection/connection.config.h"
 
+namespace {
+unsigned long currentProcessId() {
+#ifdef _WIN32
+    return GetCurrentProcessId();
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
+}
+} // namespace
+
 int main() {
-    const auto file = std::filesystem::temp_directory_path() / (L"ultraterimal-config-" + std::to_wstring(GetCurrentProcessId()) + L".json");
-    const auto write = [&](const std::string& text) { std::ofstream stream(file); stream << text; };
-    const auto rejected = [&](const std::string& text) { write(text); try { (void)ultraterimal::agent::loadConnectionConfig(file); return false; } catch (...) { return true; } };
+    const auto file = std::filesystem::temp_directory_path() / ("ultraterimal-config-" + std::to_string(currentProcessId()) + ".json");
+    const auto write = [&](const std::string& text) {
+        std::ofstream stream(file);
+        stream << text;
+    };
+    const auto rejected = [&](const std::string& text) {
+        write(text);
+        try {
+            (void)ultraterimal::agent::loadConnectionConfig(file);
+            return false;
+        } catch (...) {
+            return true;
+        }
+    };
     try {
         write(R"({"host":"localhost","device_id":"device-1","ca_file":"ca.pem","credential_file":"device.bin"})");
         const auto config = ultraterimal::agent::loadConnectionConfig(file);
@@ -32,6 +57,16 @@ int main() {
         const auto enrolled = ultraterimal::agent::loadConnectionConfig(file);
         if (enrolled.deviceId != enrollment.deviceId || enrolled.credentialFile != enrollment.credentialFile || enrolled.caFile != enrollment.caFile) {
             return 9;
+        }
+        write(R"({"host":"localhost","device_id":"device-1","ca_file":"system","credential_file":"device.bin"})");
+        const auto systemCa = ultraterimal::agent::loadConnectionConfig(file);
+        if (!systemCa.caFile.empty()) {
+            return 10;
+        }
+        write(ultraterimal::agent::connectionConfigJson(systemCa));
+        const auto reloadedSystemCa = ultraterimal::agent::loadConnectionConfig(file);
+        if (!reloadedSystemCa.caFile.empty()) {
+            return 11;
         }
         if (!rejected(R"({"host":"localhost","device_id":"device-1","ca_file":"ca.pem","credential_file":"device.bin","port":"0"})")) {
             return 2;

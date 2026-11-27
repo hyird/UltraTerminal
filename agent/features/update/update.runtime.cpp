@@ -13,12 +13,11 @@
 #include <openssl/evp.h>
 
 #include "features/connection/connection.transport.h"
-#include "platform/windows/credential.transport.h"
-#include "platform/windows/update.transport.h"
+#include "platform/platform.transport.h"
 namespace ultraterimal::agent {
 namespace {
-asio::awaitable<void> download(ruvia::event_loop loop, const std::filesystem::path& root, wire::AgentUpdate update) {
-    auto config = loadConnectionConfig(root / "agent.json");
+asio::awaitable<void> download(ruvia::event_loop loop, const std::filesystem::path& configPath, const std::filesystem::path& stagePath, wire::AgentUpdate update) {
+    auto config = loadConnectionConfig(configPath);
     auto transport = std::make_shared<DeviceTransport>(loop, config, protocol::kMaximumControlBytes, wire::NativeConnect::AGENT_UPDATE);
     asio::steady_timer deadline(loop.executor());
     deadline.expires_after(std::chrono::minutes(15));
@@ -26,7 +25,7 @@ asio::awaitable<void> download(ruvia::event_loop loop, const std::filesystem::pa
     try {
         co_await transport->connect(loadCredential(config.credentialFile));
         co_await transport->send(update.SerializeAsString());
-        std::ofstream file(root / ".update/package.msi", std::ios::binary | std::ios::trunc);
+        std::ofstream file(stagePath, std::ios::binary | std::ios::trunc);
         std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
         if (!file || !digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1) {
             throw std::runtime_error("Cannot stage package");
@@ -71,13 +70,13 @@ asio::awaitable<void> download(ruvia::event_loop loop, const std::filesystem::pa
 
 } // namespace
 int runAgentUpdate() {
-    WindowsAgentUpdate update;
+    PlatformAgentUpdate update;
     try {
         asio::io_context io;
         ruvia::blocking_pool blockingPool{{.thread_count_ = 1, .queue_capacity_ = 4}};
         ruvia::event_loop_attachment attachment(io, {.blocking_pool_ = &blockingPool});
         std::exception_ptr failure;
-        asio::co_spawn(attachment.loop().executor(), download(attachment.loop(), update.root(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.request_stop(); });
+        asio::co_spawn(attachment.loop().executor(), download(attachment.loop(), update.configPath(), update.stagePath(), update.request()), [&](std::exception_ptr error) { failure = error; attachment.request_stop(); });
         attachment.run();
         if (failure) {
             std::rethrow_exception(failure);

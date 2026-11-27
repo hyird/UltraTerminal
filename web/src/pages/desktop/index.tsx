@@ -37,6 +37,10 @@ import { DesktopReconnect } from "./reconnect.service";
 import { DesktopFilesPanel } from "./files.panel";
 import { requestApproval } from "../identity/identity.service";
 import { useDevices } from "../devices/device_state";
+import { TerminalPanel } from "../terminal";
+
+type DesktopOnlyEntry = Extract<DesktopEntry, { kind: "desktop" }>;
+
 export function DesktopWorkspace() {
   const { pathname } = useLocation();
   const { entries, active, close } = useDesktops();
@@ -45,16 +49,25 @@ export function DesktopWorkspace() {
     <section
       hidden={!visible}
       className="flex h-[calc(100dvh-var(--workspace-navbar-height))] min-h-0 min-w-0 max-w-full flex-col overflow-hidden"
-      aria-label="远程桌面工作区"
+      aria-label="远程会话工作区"
     >
-      {entries.map((entry) => (
-        <DesktopPanel
-          key={entry.ticket.id}
-          entry={entry}
-          visible={visible && active === entry.ticket.id}
-          onClose={() => close(entry.ticket.id)}
-        />
-      ))}
+      {entries.map((entry) =>
+        entry.kind === "terminal" ? (
+          <TerminalPanel
+            key={entry.ticket.id}
+            entry={entry}
+            visible={visible && active === entry.ticket.id}
+            onClose={() => close(entry.ticket.id)}
+          />
+        ) : (
+          <DesktopPanel
+            key={entry.ticket.id}
+            entry={entry}
+            visible={visible && active === entry.ticket.id}
+            onClose={() => close(entry.ticket.id)}
+          />
+        ),
+      )}
     </section>
   );
 }
@@ -75,9 +88,19 @@ export function DesktopTabs() {
         <ToggleButton
           key={entry.ticket.id}
           id={entry.ticket.id}
-          aria-label={entry.device.name}
+          aria-label={
+            entry.kind === "terminal"
+              ? `${entry.device.name} 终端`
+              : entry.device.name
+          }
         >
-          {entry.device.name}
+          <span className="inline-flex items-center gap-1.5">
+            <Icon
+              name={entry.kind === "terminal" ? "terminal" : "display"}
+              className="size-3.5"
+            />
+            <span>{entry.device.name}</span>
+          </span>
         </ToggleButton>
       ))}
     </ToggleButtonGroup>
@@ -88,7 +111,7 @@ function DesktopPanel({
   visible,
   onClose,
 }: {
-  entry: DesktopEntry;
+  entry: DesktopOnlyEntry;
   visible: boolean;
   onClose: () => void;
 }) {
@@ -373,6 +396,7 @@ function DesktopPanel({
                   deviceId={entry.device.id}
                   sessionId={entry.ticket.id}
                   writeControl={entry.ticket.writeControl}
+                  platform={entry.device.platform}
                 />
               )}
             </Popover.Dialog>

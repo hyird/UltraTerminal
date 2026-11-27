@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "console_session.transport.h"
+#include "idd_install.transport.h"
 #include "login_install.transport.h"
 
 namespace ultraterimal::agent {
@@ -137,6 +138,14 @@ void WINAPI serviceMain(DWORD, wchar_t**) noexcept {
                 return;
             }
         }
+        try {
+            const auto iddDir = agentExecutablePath().parent_path() / L"idd";
+            if (std::filesystem::is_regular_file(iddDir / L"ultraterimal_idd.inf")) {
+                installIddDriver(iddDir, /*forceUpdate=*/false);
+            }
+        } catch (...) {
+            // IDD is optional; DXGI Desktop Duplication remains available as fallback.
+        }
         runtime.task(runtime.stopSource.get_token(), runtime.consoleEvents);
         std::lock_guard lock(runtime.mutex);
         runtime.publish(SERVICE_STOPPED);
@@ -186,12 +195,24 @@ void installService() {
         DeleteService(service.get());
         throw;
     }
+    try {
+        const auto iddDir = agentExecutablePath().parent_path() / L"idd";
+        if (std::filesystem::is_regular_file(iddDir / L"ultraterimal_idd.inf")) {
+            installIddDriver(iddDir);
+        }
+    } catch (...) {
+        // IDD is optional; DXGI Desktop Duplication remains available as fallback.
+    }
 }
 void uninstallService() {
     ServiceHandle manager(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
     ServiceHandle service(OpenServiceW(manager.get(), kServiceName, DELETE | SERVICE_QUERY_STATUS));
     if (query(service.get()).dwCurrentState != SERVICE_STOPPED) {
         throw std::runtime_error("Stop the service before uninstalling it");
+    }
+    try {
+        removeIddDriver();
+    } catch (...) {
     }
     removeWindowsLoginProvider(agentExecutablePath().parent_path() / L"ultraterimal_login.dll");
     check(DeleteService(service.get()), "DeleteService");

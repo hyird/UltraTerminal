@@ -22,16 +22,15 @@
 
 #include "config/version.config.h"
 #include "connection.transport.h"
-#include "features/desktop/session.runtime.h"
 #include "features/file/file.runtime.h"
 #include "features/logging/log.runtime.h"
-#include "platform/windows/capability.transport.h"
-#include "platform/windows/credential.transport.h"
+#include "features/terminal/terminal.runtime.h"
+#include "platform/platform.transport.h"
+#ifdef _WIN32
+#include "features/desktop/session.runtime.h"
 #include "platform/windows/desktop_launch.transport.h"
-#include "platform/windows/file.transport.h"
-#include "platform/windows/system_restart.transport.h"
-#include "platform/windows/update.transport.h"
 #include "platform/windows/windows_login.transport.h"
+#endif
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::agent {
@@ -44,19 +43,29 @@ wire::Envelope makeHello(const ConnectionConfig& config, bool desktop = false) {
     hello.mutable_hello()->set_agent_version(kAgentVersion);
     const auto capabilities = detectCapabilities();
     auto* reported = hello.mutable_hello()->mutable_capabilities();
-    reported->set_windows_login_settings(true);
+    reported->set_platform(std::string(platformName()));
     reported->set_file_transfer(true);
-    reported->set_agent_update(nativeSystemRestartPlatform().isSessionZeroLocalSystem());
-    reported->set_system_restart(nativeSystemRestartPlatform().isSessionZeroLocalSystem());
+    reported->set_terminal(true);
+    reported->set_ssh(true);
+    reported->set_agent_update(canManageSystemPower());
+    reported->set_system_restart(canManageSystemPower());
     reported->set_boot_time_unix_seconds(systemBootTimeUnixSeconds());
     reported->set_conpty(capabilities.conpty);
     reported->set_display_count(capabilities.attachedDisplays);
+#ifdef _WIN32
+    reported->set_windows_login_settings(true);
     const auto selected = currentDesktopSession();
     const bool desktopAvailable = desktop && selected && selected != 0xffffffff &&
                                   (!capabilities.processSession || capabilities.attachedDisplays);
     reported->set_capture_available(desktopAvailable);
     reported->set_h264_software(desktopAvailable);
     reported->set_desktop_input_contract(2);
+#else
+    (void)desktop;
+    reported->set_windows_login_settings(false);
+    reported->set_capture_available(false);
+    reported->set_h264_software(false);
+#endif
     return hello;
 }
 std::string encodeControl(const wire::Envelope& message) {
@@ -113,10 +122,15 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     std::filesystem::path desktopExecutable;
     ConsoleSessionEvents* consoleEvents;
     struct SessionEntry {
+#ifdef _WIN32
         std::shared_ptr<DesktopSession> runtime;
-        bool writable;
+#endif
+        bool writable = false;
     };
+#ifdef _WIN32
     std::map<std::string, SessionEntry> sessions;
+#endif
+    std::map<std::string, std::shared_ptr<TerminalSession>> terminalSessions;
     std::string credential;
     std::unique_ptr<DeviceTransport> transport;
     std::deque<std::string> outbound;
@@ -160,8 +174,13 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         if (transport) {
             transport->cancel();
         }
+#ifdef _WIN32
         for (auto& [id, session] : sessions) {
             session.runtime->stop();
+        }
+#endif
+        for (auto& [id, session] : terminalSessions) {
+            session->stop();
         }
     }
     void stop() {
@@ -286,6 +305,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     }
                     logPending = false;
                 } else if (message->has_windows_login_request()) {
+#ifdef _WIN32
                     auto operation = ruvia::run_blocking(loop.worker(),
                                                          [path = config.credentialFile.parent_path() / "windows_login.credential", request = std::move(*message->mutable_windows_login_request())]() mutable {
                                                              return windowsLoginSettings(path, std::move(request));
@@ -296,6 +316,12 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                         *response.mutable_windows_login_result() = std::move(result);
                         enqueue(std::move(response));
                     }
+#else
+                    wire::Envelope response;
+                    response.mutable_windows_login_result()->set_request_id(message->windows_login_request().request_id());
+                    response.mutable_windows_login_result()->set_success(false);
+                    enqueue(std::move(response));
+#endif
                 } else if (message->has_windows_restart_request()) {
                     if (!message->session_id().empty() || !message->channel_id().empty()) {
                         throw std::runtime_error("Restart request is not permitted on a session channel");
@@ -306,7 +332,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                                                              const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
                                                                                                              std::chrono::system_clock::now().time_since_epoch())
                                                                                                              .count());
-                                                             return handleWindowsRestart(deviceId, request, nativeSystemRestartPlatform(), now);
+                                                             return handleSystemRestart(deviceId, request, nativeSystemRestartPlatform(), now);
                                                          });
                     auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
                     if (!ended) {
@@ -317,7 +343,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 } else if (message->has_file_list_request()) {
                     auto operation = ruvia::run_blocking(loop.worker(),
                                                          [request = std::move(*message->mutable_file_list_request())]() mutable {
-                                                             return listWindowsFiles(request);
+                                                             return listPlatformFiles(request);
                                                          });
                     auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
                     if (!ended) {
@@ -328,7 +354,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 } else if (message->has_file_stat_request()) {
                     auto operation = ruvia::run_blocking(loop.worker(),
                                                          [request = std::move(*message->mutable_file_stat_request())]() mutable {
-                                                             return statWindowsFile(request);
+                                                             return statPlatformFile(request);
                                                          });
                     auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
                     if (!ended) {
@@ -350,8 +376,13 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 } else if (message->has_session_open()) {
                     openSession(*message);
                 } else if (message->has_session_close()) {
+#ifdef _WIN32
                     if (auto found = sessions.find(message->session_id()); found != sessions.end()) {
                         found->second.runtime->stop();
+                    }
+#endif
+                    if (auto found = terminalSessions.find(message->session_id()); found != terminalSessions.end()) {
+                        found->second->stop();
                     }
                 } else if (!message->has_session_close()) {
                     throw std::runtime_error("Unexpected control message type");
@@ -364,6 +395,54 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         }
     }
     void openSession(const wire::Envelope& message) {
+        if (message.session_open().kind() == wire::SSH) {
+            if (terminalSessions.contains(message.session_id()) || terminalSessions.size() >= 16) {
+                wire::Envelope response;
+                response.set_session_id(message.session_id());
+                response.mutable_session_error()->set_code("session_limit");
+                response.mutable_session_error()->set_message("Terminal session limit reached");
+                enqueue(std::move(response));
+                ++statistics.rejectedSessions;
+                return;
+            }
+            auto sessionLoop = loopPool ? loopPool->loop_for(message.session_id()) : loop;
+            auto runtime = std::make_shared<TerminalSession>(sessionLoop, config, message);
+            terminalSessions.emplace(message.session_id(), runtime);
+            ++statistics.startedSessions;
+            try {
+                asio::co_spawn(sessionLoop.executor(), runtime->run(credential), [self = shared_from_this(), ownerLoop = loop, runtime, id = message.session_id()](std::exception_ptr failure, TerminalSessionResult result) mutable {
+                    auto deliver = [self = std::move(self), id = std::move(id), failure = std::move(failure), result = std::move(result)]() mutable {
+                        self->terminalSessions.erase(id);
+                        ++self->statistics.completedSessions;
+                        self->sessionsDone.cancel();
+                        if (!self->ended) {
+                            try {
+                                if (failure) {
+                                    result.terminal.Clear();
+                                    result.terminal.set_session_id(id);
+                                    result.terminal.mutable_session_error()->set_code("terminal_failed");
+                                    result.terminal.mutable_session_error()->set_message("Terminal session failed");
+                                }
+                                self->enqueue(std::move(result.terminal));
+                            } catch (...) {
+                                self->disconnect();
+                            }
+                        }
+                    };
+                    if (ownerLoop.worker().is_current()) {
+                        deliver();
+                    } else {
+                        (void)ownerLoop.defer_cleanup(std::move(deliver));
+                    }
+                });
+            } catch (...) {
+                terminalSessions.erase(message.session_id());
+                runtime->stop();
+                throw;
+            }
+            return;
+        }
+#ifdef _WIN32
         if (sessions.contains(message.session_id())) {
             throw std::runtime_error("Duplicate active desktop session");
         }
@@ -427,9 +506,22 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
             runtime->stop();
             throw;
         }
+#else
+        log(wire::AgentLog::DESKTOP_REJECTED, message.session_id());
+        wire::Envelope response;
+        response.set_session_id(message.session_id());
+        response.mutable_session_error()->set_code("capability_unavailable");
+        response.mutable_session_error()->set_message("Requested session cannot be started");
+        enqueue(std::move(response));
+        ++statistics.rejectedSessions;
+#endif
     }
     asio::awaitable<void> joinSessions() {
-        while (!sessions.empty()) {
+        while (
+#ifdef _WIN32
+            !sessions.empty() ||
+#endif
+            !terminalSessions.empty()) {
             sessionsDone.expires_at(std::chrono::steady_clock::time_point::max());
             std::error_code error;
             co_await sessionsDone.async_wait(asio::redirect_error(asio::use_awaitable, error));

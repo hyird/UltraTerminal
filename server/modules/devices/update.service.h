@@ -4,6 +4,7 @@
 #include <model.h>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "ultraterimal/protocol/update.protocol.h"
 
@@ -16,12 +17,16 @@ struct AgentRelease {
     wire::AgentUpdate update;
     std::filesystem::path file;
 };
-inline std::optional<AgentRelease> agentRelease(const std::filesystem::path& releaseDir) {
+inline std::optional<AgentRelease> agentRelease(const std::filesystem::path& releaseDir, std::string_view platform = "windows-x64") {
     if (releaseDir.empty()) {
         return {};
     }
+    const bool isLinux = platform == "linux-x64";
+    if (!isLinux && platform != "windows-x64") {
+        return {};
+    }
     try {
-        std::ifstream stream(releaseDir / "windows-agent.json", std::ios::binary);
+        std::ifstream stream(releaseDir / (isLinux ? "linux-agent.json" : "windows-agent.json"), std::ios::binary);
         std::string bytes(4097, '\0');
         stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         bytes.resize(static_cast<std::size_t>(stream.gcount()));
@@ -37,7 +42,8 @@ inline std::optional<AgentRelease> agentRelease(const std::filesystem::path& rel
         if (name.starts_with("/assets/")) {
             name = name.substr(8);
         }
-        if (!name.ends_with(".msi") || name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != std::string::npos) {
+        const bool validName = isLinux ? (name.starts_with("ultraterimal-agent-linux-x64-") && !name.ends_with(".msi")) : name.ends_with(".msi");
+        if (!validName || name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") != std::string::npos) {
             return {};
         }
         const auto canonicalRoot = std::filesystem::canonical(releaseDir);

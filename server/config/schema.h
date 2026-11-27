@@ -212,5 +212,7 @@ CREATE TABLE IF NOT EXISTS gateway_leases (
     owner_id CHAR(64) NOT NULL,
     expires_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin)SQL"}),
+    ruvia::db_migration({.id_ = "002_devices_platform", .sql_ = R"SQL(
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS platform VARCHAR(32) NOT NULL DEFAULT 'windows-x64')SQL"}),
 };
 } // namespace ultraterimal::server

@@ -40,10 +40,16 @@ std::expected<CommandLine, std::wstring> parseCommandLine(std::span<const std::w
     }
     if (arguments.size() == 2 && !arguments[1].empty()) {
         if (arguments.front() == L"--enroll") {
-            return CommandLine{Command::kEnroll, std::filesystem::path(arguments[1])};
+            CommandLine result;
+            result.command = Command::kEnroll;
+            result.configPath = std::filesystem::path(arguments[1]);
+            return result;
         }
         if (arguments.front() == L"--connection-check" || arguments.front() == L"--connect") {
-            return CommandLine{arguments.front() == L"--connect" ? Command::kConnect : Command::kConnectionCheck, std::filesystem::path(arguments[1])};
+            CommandLine result;
+            result.command = arguments.front() == L"--connect" ? Command::kConnect : Command::kConnectionCheck;
+            result.configPath = std::filesystem::path(arguments[1]);
+            return result;
         }
     }
     if (arguments.size() != 1) {
@@ -59,9 +65,48 @@ std::expected<CommandLine, std::wstring> parseCommandLine(std::span<const std::w
         std::pair{L"--status", Command::kStatus}, std::pair{L"--terminal-check", Command::kTerminalCheck}};
     for (const auto& [name, command] : commands) {
         if (arguments.front() == name) {
-            return CommandLine{command, {}};
+            CommandLine result;
+            result.command = command;
+            return result;
         }
     }
     return std::unexpected(L"Unknown command; use --help.");
+}
+std::expected<CommandLine, std::string> parseCommandLine(std::span<const std::string_view> arguments) {
+    if (arguments.empty()) {
+        return CommandLine{};
+    }
+    if (arguments.size() == 2 && !arguments[1].empty()) {
+        if (arguments.front() == "--enroll") {
+            CommandLine result;
+            result.command = Command::kEnroll;
+            result.configPath = std::filesystem::path(std::u8string(arguments[1].begin(), arguments[1].end()));
+            return result;
+        }
+        if (arguments.front() == "--connection-check" || arguments.front() == "--connect") {
+            CommandLine result;
+            result.command = arguments.front() == "--connect" ? Command::kConnect : Command::kConnectionCheck;
+            result.configPath = std::filesystem::path(std::u8string(arguments[1].begin(), arguments[1].end()));
+            return result;
+        }
+    }
+    if (arguments.size() != 1) {
+        return std::unexpected(std::string("Expected exactly one command; use --help."));
+    }
+    constexpr std::array commands{
+        std::pair{"--help", Command::kHelp}, std::pair{"--version", Command::kVersion},
+        std::pair{"--apply-update", Command::kApplyUpdate},
+        std::pair{"--probe", Command::kProbe}, std::pair{"--service", Command::kService},
+        std::pair{"--install", Command::kInstall}, std::pair{"--uninstall", Command::kUninstall},
+        std::pair{"--start", Command::kStart}, std::pair{"--stop", Command::kStop},
+        std::pair{"--status", Command::kStatus}, std::pair{"--terminal-check", Command::kTerminalCheck}};
+    for (const auto& [name, command] : commands) {
+        if (arguments.front() == name) {
+            CommandLine result;
+            result.command = command;
+            return result;
+        }
+    }
+    return std::unexpected(std::string("Unknown command; use --help."));
 }
 } // namespace ultraterimal::agent

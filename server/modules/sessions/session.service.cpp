@@ -119,8 +119,8 @@ ruvia::task<std::expected<IssuedSession, SessionFailure>> SessionService::create
         co_await auditDenied(tx, request, "session_limit");
         co_return std::unexpected(SessionFailure::kLimit);
     }
-    if (!request.preempt) {
-        if (co_await tx.repository<RemoteSessionEntity>().exists({.where_ = RemoteSessionEntity::column<"device_id">() == request.deviceId && RemoteSessionEntity::column<"state">() != "closed"})) {
+    if (request.kind != wire::SSH && !request.preempt) {
+        if (co_await tx.repository<RemoteSessionEntity>().exists({.where_ = RemoteSessionEntity::column<"device_id">() == request.deviceId && RemoteSessionEntity::column<"kind">() != static_cast<int>(wire::SSH) && RemoteSessionEntity::column<"state">() != "closed"})) {
             co_await auditDenied(tx, request, "device_busy");
             co_return std::unexpected(SessionFailure::kBusy);
         }
@@ -147,11 +147,13 @@ ruvia::task<std::expected<IssuedSession, SessionFailure>> SessionService::create
         }
     }
     IssuedSession result{"s-" + randomToken(), {}, {}};
-    auto toPreempt = co_await tx.query("SELECT id,user_id,device_id FROM remote_sessions WHERE device_id=? AND state<>'closed' FOR UPDATE", request.deviceId);
-    const auto preempted = co_await endSessions(tx, std::move(toPreempt), "preempted");
-    result.preemptedSessions.reserve(preempted.size());
-    for (const auto& item : preempted) {
-        result.preemptedSessions.push_back(item.id);
+    if (request.kind != wire::SSH) {
+        auto toPreempt = co_await tx.query("SELECT id,user_id,device_id FROM remote_sessions WHERE device_id=? AND kind<>? AND state<>'closed' FOR UPDATE", request.deviceId, static_cast<int>(wire::SSH));
+        const auto preempted = co_await endSessions(tx, std::move(toPreempt), "preempted");
+        result.preemptedSessions.reserve(preempted.size());
+        for (const auto& item : preempted) {
+            result.preemptedSessions.push_back(item.id);
+        }
     }
     co_await tx.execute("INSERT INTO remote_sessions(id,user_id,device_id,kind,write_control,setup_expires_at,login_token_hash,grant_revision) VALUES(?,?,?,?,?,UTC_TIMESTAMP(6)+INTERVAL 60 SECOND,?,?)", result.id, request.userId, request.deviceId, static_cast<int>(request.kind), request.writeControl, request.loginHash, grantRevision);
     if (resumed) {
@@ -249,12 +251,13 @@ ruvia::task<bool> SessionService::authorizeDesktopFileTransfer(ruvia::db_executo
         "SELECT 1 FROM remote_sessions s "
         "JOIN devices d ON d.id=s.device_id AND d.revoked_at IS NULL "
         "JOIN users u ON u.id=s.user_id AND NOT u.disabled "
-        "JOIN device_grants g ON g.device_id=s.device_id AND g.user_id=s.user_id AND g.desktop=true AND g.revision=s.grant_revision "
+        "JOIN device_grants g ON g.device_id=s.device_id AND g.user_id=s.user_id AND g.revision=s.grant_revision "
         "JOIN login_sessions l ON l.token_hash=s.login_token_hash AND l.user_id=s.user_id AND l.expires_at>UTC_TIMESTAMP(6) "
-        "WHERE s.id=? AND s.user_id=? AND s.device_id=? AND s.login_token_hash=? AND s.kind=? "
+        "WHERE s.id=? AND s.user_id=? AND s.device_id=? AND s.login_token_hash=? "
+        "AND ((s.kind=? AND g.desktop=true) OR (s.kind=? AND g.ssh=true)) "
         "AND (s.state='active' OR (s.state='pending' AND s.setup_expires_at>UTC_TIMESTAMP(6))) "
         "AND (NOT ? OR (s.write_control=true AND g.write_control=true))",
-        sessionId, user.id, deviceId, user.loginHash, static_cast<int>(wire::DESKTOP), requireWrite);
+        sessionId, user.id, deviceId, user.loginHash, static_cast<int>(wire::DESKTOP), static_cast<int>(wire::SSH), requireWrite);
     co_return !rows.empty();
 }
 ruvia::task<void> SessionService::auditFileTransfer(ruvia::db_executor db, std::string userId, std::string deviceId, std::string sessionId, std::string eventType, bool success, std::string reason) const {

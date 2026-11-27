@@ -12,6 +12,7 @@ RUVIA_DB_ENTITY(
     RUVIA_DB_COLUMN(credential_hash, std::string, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 64}),
     RUVIA_DB_COLUMN(owner_id, std::string, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 128}),
     RUVIA_DB_COLUMN(enrolled, bool, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::boolean, .default_expression_ = ruvia::fixed_string{"TRUE"}}),
+    RUVIA_DB_COLUMN(platform, std::string, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .length_ = 32, .default_expression_ = ruvia::fixed_string{"'windows-x64'"}}),
     RUVIA_DB_COLUMN(agent_version, std::string, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::varchar, .nullable_ = true, .length_ = 64}),
     RUVIA_DB_COLUMN(revoked_at, std::string, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp, .nullable_ = true}),
     RUVIA_DB_COLUMN(last_seen_at, std::string, ruvia::db_column_options{.data_type_ = ruvia::db_data_type::timestamp, .nullable_ = true}),

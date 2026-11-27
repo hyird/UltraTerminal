@@ -36,6 +36,8 @@ message Capabilities {
   uint32 desktop_input_contract = 12;
   bool agent_update = 13;
   bool file_transfer = 14;
+  string platform = 15;
+  bool terminal = 16;
 }
 // Update packages travel over an independent authenticated native connection.
 message AgentUpdate { string version = 1; string sha256 = 2; uint64 size = 3; }

@@ -15,20 +15,25 @@
 #include "config/command_line.config.h"
 #include "config/version.config.h"
 #include "features/connection/control.runtime.h"
-#include "features/desktop/worker.runtime.h"
 #include "features/enrollment/enrollment.runtime.h"
 #include "features/update/update.runtime.h"
-#include "platform/windows/capability.transport.h"
+#include "platform/platform.transport.h"
+#ifdef _WIN32
+#include "features/desktop/worker.runtime.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/login_install.transport.h"
 #include "platform/windows/pipe.transport.h"
-#include "platform/windows/service.runtime.h"
-#include "platform/windows/terminal.transport.h"
+#endif
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
+#else
+int main(int argc, char** argv) {
+#endif
     using namespace ultraterimal::agent;
     bool background = false;
     try {
+#ifdef _WIN32
         std::vector<std::wstring_view> arguments;
         for (int i = 1; i < argc; ++i) {
             arguments.emplace_back(argv[i]);
@@ -39,35 +44,58 @@ int wmain(int argc, wchar_t** argv) {
             std::wcerr << options.error() << L'\n';
             return 2;
         }
+#else
+        std::vector<std::string_view> arguments;
+        for (int i = 1; i < argc; ++i) {
+            arguments.emplace_back(argv[i]);
+        }
+        const auto options = parseCommandLine(arguments);
+        background = options && (options->command == Command::kService || options->command == Command::kApplyUpdate);
+        if (!options) {
+            std::cerr << options.error() << '\n';
+            return 2;
+        }
+#endif
         switch (options->command) {
         case Command::kApplyUpdate:
             return runAgentUpdate();
         case Command::kHelp:
             std::cout << "Ultraterimal Agent\n"
-                         "  --terminal-check  Verify local ConPTY without remote access\n"
+                         "  --terminal-check  Verify local PTY/ConPTY without remote access\n"
                          "  --connection-check <config.json>  Verify authenticated native UDP/TCP control handshake\n"
                          "  --connect <config.json>  Maintain the control connection until Ctrl+C\n"
                          "  --enroll <bootstrap.json>  Read code/name JSON from stdin; emit connection config\n"
                          "  --probe      Report local API/display capabilities as JSON\n"
-                         "  --status     Query Windows service state\n"
-                         "  --install    Register auto-start service (administrator)\n"
-                         "  --start      Start installed service (administrator)\n"
-                         "  --stop       Stop installed service (administrator)\n"
-                         "  --uninstall  Remove stopped service (administrator)\n"
+                         "  --status     Query service state\n"
+                         "  --install    Register auto-start service (administrator/root)\n"
+                         "  --start      Start installed service (administrator/root)\n"
+                         "  --stop       Stop installed service (administrator/root)\n"
+                         "  --uninstall  Remove stopped service (administrator/root)\n"
+#ifdef _WIN32
                          "  --install-login-provider  Register bundled Windows login provider (administrator)\n"
                          "  --remove-login-provider   Unregister bundled Windows login provider (administrator)\n"
-                         "  --service    SCM entry point; not an interactive command\n"
                          "  --desktop --session <id> --pipe <name> --parent <pid>  Internal desktop worker\n"
+#endif
+                         "  --service    Service entry point; not an interactive command\n"
                          "  --version    Print version\n"
-                         "Desktop sessions are authorized and managed by the platform.\n";
+                         "Sessions are authorized and managed by the platform.\n";
             break;
         case Command::kInstallLoginProvider:
+#ifdef _WIN32
             installWindowsLoginProvider(agentExecutablePath().parent_path() / L"ultraterimal_login.dll");
+#else
+            throw std::runtime_error("Windows login provider is only supported on Windows");
+#endif
             break;
         case Command::kRemoveLoginProvider:
+#ifdef _WIN32
             removeWindowsLoginProvider(agentExecutablePath().parent_path() / L"ultraterimal_login.dll");
+#else
+            throw std::runtime_error("Windows login provider is only supported on Windows");
+#endif
             break;
         case Command::kDesktop: {
+#ifdef _WIN32
             DesktopParent parent(options->windowsSession, options->parentProcess);
             const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
             ruvia::blocking_pool blockingPool{{.thread_count_ = coreCount, .queue_capacity_ = std::max<std::size_t>(64u, coreCount * 16u)}};
@@ -89,6 +117,9 @@ int wmain(int argc, wchar_t** argv) {
                 std::rethrow_exception(failure);
             }
             return static_cast<int>(exitCode);
+#else
+            throw std::runtime_error("Desktop worker mode is not supported on this platform");
+#endif
         }
         case Command::kEnroll: {
             const auto config = loadEnrollmentConfig(options->configPath);

@@ -3,7 +3,7 @@
 #include <stdexcept>
 
 #include "enrollment.transport.h"
-#include "platform/windows/credential.transport.h"
+#include "platform/platform.transport.h"
 
 namespace ultraterimal::agent {
 asio::awaitable<ConnectionConfig> enrollDevice(ruvia::event_loop loop, ConnectionConfig config, std::string input) {

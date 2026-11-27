@@ -1,6 +1,6 @@
 #include <iostream>
 
-#include "platform/windows/terminal.transport.h"
+#include "platform/platform.transport.h"
 
 int main() {
     try {

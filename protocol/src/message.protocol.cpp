@@ -8,6 +8,7 @@
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_session.protocol.h"
 #include "ultraterimal/protocol/file.protocol.h"
+#include "ultraterimal/protocol/platform.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 
 namespace ultraterimal::protocol {
@@ -122,7 +123,8 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     const auto invalid = [] { return std::unexpected(MessageError::kInvalidField); };
     switch (m.body_case()) {
     case wire::Envelope::kHello:
-        if (!identifier(m.hello().device_id()) || m.hello().agent_version().empty() || m.hello().agent_version().size() > 64 || !m.session_id().empty() || !m.channel_id().empty() || m.hello().capabilities().desktop_input_contract() > 2) {
+        if (!identifier(m.hello().device_id()) || m.hello().agent_version().empty() || m.hello().agent_version().size() > 64 || !m.session_id().empty() || !m.channel_id().empty() || m.hello().capabilities().desktop_input_contract() > 2 ||
+            (!m.hello().capabilities().platform().empty() && !validPlatform(m.hello().capabilities().platform()))) {
             return invalid();
         }
         break;
@@ -262,8 +264,14 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kChannelReady:
         if (!identifier(m.channel_id()) || m.sequence() != 1 || m.generation() || m.frame_id() || m.base_frame_id() ||
-            (m.channel_ready().continuous_frames() && m.channel_ready().desktop_optimization_contract() != 2) ||
-            (m.channel_ready().purpose() != wire::DESKTOP_INPUT && m.channel_ready().purpose() != wire::DESKTOP_VIDEO)) {
+            (m.channel_ready().continuous_frames() && m.channel_ready().desktop_optimization_contract() != 2)) {
+            return invalid();
+        }
+        if (m.channel_ready().purpose() == wire::SSH_STREAM) {
+            if (m.channel_ready().desktop_optimization_contract() != 0 || m.channel_ready().continuous_frames()) {
+                return invalid();
+            }
+        } else if (m.channel_ready().purpose() != wire::DESKTOP_INPUT && m.channel_ready().purpose() != wire::DESKTOP_VIDEO) {
             return invalid();
         }
         break;
@@ -390,8 +398,18 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         }
         break;
     }
+    case wire::Envelope::kTerminalData:
+        if (!identifier(m.channel_id()) || m.terminal_data().data().size() > 64 * 1024) {
+            return invalid();
+        }
+        break;
     case wire::Envelope::kTerminalResize:
-        if (!dimensions(m.terminal_resize().columns(), m.terminal_resize().rows()) || m.terminal_resize().columns() > 1000 || m.terminal_resize().rows() > 1000) {
+        if (!identifier(m.channel_id()) || !dimensions(m.terminal_resize().columns(), m.terminal_resize().rows()) || m.terminal_resize().columns() > 1000 || m.terminal_resize().rows() > 1000) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kTerminalExit:
+        if (!identifier(m.channel_id())) {
             return invalid();
         }
         break;

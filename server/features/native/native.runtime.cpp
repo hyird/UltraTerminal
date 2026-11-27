@@ -27,6 +27,7 @@
 #include "features/control/control_exchange.runtime.h"
 #include "features/desktop/desktop_exchange.runtime.h"
 #include "features/file/file.runtime.h"
+#include "features/terminal/terminal_exchange.runtime.h"
 #include "native.transport.h"
 #include "quic.transport.h"
 #include "stream.transport.h"
@@ -86,6 +87,8 @@ ruvia::task<void> serveAuthenticated(ruvia::web_worker_context& context, DeviceI
             co_await serveAgentUpdate(authenticated, *channel);
         } else if (purpose == wire::NativeConnect::FILE_TRANSFER) {
             co_await serveFileTransfer(authenticated, *channel, *authenticated.worker_state<ServerRuntime>().shared->fileTransfers, authenticated.request_state<DeviceIdentity>().id);
+        } else if (purpose == wire::NativeConnect::TERMINAL_CHANNEL) {
+            co_await runTerminalChannel(authenticated, *channel, protocol::ChannelSource::kAgent);
         } else {
             co_await runDesktopChannel(authenticated, *channel, protocol::ChannelSource::kAgent);
         }

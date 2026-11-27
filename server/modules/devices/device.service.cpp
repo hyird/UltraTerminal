@@ -5,11 +5,18 @@
 #include "common/database.h"
 #include "device.entity.h"
 #include "modules/identity/identity.service.h"
+#include "ultraterimal/protocol/platform.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 namespace ultraterimal::server {
-ruvia::task<DeviceInfo> DeviceService::createDevice(ruvia::db_executor db, std::string userId, std::string name) const {
+ruvia::task<DeviceInfo> DeviceService::createDevice(ruvia::db_executor db, std::string userId, std::string name, std::string platform) const {
     if (name.empty() || name.size() > 128 || name.find_first_not_of(" \t\r\n") == std::string_view::npos || name.find('\0') != std::string_view::npos) {
         throw std::invalid_argument("Invalid device name");
+    }
+    if (platform.empty()) {
+        platform = "windows-x64";
+    }
+    if (!protocol::validPlatform(platform)) {
+        throw std::invalid_argument("Invalid device platform");
     }
     auto tx = co_await db.begin_transaction(kReadCommitted);
     const auto userRows = co_await tx.query("SELECT id FROM users WHERE id=? AND NOT disabled FOR UPDATE", userId);
@@ -20,9 +27,9 @@ ruvia::task<DeviceInfo> DeviceService::createDevice(ruvia::db_executor db, std::
     if (dbField<int>(countRows[0][0]) >= 1000) {
         throw std::runtime_error("Device limit reached");
     }
-    DeviceInfo result{"d-" + randomToken(), name, std::nullopt, true, false, true, true, "direct", true};
-    co_await tx.execute("INSERT INTO devices(id,name,credential_hash,enrolled,owner_id) VALUES(?,?,?,false,?)", result.id, result.name, tokenHash(randomToken()), userId);
-    co_await tx.execute("INSERT INTO device_grants(device_id,user_id,system_restart,manage_credentials) VALUES(?,?,true,true)", result.id, userId);
+    DeviceInfo result{"d-" + randomToken(), name, std::nullopt, true, false, true, true, "direct", true, {}, {}, platform};
+    co_await tx.execute("INSERT INTO devices(id,name,credential_hash,enrolled,owner_id,platform) VALUES(?,?,?,false,?,?)", result.id, result.name, tokenHash(randomToken()), userId, platform);
+    co_await tx.execute("INSERT INTO device_grants(device_id,user_id,ssh,system_restart,manage_credentials) VALUES(?,?,true,true,true)", result.id, userId);
     co_await tx.execute("INSERT INTO audit_events(user_id,device_id,event_type,success) VALUES(?,?,'device.create',true)", userId, result.id);
     co_await tx.commit();
     co_return result;
@@ -93,7 +100,7 @@ ruvia::task<bool> DeviceService::heartbeat(ruvia::db_executor db, DeviceIdentity
     const auto updated = co_await db.execute("UPDATE devices SET last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", device.id, device.credentialHash);
     co_return updated.affected_rows() == 1;
 }
-ruvia::task<bool> DeviceService::capabilities(ruvia::db_executor db, DeviceIdentity device, std::string protobuf, std::string agentVersion) const {
+ruvia::task<bool> DeviceService::capabilities(ruvia::db_executor db, DeviceIdentity device, std::string protobuf, std::string agentVersion, std::string platform) const {
     if (protobuf.size() > 65536) {
         co_return false;
     }
@@ -103,8 +110,14 @@ ruvia::task<bool> DeviceService::capabilities(ruvia::db_executor db, DeviceIdent
         co_return false;
     }
     co_await tx.execute("INSERT INTO device_capabilities(device_id,protocol_version,protobuf) VALUES(?,1,?) ON DUPLICATE KEY UPDATE protocol_version=1,protobuf=VALUES(protobuf),updated_at=UTC_TIMESTAMP(6)", device.id, ruvia::as_bytes(std::string_view(protobuf)));
-    if (!agentVersion.empty() && agentVersion.size() <= 64 && protocol::updateVersion(agentVersion)) {
+    const bool hasVersion = !agentVersion.empty() && agentVersion.size() <= 64 && protocol::updateVersion(agentVersion);
+    const bool hasPlatform = !platform.empty() && protocol::validPlatform(platform);
+    if (hasVersion && hasPlatform) {
+        co_await tx.execute("UPDATE devices SET agent_version=?,platform=?,last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", agentVersion, platform, device.id, device.credentialHash);
+    } else if (hasVersion) {
         co_await tx.execute("UPDATE devices SET agent_version=?,last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", agentVersion, device.id, device.credentialHash);
+    } else if (hasPlatform) {
+        co_await tx.execute("UPDATE devices SET platform=?,last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", platform, device.id, device.credentialHash);
     } else {
         co_await tx.execute("UPDATE devices SET last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", device.id, device.credentialHash);
     }
@@ -112,10 +125,10 @@ ruvia::task<bool> DeviceService::capabilities(ruvia::db_executor db, DeviceIdent
     co_return true;
 }
 ruvia::task<std::vector<DeviceInfo>> DeviceService::list(ruvia::db_executor db, std::string userId, bool administration) const {
-    const auto rows = co_await db.query("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username,d.agent_version FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId, administration, administration);
+    const auto rows = co_await db.query("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username,d.agent_version,d.platform FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND NOT u.disabled AND d.revoked_at IS NULL ORDER BY d.created_at LIMIT 1000", userId, administration, administration);
     std::vector<DeviceInfo> result;
     for (const auto& row : rows) {
-        result.push_back({dbField<std::string>(row[0]), dbField<std::string>(row[1]), dbOptional<std::string>(row[2]), dbField<bool>(row[3]), dbField<bool>(row[4]), dbField<bool>(row[5]), dbField<bool>(row[6]), dbField<std::string>(row[7]), dbField<bool>(row[8]), dbField<std::string>(row[9]), dbOptional<std::string>(row[10])});
+        result.push_back({dbField<std::string>(row[0]), dbField<std::string>(row[1]), dbOptional<std::string>(row[2]), dbField<bool>(row[3]), dbField<bool>(row[4]), dbField<bool>(row[5]), dbField<bool>(row[6]), dbField<std::string>(row[7]), dbField<bool>(row[8]), dbField<std::string>(row[9]), dbOptional<std::string>(row[10]), dbField<std::string>(row[11])});
     }
     co_return result;
 }
@@ -153,7 +166,7 @@ ruvia::task<bool> DeviceService::transferOwner(ruvia::db_executor db, std::strin
     }
     co_await tx.execute("UPDATE devices SET owner_id=? WHERE id=?", targetUserId, deviceId);
     co_await tx.repository<DeviceGrantEntity>().delete_by(DeviceGrantEntity::column<"device_id">() == deviceId && DeviceGrantEntity::column<"user_id">() == oldOwnerId);
-    co_await tx.execute("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials) VALUES(?,?,true,false,false,true,true,true) ON DUPLICATE KEY UPDATE desktop=true,vnc=false,ssh=false,write_control=true,system_restart=true,manage_credentials=true,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, targetUserId);
+    co_await tx.execute("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials) VALUES(?,?,true,false,true,true,true,true) ON DUPLICATE KEY UPDATE desktop=true,vnc=false,ssh=true,write_control=true,system_restart=true,manage_credentials=true,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, targetUserId);
     co_await tx.execute("UPDATE enrollment_codes SET expires_at=UTC_TIMESTAMP(6) WHERE device_id=? AND consumed_at IS NULL", deviceId);
     co_await tx.execute("UPDATE connection_verifications SET state='cancelled' WHERE device_id=? AND user_id IN (?,?) AND state IN ('pending','approved')", deviceId, oldOwnerId, targetUserId);
     co_await tx.execute("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,'device.owner.transfer_from',true,?)", actorId, deviceId, oldOwnerId);
@@ -299,11 +312,11 @@ ruvia::task<void> DeviceService::auditWindowsLogin(ruvia::db_executor db, std::s
     co_await db.repository<AuditEventEntity>().insert(event);
 }
 ruvia::task<std::optional<DeviceInfo>> DeviceService::find(ruvia::db_executor db, std::string userId, std::string deviceId, bool administration) const {
-    const auto rows = co_await db.query("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username,d.agent_version FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, administration, administration, deviceId);
+    const auto rows = co_await db.query("SELECT d.id,d.name,DATE_FORMAT(d.last_seen_at,'%Y-%m-%dT%H:%i:%s.%fZ'),d.owner_id=u.id,d.enrolled,COALESCE(g.desktop,false),COALESCE(g.write_control,false),COALESCE(g.verification_method,'direct'),d.owner_id=u.id,owner.username,d.agent_version,d.platform FROM devices d JOIN users owner ON owner.id=d.owner_id JOIN users u ON u.id=? LEFT JOIN device_grants g ON g.device_id=d.id AND g.user_id=u.id WHERE ((? AND u.role='admin') OR (NOT ? AND g.user_id=u.id)) AND d.id=? AND NOT u.disabled AND d.revoked_at IS NULL", userId, administration, administration, deviceId);
     if (rows.empty()) {
         co_return std::nullopt;
     }
-    co_return DeviceInfo{dbField<std::string>(rows[0][0]), dbField<std::string>(rows[0][1]), dbOptional<std::string>(rows[0][2]), dbField<bool>(rows[0][3]), dbField<bool>(rows[0][4]), dbField<bool>(rows[0][5]), dbField<bool>(rows[0][6]), dbField<std::string>(rows[0][7]), dbField<bool>(rows[0][8]), dbField<std::string>(rows[0][9]), dbOptional<std::string>(rows[0][10])};
+    co_return DeviceInfo{dbField<std::string>(rows[0][0]), dbField<std::string>(rows[0][1]), dbOptional<std::string>(rows[0][2]), dbField<bool>(rows[0][3]), dbField<bool>(rows[0][4]), dbField<bool>(rows[0][5]), dbField<bool>(rows[0][6]), dbField<std::string>(rows[0][7]), dbField<bool>(rows[0][8]), dbField<std::string>(rows[0][9]), dbOptional<std::string>(rows[0][10]), dbField<std::string>(rows[0][11])};
 }
 ruvia::task<std::optional<std::vector<DeviceGrant>>> DeviceService::grants(ruvia::db_executor db, std::string actorId, std::string deviceId) const {
     auto tx = co_await db.begin_transaction(kReadCommitted);
@@ -358,7 +371,7 @@ ruvia::task<bool> DeviceService::setGrant(ruvia::db_executor db, std::string act
     if (remove) {
         co_await tx.repository<DeviceGrantEntity>().delete_by(DeviceGrantEntity::column<"device_id">() == deviceId && DeviceGrantEntity::column<"user_id">() == target);
     } else {
-        co_await tx.execute("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials,verification_method) VALUES(?,?,?,false,false,?,?,?,?) ON DUPLICATE KEY UPDATE desktop=?,vnc=false,ssh=false,write_control=?,system_restart=?,manage_credentials=?,verification_method=?,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, target, grant.desktop, grant.writeControl, target == ownerId, target == ownerId, grant.verificationMethod, grant.desktop, grant.writeControl, target == ownerId, target == ownerId, grant.verificationMethod);
+        co_await tx.execute("INSERT INTO device_grants(device_id,user_id,desktop,vnc,ssh,write_control,system_restart,manage_credentials,verification_method) VALUES(?,?,?,false,?,?,?,?,?) ON DUPLICATE KEY UPDATE desktop=?,vnc=false,ssh=?,write_control=?,system_restart=?,manage_credentials=?,verification_method=?,revision=NEXT VALUE FOR grant_revision_sequence", deviceId, target, grant.desktop, grant.desktop, grant.writeControl, target == ownerId, target == ownerId, grant.verificationMethod, grant.desktop, grant.desktop, grant.writeControl, target == ownerId, target == ownerId, grant.verificationMethod);
     }
     co_await tx.execute("UPDATE connection_verifications SET state='cancelled' WHERE device_id=? AND user_id=? AND state IN ('pending','approved')", deviceId, target);
     co_await tx.execute("INSERT INTO audit_events(user_id,device_id,event_type,success,reason) VALUES(?,?,?,true,?)", actorId, deviceId, remove ? "device.grant.revoke" : "device.grant.save", target);

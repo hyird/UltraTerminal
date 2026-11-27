@@ -16,6 +16,9 @@ int main() {
         require(valid());
         request.set_purpose(wire::NativeConnect::DESKTOP_CHANNEL);
         require(valid());
+        request.set_purpose(wire::NativeConnect::TERMINAL_CHANNEL);
+        require(valid());
+        request.set_purpose(wire::NativeConnect::DESKTOP_CHANNEL);
         request.set_device_name("unexpected");
         require(!valid());
         request.clear_device_name();

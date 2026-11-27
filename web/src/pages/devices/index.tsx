@@ -3,7 +3,15 @@ import { LoadingSkeleton } from "../../components/loading";
 import { SearchField } from "@heroui/react";
 import { DataGrid, type DataGridColumn } from "@heroui-pro/react";
 import { useMemo, useState } from "react";
-import { Avatar, Button, Chip, Dropdown, Label, toast } from "@heroui/react";
+import {
+  Avatar,
+  Button,
+  ButtonGroup,
+  Chip,
+  Dropdown,
+  Label,
+  toast,
+} from "@heroui/react";
 import { Page, Empty } from "../../layout/page";
 import {
   Choice,
@@ -50,9 +58,13 @@ function DeviceList({
   const [verification, setVerification] = useState<{
     device: Device;
     preempt: boolean;
+    target: "desktop" | "terminal";
   } | null>(null);
   const [verificationCode, setVerificationCode] = useState("");
   const [takeover, setTakeover] = useState<Device | null>(null);
+  const [targets, setTargets] = useState<
+    Record<string, "desktop" | "terminal">
+  >({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const personal = mode === "personal";
@@ -71,10 +83,19 @@ function DeviceList({
   );
   const pages = Math.max(1, Math.ceil(filtered.length / 12));
   const currentPage = Math.min(page, pages);
-  async function connect(device: Device, preempt = false, code?: string) {
+  async function connect(
+    device: Device,
+    preempt = false,
+    code?: string,
+    target: "desktop" | "terminal" = "desktop",
+  ) {
     setError("");
     try {
-      await desktops.connect(device, undefined, preempt, code);
+      if (target === "terminal") {
+        await desktops.connectTerminal(device, undefined, code);
+      } else {
+        await desktops.connect(device, undefined, preempt, code);
+      }
       setVerification(null);
       setVerificationCode("");
       setTakeover(null);
@@ -85,12 +106,13 @@ function DeviceList({
           error.code === "connection_verification_failed")
       ) {
         setTakeover(null);
-        setVerification({ device, preempt });
+        setVerification({ device, preempt, target });
         if (error.code === "connection_verification_failed")
           setError("动态码不正确、已使用，或账号尚未绑定验证器，请重试。");
       } else if (
         error instanceof ApiError &&
         error.code === "session_rejected" &&
+        target === "desktop" &&
         !preempt
       )
         setTakeover(device);
@@ -128,7 +150,11 @@ function DeviceList({
             <div className="flex min-w-40 items-center gap-2">
               <Avatar>
                 <Avatar.Fallback>
-                  <Icon name="display" />
+                  <Icon
+                    name={
+                      device.platform === "linux-x64" ? "terminal" : "display"
+                    }
+                  />
                 </Avatar.Fallback>
               </Avatar>
               <div className="min-w-0">
@@ -136,7 +162,8 @@ function DeviceList({
                   {device.name}
                 </strong>
                 <small className="text-muted mt-0.5 block text-xs wrap-anywhere">
-                  Windows · {device.enrolled ? "已接入" : "待安装"}
+                  {device.platform === "linux-x64" ? "Linux" : "Windows"} ·{" "}
+                  {device.enrolled ? "已接入" : "待安装"}
                   {device.agentVersion
                     ? ` · Agent ${device.agentVersion}`
                     : device.enrolled
@@ -217,24 +244,92 @@ function DeviceList({
       header: "操作",
       minWidth: 120,
       cell: (device) => {
+        const defaultTarget: "desktop" | "terminal" =
+          device.platform === "linux-x64" ? "terminal" : "desktop";
+        const selectedTarget = targets[device.id] ?? defaultTarget;
+        const selectedAvailable =
+          selectedTarget === "terminal"
+            ? device.terminalAvailable
+            : device.captureAvailable;
+        const startConnect = (target: "desktop" | "terminal") => {
+          if (device.verificationMethod === "telegram") setApproval(device);
+          else void connect(device, false, undefined, target);
+        };
         return (
           <>
             <div className="flex items-center gap-1">
               {personal && device.desktop && (
-                <Button
+                <ButtonGroup
                   variant="secondary"
-                  isPending={desktops.connecting === device.id}
                   isDisabled={!device.online || !!desktops.connecting}
-                  onPress={() => {
-                    if (device.verificationMethod === "telegram")
-                      setApproval(device);
-                    else void connect(device);
-                  }}
                 >
-                  {device.verificationMethod === "telegram"
-                    ? "申请连接"
-                    : "连接"}
-                </Button>
+                  <Button
+                    variant="secondary"
+                    isPending={desktops.connecting === device.id}
+                    isDisabled={
+                      !device.online ||
+                      !!desktops.connecting ||
+                      !selectedAvailable
+                    }
+                    onPress={() => startConnect(selectedTarget)}
+                  >
+                    {device.verificationMethod === "telegram"
+                      ? "申请连接"
+                      : selectedTarget === "terminal"
+                        ? "终端"
+                        : "桌面"}
+                  </Button>
+                  <Dropdown>
+                    <Button
+                      variant="secondary"
+                      isIconOnly
+                      isDisabled={!device.online || !!desktops.connecting}
+                      aria-label={`切换 ${device.name} 连接方式`}
+                    >
+                      <ButtonGroup.Separator />
+                      <Icon name="chevron-down" className="size-4" />
+                    </Button>
+                    <Dropdown.Popover
+                      placement="bottom end"
+                      className="desktop-menu"
+                    >
+                      <Dropdown.Menu
+                        selectionMode="single"
+                        disallowEmptySelection
+                        selectedKeys={new Set([selectedTarget])}
+                        onSelectionChange={(keys) => {
+                          if (keys === "all") return;
+                          const key = keys.values().next().value;
+                          if (key === "desktop" || key === "terminal") {
+                            setTargets((prev) => ({
+                              ...prev,
+                              [device.id]: key,
+                            }));
+                          }
+                        }}
+                      >
+                        <Dropdown.Item
+                          id="desktop"
+                          textValue="桌面"
+                          isDisabled={!device.captureAvailable}
+                        >
+                          <Dropdown.ItemIndicator />
+                          <Icon name="display" className="size-4" />
+                          <Label>桌面</Label>
+                        </Dropdown.Item>
+                        <Dropdown.Item
+                          id="terminal"
+                          textValue="终端"
+                          isDisabled={!device.terminalAvailable}
+                        >
+                          <Dropdown.ItemIndicator />
+                          <Icon name="terminal" className="size-4" />
+                          <Label>终端</Label>
+                        </Dropdown.Item>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
+                </ButtonGroup>
               )}
               {mode === "grants" ? (
                 <Button variant="secondary" onPress={() => setGrant(device)}>
@@ -243,7 +338,8 @@ function DeviceList({
               ) : (
                 (device.canManage ||
                   administrator ||
-                  device.manageCredentials) && (
+                  (device.manageCredentials &&
+                    device.platform === "windows-x64")) && (
                   <Dropdown>
                     <Button
                       variant="ghost"
@@ -296,14 +392,15 @@ function DeviceList({
                             </Dropdown.Item>
                           </>
                         )}
-                        {device.manageCredentials && (
-                          <Dropdown.Item
-                            id="credentials"
-                            textValue="Windows 凭据"
-                          >
-                            <Label>Windows 凭据</Label>
-                          </Dropdown.Item>
-                        )}
+                        {device.manageCredentials &&
+                          device.platform === "windows-x64" && (
+                            <Dropdown.Item
+                              id="credentials"
+                              textValue="Windows 凭据"
+                            >
+                              <Label>Windows 凭据</Label>
+                            </Dropdown.Item>
+                          )}
                         {device.canManage && (
                           <Dropdown.Item
                             id="remove"
@@ -409,8 +506,8 @@ function DeviceList({
               search || filter !== "all"
                 ? "调整搜索词或设备状态筛选。"
                 : personal
-                  ? "添加自己的 Windows 设备并安装 Agent，或由设备所有者为你分配访问权限。"
-                  : "添加 Windows 设备并安装 Agent 后，即可向用户分配访问权限。"
+                  ? "添加设备并安装 Agent，或由设备所有者为你分配访问权限。"
+                  : "添加设备并安装 Agent 后，即可向用户分配访问权限。"
             }
             action={mode !== "grants" ? "添加设备" : undefined}
             onAction={() => setDialog({ action: "create" })}
@@ -487,6 +584,7 @@ function DeviceList({
                 verification.device,
                 verification.preempt,
                 verificationCode,
+                verification.target,
               ).finally(() => setBusy(false));
             }}
           >

@@ -32,4 +32,5 @@ struct CommandLine {
     std::uint32_t parentProcess = 0;
 };
 std::expected<CommandLine, std::wstring> parseCommandLine(std::span<const std::wstring_view> arguments);
+std::expected<CommandLine, std::string> parseCommandLine(std::span<const std::string_view> arguments);
 } // namespace ultraterimal::agent

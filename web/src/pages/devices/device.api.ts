@@ -1,11 +1,13 @@
 import { jsonRequest } from "../../lib/http";
+import type { DevicePlatform } from "./device.types";
 export const deviceApi = {
   grants: (id: string) =>
     jsonRequest(`/api/devices/${encodeURIComponent(id)}/grants`),
   saveGrant: (id: string, body: unknown) =>
     jsonRequest(`/api/devices/${encodeURIComponent(id)}/grants`, body),
   list: () => jsonRequest("/api/devices"),
-  create: (name: string) => jsonRequest("/api/devices/create", { name }),
+  create: (name: string, platform: DevicePlatform = "windows-x64") =>
+    jsonRequest("/api/devices/create", { name, platform }),
   enroll: (id: string, platform: string) =>
     jsonRequest("/api/enrollments", { device_id: id, platform }),
   rename: (id: string, name: string) =>
@@ -53,6 +55,15 @@ export const deviceApi = {
       approval_id: approvalId,
       verification_code: verificationCode,
       reconnect_session_id: reconnectSessionId,
+    }),
+  terminal: (id: string, approvalId?: string, verificationCode?: string) =>
+    jsonRequest("/api/sessions", {
+      device_id: id,
+      kind: "ssh",
+      write_control: true,
+      preempt: false,
+      approval_id: approvalId,
+      verification_code: verificationCode,
     }),
   session: (id: string) =>
     jsonRequest(`/api/sessions/${encodeURIComponent(id)}`),

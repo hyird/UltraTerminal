@@ -7,7 +7,10 @@
 int main() {
     using namespace ultraterimal::agent;
     using namespace std::literals;
-    if (!parseCommandLine({}) || parseCommandLine({})->command != Command::kHelp) {
+    if (!parseCommandLine(std::span<const std::wstring_view>{}) ||
+        parseCommandLine(std::span<const std::wstring_view>{})->command != Command::kHelp ||
+        !parseCommandLine(std::span<const std::string_view>{}) ||
+        parseCommandLine(std::span<const std::string_view>{})->command != Command::kHelp) {
         return 1;
     }
     const std::array install{L"--install"sv};
@@ -70,6 +73,15 @@ int main() {
     const auto error = parseCommandLine(extra);
     if (error || error.error().find(L"secret") != std::wstring::npos) {
         return 6;
+    }
+    const std::array utf8Connect{"--connect"sv, "linux.json"sv};
+    const auto parsedUtf8 = parseCommandLine(std::span<const std::string_view>{utf8Connect});
+    if (!parsedUtf8 || parsedUtf8->command != Command::kConnect || parsedUtf8->configPath != "linux.json") {
+        return 15;
+    }
+    const std::array utf8Bad{"--connect"sv};
+    if (parseCommandLine(std::span<const std::string_view>{utf8Bad})) {
+        return 16;
     }
     std::cout << "Command validation passed\n";
 }

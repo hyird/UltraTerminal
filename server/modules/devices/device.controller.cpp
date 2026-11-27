@@ -9,6 +9,7 @@
 
 #include "features/desktop/access.runtime.h"
 #include "installer.script.h"
+#include "ultraterimal/protocol/platform.protocol.h"
 #include "update.service.h"
 
 namespace ultraterimal::server {
@@ -36,7 +37,7 @@ ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& conte
             co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can update its Agent"});
         }
         stage = "release_lookup";
-        const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir] { return agentRelease(root); })).take_value());
+        const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir, platform = found->platform] { return agentRelease(root, platform); })).take_value());
         if (!release) {
             co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
         }
@@ -67,6 +68,10 @@ ruvia::task<ruvia::http_response> DeviceInstallerController::script(ruvia::conte
     context.policy().header("Cache-Control", "no-store");
     co_return context.text(kWindowsInstallScript);
 }
+ruvia::task<ruvia::http_response> DeviceInstallerController::linuxScript(ruvia::context& context) {
+    context.policy().header("Cache-Control", "no-store");
+    co_return context.text(kLinuxInstallScript);
+}
 ruvia::task<ruvia::http_response> DeviceController::install(ruvia::context& context) {
     context.policy().header("Cache-Control", "no-store");
     context.policy().header("Referrer-Policy", "no-referrer");
@@ -87,16 +92,33 @@ ruvia::task<ruvia::http_response> DeviceController::install(ruvia::context& cont
     auto script = "& { $utOrigin='" + origin + "'; $utDevice='" + *device + "'; $utCode='" + code + "'; $ErrorActionPreference='Stop'; irm ($utOrigin + '/install.ps1') | iex }\n";
     co_return context.text(std::move(script));
 }
+ruvia::task<ruvia::http_response> DeviceController::installSh(ruvia::context& context) {
+    context.policy().header("Cache-Control", "no-store");
+    context.policy().header("Referrer-Policy", "no-referrer");
+    const auto code = std::string(context.request().query("code").value_or(""));
+    const auto device = !code.empty() ? co_await context.worker_state<ServerRuntime>().devices.enrollmentDevice(context.db(), code) : std::nullopt;
+    if (!device) {
+        co_return context.text(ruvia::static_text("echo 'Installation command expired or invalid. Copy a new command from device management.' >&2; exit 1\n"), {.status_ = ruvia::http_status::not_found});
+    }
+    const auto& origin = context.worker_state<ServerRuntime>().config.origin;
+    auto script = "#!/bin/sh\nset -eu\ncurl -fsSL '" + origin + "/install.sh' | UT_ORIGIN='" + origin + "' UT_DEVICE='" + *device + "' UT_CODE='" + code + "' sh\n";
+    co_return context.text(std::move(script));
+}
 ruvia::task<ruvia::http_response> DeviceController::installManifest(ruvia::context& context, const InstallManifestRequest& body) {
     const auto device = textValue(body.get<"device_id">());
     const auto code = optionalTextValue(body.get<"code">());
     const auto credential = optionalTextValue(body.get<"credential">());
+    const auto requestedPlatform = optionalTextValue(body.get<"platform">());
+    const auto platform = std::string(protocol::normalizePlatform(requestedPlatform));
+    if (!protocol::validPlatform(platform)) {
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "unsupported_platform", .message_ = "Platform not supported"});
+    }
     auto& runtime = context.worker_state<ServerRuntime>();
     const bool authorized = co_await authorizeInstallerRequest(runtime.devices, context.db(), device, code, credential);
     if (!authorized) {
         co_return context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Valid device enrollment code or credential is required"});
     }
-    const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir] { return agentRelease(root); })).take_value());
+    const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir, platform] { return agentRelease(root, platform); })).take_value());
     if (!release) {
         co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "No validated Agent release is published"});
     }
@@ -116,12 +138,17 @@ ruvia::task<ruvia::http_response> DeviceController::installPackage(ruvia::contex
     const auto code = optionalTextValue(body.get<"code">());
     const auto credential = optionalTextValue(body.get<"credential">());
     const auto expectedSha256 = optionalTextValue(body.get<"sha256">());
+    const auto requestedPlatform = optionalTextValue(body.get<"platform">());
+    const auto platform = std::string(protocol::normalizePlatform(requestedPlatform));
+    if (!protocol::validPlatform(platform)) {
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "unsupported_platform", .message_ = "Platform not supported"});
+    }
     auto& runtime = context.worker_state<ServerRuntime>();
     const bool authorized = co_await authorizeInstallerRequest(runtime.devices, context.db(), device, code, credential);
     if (!authorized) {
         co_return context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Valid device enrollment code or credential is required"});
     }
-    const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir] { return agentRelease(root); })).take_value());
+    const auto release = ((co_await context.run_blocking([root = runtime.config.agentReleaseDir, platform] { return agentRelease(root, platform); })).take_value());
     if (!release || (!expectedSha256.empty() && release->update.sha256() != expectedSha256)) {
         co_return context.error({.status_ = ruvia::http_status::conflict, .code_ = "release_unavailable", .message_ = "Requested Agent package is unavailable"});
     }
@@ -173,6 +200,7 @@ ruvia::task<ruvia::http_response> DeviceController::remove(ruvia::context& conte
     const auto sessions = co_await runtime.sessions.revokeDevice(db, device);
     for (const auto& id : sessions) {
         closeDesktopSession(runtime, id, DesktopCloseReason::kDeviceDeleted);
+        closeTerminalSession(runtime, id, TerminalCloseReason::kDeviceDeleted);
     }
     publishClusterStatus(runtime, "d:" + device);
     publishClusterStatus(runtime, "u:*");
@@ -291,7 +319,7 @@ ruvia::task<ruvia::http_response> DeviceController::restartStatus(ruvia::context
 }
 ruvia::task<ruvia::http_response> DeviceController::enrollment(ruvia::context& context, const DeviceEnrollmentRequest& body) {
     const auto id = textValue(body.get<"device_id">());
-    if (body.get<"platform">().view() != "windows-x64") {
+    if (!protocol::validPlatform(body.get<"platform">().view())) {
         co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "unsupported_platform", .message_ = "Platform not supported"});
     }
     auto& runtime = context.worker_state<ServerRuntime>();
@@ -312,12 +340,17 @@ ruvia::task<ruvia::http_response> DeviceController::enrollment(ruvia::context& c
 }
 ruvia::task<ruvia::http_response> DeviceController::create(ruvia::context& context, const DeviceCreateRequest& body) {
     const auto name = textValue(body.get<"name">());
+    const auto platform = std::string(protocol::normalizePlatform(optionalTextValue(body.get<"platform">())));
+    if (!protocol::validPlatform(platform)) {
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "unsupported_platform", .message_ = "Platform not supported"});
+    }
     auto& runtime = context.worker_state<ServerRuntime>();
-    const auto device = co_await runtime.devices.createDevice(context.db(), context.request_state<UserIdentity>().id, name);
+    const auto device = co_await runtime.devices.createDevice(context.db(), context.request_state<UserIdentity>().id, name, platform);
     publishClusterStatus(runtime, "d:" + device.id);
     DeviceCreateResponse response;
     response.set<"id">(device.id)
         .set<"name">(device.name)
+        .set<"platform">(device.platform)
         .set<"enrolled">(false)
         .set<"can_manage">(true)
         .set<"desktop">(true)
@@ -325,6 +358,9 @@ ruvia::task<ruvia::http_response> DeviceController::create(ruvia::context& conte
         .set<"verification_method">("direct")
         .set<"manage_credentials">(true)
         .set<"online">(false)
+        .set<"capture_available">(false)
+        .set<"terminal_available">(false)
+        .set<"windows_login_available">(false)
         .set_null<"last_seen">();
     co_return jsonResponse(context, response, {.status_ = ruvia::http_status::created});
 }
@@ -351,13 +387,17 @@ ruvia::task<ruvia::http_response> DeviceController::devices(ruvia::context& cont
         }
         item.set<"id">(device.id)
             .set<"name">(device.name)
+            .set<"platform">(state.online && !state.platform.empty() ? state.platform : device.platform)
             .set<"enrolled">(device.enrolled)
             .set<"can_manage">(device.canManage)
             .set<"desktop">(device.desktop)
             .set<"write_control">(device.writeControl)
             .set<"verification_method">(device.verificationMethod)
             .set<"manage_credentials">(device.manageCredentials)
-            .set<"online">(state.online);
+            .set<"online">(state.online)
+            .set<"capture_available">(state.online ? state.captureAvailable : false)
+            .set<"terminal_available">(state.online ? state.terminalAvailable : false)
+            .set<"windows_login_available">(state.online ? state.windowsLoginAvailable : false);
         if (device.lastSeen) {
             item.set<"last_seen">(*device.lastSeen);
         } else {

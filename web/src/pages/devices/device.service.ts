@@ -3,7 +3,8 @@ import { approvalList } from "../identity/identity.service";
 import type { Approval, SecurityProof } from "../identity/identity.types";
 import { ApiError, record, text } from "../../lib/http";
 import { deviceApi } from "./device.api";
-import type { Device, DeviceGrant } from "./device.types";
+import type { Device, DeviceGrant, DevicePlatform } from "./device.types";
+import type { TerminalTicket } from "../../sessions/terminal/terminal.types";
 export async function updateAgent(
   id: string,
 ): Promise<{ status: "requested" | "current"; version: string }> {
@@ -75,6 +76,10 @@ function verificationMethod(value: unknown): "direct" | "telegram" | "totp" {
     throw new Error("连接验证方式错误");
   return value;
 }
+function devicePlatform(value: unknown): DevicePlatform {
+  return value === "linux-x64" ? "linux-x64" : "windows-x64";
+}
+
 function parseDevice(entry: unknown): Device {
   const item = record(entry);
   for (const key of [
@@ -87,15 +92,32 @@ function parseDevice(entry: unknown): Device {
   ]) {
     if (typeof item[key] !== "boolean") throw new Error("设备状态格式错误");
   }
+  const platform = devicePlatform(item.platform);
+  const captureAvailable =
+    typeof item.capture_available === "boolean"
+      ? item.capture_available
+      : platform !== "linux-x64";
+  const terminalAvailable =
+    typeof item.terminal_available === "boolean"
+      ? item.terminal_available
+      : true;
+  const windowsLoginAvailable =
+    typeof item.windows_login_available === "boolean"
+      ? item.windows_login_available
+      : platform !== "linux-x64";
   return {
     id: text(item.id),
     name: text(item.name),
+    platform,
     agentVersion: item.agent_version == null ? null : text(item.agent_version),
     online: item.online === true,
     canManage: item.can_manage === true,
     enrolled: item.enrolled === true,
     desktop: item.desktop === true,
     writeControl: item.write_control === true,
+    captureAvailable,
+    terminalAvailable,
+    windowsLoginAvailable,
     verificationMethod: verificationMethod(item.verification_method),
     manageCredentials: item.manage_credentials === true,
     ownerUsername:
@@ -107,20 +129,25 @@ function parseDevice(entry: unknown): Device {
 export interface Enrollment {
   code: string;
   deviceId: string;
+  platform: DevicePlatform;
   webOrigin: string;
   nativeHost: string;
   nativeAddress: string;
   nativePort: number;
 }
-export async function createDevice(name: string): Promise<Device> {
-  return parseDevice(await deviceApi.create(name));
+export async function createDevice(
+  name: string,
+  platform: DevicePlatform = "windows-x64",
+): Promise<Device> {
+  return parseDevice(await deviceApi.create(name, platform));
 }
 
 export async function createEnrollment(
   id: string,
-  platform: string,
+  platform: DevicePlatform,
 ): Promise<Enrollment> {
   const item = record(await deviceApi.enroll(id, platform));
+  const resolvedPlatform = devicePlatform(item.platform ?? platform);
   const code = text(item.code);
   const deviceId = text(item.device_id);
   if (deviceId !== id || !/^d-[0-9a-f]{64}$/.test(deviceId))
@@ -145,7 +172,15 @@ export async function createEnrollment(
     nativePort > 65535
   )
     throw new Error("Agent 接入端口格式错误");
-  return { code, deviceId, webOrigin, nativeHost, nativeAddress, nativePort };
+  return {
+    code,
+    deviceId,
+    platform: resolvedPlatform,
+    webOrigin,
+    nativeHost,
+    nativeAddress,
+    nativePort,
+  };
 }
 export async function openDesktop(
   id: string,
@@ -181,6 +216,30 @@ export async function openDesktop(
   if (channels[0]?.purpose === channels[1]?.purpose)
     throw new Error("桌面通道重复");
   return { id: text(item.id), channels, writeControl };
+}
+export async function openTerminal(
+  id: string,
+  approvalId?: string,
+  verificationCode?: string,
+): Promise<TerminalTicket> {
+  const item = record(
+    await deviceApi.terminal(id, approvalId, verificationCode),
+  );
+  if (!Array.isArray(item.channels) || item.channels.length !== 1) {
+    throw new Error("终端通道格式错误");
+  }
+  const grant = record(item.channels[0]);
+  if (grant.purpose !== 5) {
+    throw new Error("终端通道类型错误");
+  }
+  return {
+    id: text(item.id),
+    channel: {
+      id: text(grant.id),
+      purpose: 5,
+      ticket: text(grant.ticket),
+    },
+  };
 }
 export async function closeDesktop(id: string): Promise<void> {
   await deviceApi.close(id);

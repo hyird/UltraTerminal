@@ -11,6 +11,7 @@
 #include "config/server.runtime.h"
 #include "modules/identity/identity.service.h"
 #include "ultraterimal/protocol/message.protocol.h"
+#include "ultraterimal/protocol/platform.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 namespace ultraterimal::server {
 namespace {
@@ -76,7 +77,8 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
         co_return;
     }
     auto& runtime = context.template worker_state<ServerRuntime>();
-    if (!(co_await runtime.devices.capabilities(context.db(), device, hello->hello().capabilities().SerializeAsString(), hello->hello().agent_version()))) {
+    const auto platform = std::string(protocol::normalizePlatform(hello->hello().capabilities().platform()));
+    if (!(co_await runtime.devices.capabilities(context.db(), device, hello->hello().capabilities().SerializeAsString(), hello->hello().agent_version(), platform))) {
         co_return;
     }
     co_await runtime.sessions.disconnectDevice(context.db(), device);
@@ -93,6 +95,7 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
     co_await socket.binary(*output);
     connection.capabilities = hello->hello().capabilities();
     connection.agentVersion = hello->hello().agent_version();
+    connection.platform = platform;
     spdlog::info("agent_connected device_id={} version={}", device.id, protocol::updateVersion(connection.agentVersion) ? connection.agentVersion : "unknown");
     if (connection.capabilities.system_restart()) {
         co_await runtime.devices.confirmRestart(context.db(), device.id, connection.capabilities.boot_time_unix_seconds());

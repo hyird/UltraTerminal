@@ -27,6 +27,7 @@ struct DeviceInfo {
     bool manageCredentials = false;
     std::string ownerUsername = {};
     std::optional<std::string> agentVersion = {};
+    std::string platform = "windows-x64";
 };
 struct DeviceGrant {
     std::string userId, username;
@@ -48,17 +49,20 @@ struct RestartOperation {
 RUVIA_MODEL(InstallManifestRequest,
             RUVIA_REQUIRED_FIELD(device_id, ruvia::string, RUVIA_NOT_EMPTY("device_id required"), RUVIA_MAX_BYTES(128, "device_id too long"), RUVIA_CUSTOM(noNul, "invalid character")),
             RUVIA_OPTIONAL_FIELD(code, ruvia::string, RUVIA_MAX_BYTES(128, "code too long"), RUVIA_CUSTOM(noNul, "invalid character")),
-            RUVIA_OPTIONAL_FIELD(credential, ruvia::string, RUVIA_MAX_BYTES(128, "credential too long"), RUVIA_CUSTOM(noNul, "invalid character")));
+            RUVIA_OPTIONAL_FIELD(credential, ruvia::string, RUVIA_MAX_BYTES(128, "credential too long"), RUVIA_CUSTOM(noNul, "invalid character")),
+            RUVIA_OPTIONAL_FIELD(platform, ruvia::string, RUVIA_MAX_BYTES(32, "platform too long"), RUVIA_CUSTOM(noNul, "invalid character")));
 RUVIA_MODEL(InstallPackageRequest,
             RUVIA_REQUIRED_FIELD(device_id, ruvia::string, RUVIA_NOT_EMPTY("device_id required"), RUVIA_MAX_BYTES(128, "device_id too long"), RUVIA_CUSTOM(noNul, "invalid character")),
             RUVIA_OPTIONAL_FIELD(code, ruvia::string, RUVIA_MAX_BYTES(128, "code too long"), RUVIA_CUSTOM(noNul, "invalid character")),
             RUVIA_OPTIONAL_FIELD(credential, ruvia::string, RUVIA_MAX_BYTES(128, "credential too long"), RUVIA_CUSTOM(noNul, "invalid character")),
-            RUVIA_OPTIONAL_FIELD(sha256, ruvia::string, RUVIA_MAX_BYTES(64, "sha256 too long"), RUVIA_CUSTOM(noNul, "invalid character")));
+            RUVIA_OPTIONAL_FIELD(sha256, ruvia::string, RUVIA_MAX_BYTES(64, "sha256 too long"), RUVIA_CUSTOM(noNul, "invalid character")),
+            RUVIA_OPTIONAL_FIELD(platform, ruvia::string, RUVIA_MAX_BYTES(32, "platform too long"), RUVIA_CUSTOM(noNul, "invalid character")));
 RUVIA_MODEL(DeviceEnrollmentRequest,
             RUVIA_REQUIRED_FIELD(device_id, ruvia::string, RUVIA_NOT_EMPTY("device_id required"), RUVIA_MAX_BYTES(128, "device_id too long"), RUVIA_CUSTOM(noNul, "invalid character")),
             RUVIA_REQUIRED_FIELD(platform, ruvia::string, RUVIA_NOT_EMPTY("platform required"), RUVIA_MAX_BYTES(32, "platform too long"), RUVIA_CUSTOM(noNul, "invalid character")));
 RUVIA_MODEL(DeviceCreateRequest,
-            RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_NOT_EMPTY("name required"), RUVIA_MAX_BYTES(128, "name too long"), RUVIA_CUSTOM(noNul, "invalid character")));
+            RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_NOT_EMPTY("name required"), RUVIA_MAX_BYTES(128, "name too long"), RUVIA_CUSTOM(noNul, "invalid character")),
+            RUVIA_OPTIONAL_FIELD(platform, ruvia::string, RUVIA_MAX_BYTES(32, "platform too long"), RUVIA_CUSTOM(noNul, "invalid character")));
 RUVIA_MODEL(DeviceRenameRequest,
             RUVIA_REQUIRED_FIELD(device_id, ruvia::string, RUVIA_NOT_EMPTY("device_id required"), RUVIA_MAX_BYTES(128, "device_id too long"), RUVIA_CUSTOM(noNul, "invalid character")),
             RUVIA_REQUIRED_FIELD(name, ruvia::string, RUVIA_NOT_EMPTY("name required"), RUVIA_MAX_BYTES(128, "name too long"), RUVIA_CUSTOM(noNul, "invalid character")));
@@ -126,6 +130,7 @@ RUVIA_MODEL(DeviceEnrollmentResponse,
 RUVIA_MODEL(DeviceCreateResponse,
             RUVIA_REQUIRED_FIELD(id, ruvia::string),
             RUVIA_REQUIRED_FIELD(name, ruvia::string),
+            RUVIA_REQUIRED_FIELD(platform, ruvia::string),
             RUVIA_REQUIRED_FIELD(enrolled, bool),
             RUVIA_REQUIRED_FIELD(can_manage, bool),
             RUVIA_REQUIRED_FIELD(desktop, bool),
@@ -133,11 +138,15 @@ RUVIA_MODEL(DeviceCreateResponse,
             RUVIA_REQUIRED_FIELD(verification_method, ruvia::string),
             RUVIA_REQUIRED_FIELD(manage_credentials, bool),
             RUVIA_REQUIRED_FIELD(online, bool),
+            RUVIA_REQUIRED_FIELD(capture_available, bool),
+            RUVIA_REQUIRED_FIELD(terminal_available, bool),
+            RUVIA_REQUIRED_FIELD(windows_login_available, bool),
             RUVIA_OPTIONAL_FIELD(last_seen, ruvia::string, RUVIA_NULLABLE, RUVIA_EMIT_NULL));
 RUVIA_MODEL(DeviceListItem,
             RUVIA_OPTIONAL_FIELD(agent_version, ruvia::string, RUVIA_NULLABLE, RUVIA_EMIT_NULL),
             RUVIA_REQUIRED_FIELD(id, ruvia::string),
             RUVIA_REQUIRED_FIELD(name, ruvia::string),
+            RUVIA_REQUIRED_FIELD(platform, ruvia::string),
             RUVIA_REQUIRED_FIELD(enrolled, bool),
             RUVIA_REQUIRED_FIELD(can_manage, bool),
             RUVIA_REQUIRED_FIELD(desktop, bool),
@@ -145,6 +154,9 @@ RUVIA_MODEL(DeviceListItem,
             RUVIA_REQUIRED_FIELD(verification_method, ruvia::string),
             RUVIA_REQUIRED_FIELD(manage_credentials, bool),
             RUVIA_REQUIRED_FIELD(online, bool),
+            RUVIA_REQUIRED_FIELD(capture_available, bool),
+            RUVIA_REQUIRED_FIELD(terminal_available, bool),
+            RUVIA_REQUIRED_FIELD(windows_login_available, bool),
             RUVIA_OPTIONAL_FIELD(last_seen, ruvia::string, RUVIA_NULLABLE, RUVIA_EMIT_NULL));
 RUVIA_MODEL(DeviceGrantItem,
             RUVIA_REQUIRED_FIELD(user_id, ruvia::string),

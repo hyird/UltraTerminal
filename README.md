@@ -2,9 +2,10 @@
 
 [![CI](https://github.com/hyird/UltraTerminal/actions/workflows/ci.yml/badge.svg)](https://github.com/hyird/UltraTerminal/actions/workflows/ci.yml)
 
-浏览器远程桌面与终端访问平台。Windows Agent 与网关使用 C++23（基于 [Ruvia](https://github.com/hyird/Ruvia)），数据库为 MariaDB，前端使用 React + TypeScript + Tailwind CSS + HeroUI Pro（Bun 构建）。
+浏览器远程桌面与终端访问平台。Agent 与网关使用 C++23（基于 [Ruvia](https://github.com/hyird/Ruvia)），数据库为 MariaDB，前端使用 React + TypeScript + Tailwind CSS + HeroUI Pro（Bun 构建）。
 
-- **Windows Agent**：LocalSystem 系统服务 + 目标会话高权限桌面工作进程，DXGI Desktop Duplication 整帧采集，Media Foundation 硬件编码优先、内嵌 OpenH264 软件回退，独立光标传输，支持未登录、锁屏与 UAC 桌面切换，内嵌 Credential Provider 自动登录。通过原生加密 QUIC/UDP（降级 TLS/TCP）主动连接网关。
+- **Windows Agent**：LocalSystem 系统服务 + 目标会话高权限桌面工作进程，DXGI Desktop Duplication 整帧采集，Media Foundation 硬件编码优先、内嵌 OpenH264 软件回退，独立光标传输，支持未登录、锁屏与 UAC 桌面切换，内嵌 Credential Provider 自动登录，同时提供交互式 ConPTY 终端与文件传输。通过原生加密 QUIC/UDP（降级 TLS/TCP）主动连接网关。
+- **Linux x64 Agent**：全静态 musl 单文件部署（`systemd` 系统服务），内嵌交互式 PTY 终端（`@xterm/xterm`）与跨平台文件传输（支持目录流式 ZIP64 下载），支持一键脚本安装、在线自更新与系统重启；不包含 Linux 图形桌面采集或监控探针。
 - **网关（Server）**：基于 `ruvia::web` 提供 HTTP/WS 与管理 API（外部反向代理终止 HTTPS/WSS），独立端口提供 Agent 原生 UDP/TCP 入口，全核同构事件循环，MariaDB 持久化用户、设备、授权与审计。
 - **前端（Web）**：工作台（概览、我的设备、连接申请弹窗）与管理员控制台（设备清单、设备授权、用户管理、平台设置）分离，支持 TOTP 双因素认证与 Telegram 连接确认，通过 `/api/events` WSS 实时推送状态。
 
@@ -62,6 +63,24 @@ ctest --test-dir build/linux-server -L unit --output-on-failure
 
 输出文件：`build/linux-server/server/gateway`。Windows 下如需构建服务端，添加 `-DULTRATERIMAL_BUILD_SERVER=ON -DVCPKG_MANIFEST_FEATURES=server`。
 
+### Linux x64 Agent
+
+使用与网关相同的 `clang-cross`（`x86_64-unknown-linux-musl`）工具链构建全静态二进制（仅包含 SSH/PTY 终端、跨平台文件传输、更新与系统重启）：
+
+```sh
+cmake -S . -B build/linux-agent -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-musl -DVCPKG_HOST_TRIPLET=x64-linux-musl \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/cmake/triplets" \
+  -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$PWD/cmake/llvm.cmake" \
+  -DULTRATERIMAL_BUILD_AGENT=ON -DULTRATERIMAL_BUILD_SERVER=OFF -DBUILD_TESTING=ON
+cmake --build build/linux-agent --parallel
+ctest --test-dir build/linux-agent -L unit --output-on-failure
+```
+
+输出文件：`build/linux-agent/agent/agent`。
+
 ### 前端
 
 使用 Bun 1.4.4（HeroUI Pro 需先 `bun x heroui-pro login`，CI 通过 `HEROUI_AUTH_TOKEN` 注入）：
@@ -89,7 +108,7 @@ bun run build
 | `database` | MariaDB 配置：`host`、`port`、`username`、`password`、`database`；可选 `socket`、`tls_ca` |
 | `security_key_file` | 64 位小写十六进制随机密钥文件，用于加密 TOTP 与 Bot 凭据（Linux 权限 `0600`） |
 | `origin` | 浏览器外部 HTTPS 来源（不含路径） |
-| `web_root` | 前端静态资源目录（部署时保留已发布的 `windows-agent.json` 与 `assets/`） |
+| `web_root` | 前端静态资源目录（部署时保留已发布的 `windows-agent.json`、`linux-agent.json` 与 `assets/`） |
 
 运行命令：
 
@@ -118,19 +137,21 @@ location / {
 
 远控诊断与断线日志写入网关服务日志，可按 `session_id` 查询 `journalctl -u ultraterimal`。
 
-## Windows Agent 安装与运维
+## Agent 安装与运维
 
-在控制台“设备清单”添加设备后生成一次性安装命令，在目标 Windows 主机以管理员 PowerShell 执行即可自动下载校验 MSI、通过 SYSTEM 任务注册并启动 `UltraterimalAgent` 服务。
+在控制台“我的设备”中添加设备（选择 `Windows x64` 或 `Linux x64`）并生成一次性安装命令：
+- **Windows**：以管理员 PowerShell 执行 `irm .../api/install.ps1 | iex`，自动安装 MSI 并注册启动 `UltraterimalAgent` 服务。
+- **Linux x64**：以 root 或 `sudo` 执行 `curl -fsSL '.../api/install.sh?...' | sudo sh`，下载静态二进制到 `/opt/ultraterimal/agent` 并注册启动 `ultraterimal-agent.service`。
 
-服务读取同目录 `agent.json`（字段：`host`、`address`、`port`、`device_id`、`ca_file`、`credential_file`）。常用 CLI：
+服务读取同目录 `agent.json`（字段：`host`、`address`、`port`、`device_id`、`ca_file`、`credential_file`；Linux 支持 `"ca_file": "system"` 使用系统根证书）。常用 CLI：
 
 | 命令 | 用途 |
 | --- | --- |
-| `agent.exe --probe` | 检查本机采集与编码能力 |
-| `agent.exe --connection-check <config.json>` | 验证原生鉴权、握手与心跳 |
-| `agent.exe --connect <config.json>` | 前台维持连接（Ctrl+C 停止） |
-| `agent.exe --status` / `--start` / `--stop` / `--uninstall` | 服务状态查询、启停与卸载 |
-| `agent.exe --install-login-provider` / `--remove-login-provider` | 注册或注销 Windows 登录组件 |
+| `agent --probe` | 检查本机采集/终端与编码能力 |
+| `agent --connection-check <config.json>` | 验证原生鉴权、握手与心跳 |
+| `agent --connect <config.json>` | 前台维持连接（Ctrl+C 停止） |
+| `agent --status` / `--start` / `--stop` / `--uninstall` | 服务状态查询、启停与卸载 |
+| `agent.exe --install-login-provider` / `--remove-login-provider` | 注册或注销 Windows 登录组件（仅 Windows） |
 
 桌面工作进程异常写入 Windows `Application` 事件日志（来源 `UltraterimalDesktop`，事件 ID `1001`）。
 
@@ -139,7 +160,7 @@ location / {
 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 `main` 推送、PR 与手动触发时运行：
 
 - 每次运行解析最新 `clang-cross`（校验 SHA256）与 `microsoft/vcpkg` `master` 提交。
-- 分别执行前端单测与构建、Linux Server 全静态构建与 `unit` 单测、Windows Agent 静态构建、`unit` 单测与 MSI 打包。
+- 分别执行前端单测与构建、Linux Server 全静态构建与 `unit` 单测、Linux Agent 全静态构建与 `unit` 单测、Windows Agent 静态构建、`unit` 单测与 MSI 打包。
 - 仅运行功能单元测试，不自动部署；真实 DXGI、锁屏/UAC 与端到端验收在专用测试环境执行。
 
 ## 许可

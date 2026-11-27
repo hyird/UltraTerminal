@@ -1,7 +1,9 @@
 #pragma once
 #include <memory>
+#include <string>
 #include <task.h>
 
+#include "common/database.h"
 #include "modules/devices/update.service.h"
 
 namespace ultraterimal::server {
@@ -12,7 +14,10 @@ ruvia::task<void> serveAgentUpdate(Context& context, Connection& socket) {
     if (!first || first->payload().size() > 1024 || !requested.ParseFromArray(first->payload().data(), static_cast<int>(first->payload().size())) || !protocol::validUpdate(requested)) {
         co_return;
     }
-    const auto release = ((co_await context.run_blocking([root = context.template worker_state<ServerRuntime>().config.agentReleaseDir] { return agentRelease(root); })).take_value());
+    const auto& deviceId = context.template request_state<DeviceIdentity>().id;
+    const auto rows = co_await context.db().query("SELECT platform FROM devices WHERE id=? AND revoked_at IS NULL", deviceId);
+    const std::string platform = rows.empty() ? std::string("windows-x64") : dbField<std::string>(rows[0][0]);
+    const auto release = ((co_await context.run_blocking([root = context.template worker_state<ServerRuntime>().config.agentReleaseDir, platform] { return agentRelease(root, platform); })).take_value());
     if (!release || release->update.SerializeAsString() != requested.SerializeAsString()) {
         co_return;
     }

@@ -22,7 +22,7 @@ import { onboardingCommand } from "./device.install";
 import { listAccounts } from "../identity/identity.service";
 import { ProofFields } from "../identity/proof";
 import type { Account } from "../identity/identity.types";
-import type { Device } from "./device.types";
+import type { Device, DevicePlatform } from "./device.types";
 export type DeviceAction =
   | "create"
   | "rename"
@@ -44,6 +44,9 @@ export function DeviceActionDialog({
 }) {
   const [name, setName] = useState(
     action === "rename" ? (device?.name ?? "") : "",
+  );
+  const [platform, setPlatform] = useState<DevicePlatform>(
+    device?.platform ?? "windows-x64",
   );
   const [username, setUsername] = useState("");
   const [domain, setDomain] = useState("");
@@ -105,7 +108,7 @@ export function DeviceActionDialog({
     };
   }, [action, device]);
   const titles: Record<DeviceAction, string> = {
-    create: "添加 Windows 设备",
+    create: "添加设备",
     rename: "重命名设备",
     transfer: "修改所有者",
     remove: "删除设备",
@@ -124,7 +127,7 @@ export function DeviceActionDialog({
     setError("");
     try {
       if (action === "create") {
-        const created = await createDevice(name.trim());
+        const created = await createDevice(name.trim(), platform);
         onCreated?.(created);
         toast.success("设备已创建，请安装 Agent 完成接入");
         return;
@@ -132,7 +135,7 @@ export function DeviceActionDialog({
       if (!device) return;
       if (action === "install") {
         setCommand(
-          onboardingCommand(await createEnrollment(device.id, "windows-x64")),
+          onboardingCommand(await createEnrollment(device.id, device.platform)),
         );
         return;
       }
@@ -194,10 +197,24 @@ export function DeviceActionDialog({
           />
         )}
         {action === "create" && (
-          <p className="text-muted text-sm leading-6">
-            先创建设备，再在目标 Windows
-            电脑执行一次性安装命令。接入成功后可向其他用户分配访问权限。
-          </p>
+          <>
+            <Choice
+              label="目标系统"
+              value={platform}
+              onChange={(value) =>
+                setPlatform(value === "linux-x64" ? "linux-x64" : "windows-x64")
+              }
+              items={[
+                { id: "windows-x64", label: "Windows x64（远程桌面与终端）" },
+                { id: "linux-x64", label: "Linux x64（SSH 终端与文件）" },
+              ]}
+            />
+            <p className="text-muted text-sm leading-6">
+              {platform === "linux-x64"
+                ? "先创建设备，再在目标 Linux 主机以 root 或 sudo 权限执行一次性安装命令。接入后可使用交互式终端与文件传输。"
+                : "先创建设备，再在目标 Windows 电脑执行一次性安装命令。接入成功后可向其他用户分配访问权限。"}
+            </p>
+          </>
         )}
         {action === "transfer" &&
           (loading ? (
@@ -244,8 +261,9 @@ export function DeviceActionDialog({
         {action === "install" && (
           <>
             <p className="text-muted text-sm leading-6">
-              在目标 Windows 电脑的管理员 PowerShell
-              中执行安装命令。新设备的一次性命令十分钟内有效，重新生成会使旧命令失效。
+              {device?.platform === "linux-x64"
+                ? "在目标 Linux 主机中以 root 或 sudo 权限运行终端命令完成安装与注册。新设备的一次性命令十分钟内有效，重新生成会使旧命令失效。"
+                : "在目标 Windows 电脑的管理员 PowerShell 中执行安装命令。新设备的一次性命令十分钟内有效，重新生成会使旧命令失效。"}
             </p>
             {command && (
               <>

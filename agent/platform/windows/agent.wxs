@@ -6,6 +6,9 @@
             <ComponentRef Id="AgentExecutable" />
             <ComponentRef Id="LoginProvider" />
             <ComponentRef Id="AgentData" />
+            <?if $(var.IncludeIdd) = 1 ?>
+            <ComponentRef Id="IddDriver" />
+            <?endif ?>
         </Feature>
         <StandardDirectory Id="ProgramFiles64Folder">
             <Directory Id="INSTALLFOLDER" Name="Ultraterimal">
@@ -29,6 +32,18 @@
                     <File Id="ThirdPartyNotices" Source="$(var.Payload)\third_party_notices.txt" />
                     <File Id="CorrespondingSource" Source="$(var.Payload)\source_info.txt" />
                 </Component>
+                <?if $(var.IncludeIdd) = 1 ?>
+                <Directory Id="IDDFOLDER" Name="idd">
+                    <Component Id="IddDriver" Guid="7C5A8E91-3D2B-4F18-9A6E-4D1B2C3E5F70" Bitness="always64">
+                        <File Id="IddDll" Source="$(var.Payload)\idd\ultraterimal_idd.dll" KeyPath="yes" />
+                        <File Id="IddInf" Source="$(var.Payload)\idd\ultraterimal_idd.inf" />
+                        <File Id="IddCat" Source="$(var.Payload)\idd\ultraterimal_idd.cat" />
+                        <?if $(var.IncludeIddCert) = 1 ?>
+                        <File Id="IddCer" Source="$(var.Payload)\idd\ultraterimal_idd.cer" />
+                        <?endif ?>
+                    </Component>
+                </Directory>
+                <?endif ?>
             </Directory>
         </StandardDirectory>
     </Package>

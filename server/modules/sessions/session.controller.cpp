@@ -96,6 +96,7 @@ ruvia::task<ruvia::http_response> SessionController::close(ruvia::context& conte
     (void)co_await runtime.sessions.close(db, user, session, SessionEnd::kUser);
     if (info->state != "closed") {
         closeDesktopSession(runtime, info->id, DesktopCloseReason::kUserClosed);
+        closeTerminalSession(runtime, info->id, TerminalCloseReason::kUserClosed);
         sendDeviceSessionClose(runtime, info->deviceId, info->id, "user_closed");
     }
     SessionCloseResponse response;

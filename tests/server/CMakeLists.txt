@@ -33,3 +33,11 @@ add_executable(server-http-tests http.cpp)
 target_link_libraries(server-http-tests PRIVATE ultraterimal-server-core ruvia::web)
 add_test(NAME server.http COMMAND server-http-tests)
 set_tests_properties(server.http PROPERTIES LABELS unit TIMEOUT 15)
+
+add_executable(server-terminal-tests terminal.cpp)
+target_link_libraries(server-terminal-tests PRIVATE ultraterimal-terminal-runtime ultraterimal-server-core ruvia::web)
+target_compile_options(server-terminal-tests PRIVATE
+    "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
+add_test(NAME server.terminal COMMAND server-terminal-tests)
+set_tests_properties(server.terminal PROPERTIES LABELS unit TIMEOUT 15)

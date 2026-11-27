@@ -192,6 +192,110 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  linux_agent:
+    name: Linux Agent LLVM musl
+    needs: resolve_toolchain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      VCPKG_FORCE_SYSTEM_BINARIES: '1'
+      CCACHE_DIR: ${{ github.workspace }}/build/ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: pch_defines,time_macros
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup LLVM musl build
+        id: setup
+        uses: ./.github/actions/setup-build
+        with:
+          toolchain-release: ${{ needs.resolve_toolchain.outputs.release }}
+          toolchain-sha256: ${{ needs.resolve_toolchain.outputs.sha256 }}
+          vcpkg-commit: ${{ needs.resolve_toolchain.outputs.vcpkg_commit }}
+      - name: Configure Release
+        id: configure
+        run: |
+          cmake -S . -B build/linux-agent -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux-musl \
+            -DVCPKG_HOST_TRIPLET=x64-linux-musl \
+            -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/cmake/triplets" \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/cmake/llvm.cmake" \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/build/vcpkg-linux-agent-installed" \
+            -DULTRATERIMAL_BUILD_AGENT=ON -DULTRATERIMAL_BUILD_SERVER=OFF \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Save vcpkg binary cache
+        if: ${{ !cancelled() && steps.configure.outcome == 'success' && steps.setup.outputs.vcpkg-cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.setup.outputs.vcpkg-cache-key }}
+      - name: Build
+        run: |
+          ccache --zero-stats
+          cmake --build build/linux-agent --parallel "$(nproc)"
+          ccache --show-stats
+      - name: Functional unit tests
+        run: ctest --test-dir build/linux-agent --no-tests=error -L unit --output-on-failure --output-junit "$GITHUB_WORKSPACE/build/linux-agent/test-results.xml"
+      - name: Save compiler cache
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.setup.outputs.compiler-cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.setup.outputs.compiler-cache-key }}
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: tests-linux-agent-${{ github.sha }}
+          path: |
+            build/linux-agent/test-results.xml
+            build/linux-agent/Testing/Temporary/LastTest.log
+            build/linux-agent/vcpkg-manifest-install.log
+            build/linux-agent/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+      - name: Assemble static Linux Agent release
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          RUVIA_COMMIT: ${{ needs.resolve_toolchain.outputs.ruvia_commit }}
+          VCPKG_COMMIT: ${{ needs.resolve_toolchain.outputs.vcpkg_commit }}
+          TOOLCHAIN_RELEASE: ${{ needs.resolve_toolchain.outputs.release }}
+          TOOLCHAIN_SHA256: ${{ needs.resolve_toolchain.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          binary=build/linux-agent/agent/agent
+          if readelf -l "$binary" | grep -q INTERP; then
+            echo 'Linux Agent executable requires a dynamic loader' >&2
+            exit 1
+          fi
+          version="$(sed -nE 's/.*kAgentVersion\[\]\s*=\s*"([^"]+)".*/\1/p' agent/config/version.config.h)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$ ]]
+          asset="ultraterimal-agent-linux-x64-$version"
+          install -Dm755 "$binary" "build/linux-agent-release/assets/$asset"
+          sha256="$(sha256sum "build/linux-agent-release/assets/$asset" | awk '{print $1}')"
+          jq -n --arg file "/assets/$asset" --arg version "$version" --arg sha256 "$sha256" \
+            '{file: $file, version: $version, sha256: $sha256}' \
+            > build/linux-agent-release/linux-agent.json
+          jq -n --arg commit "$SOURCE_COMMIT" --arg ruvia "$RUVIA_COMMIT" \
+            --arg vcpkg "$VCPKG_COMMIT" --arg toolchain "$TOOLCHAIN_RELEASE" \
+            --arg toolchain_sha256 "$TOOLCHAIN_SHA256" --arg version "$version" \
+            '{commit: $commit, ruvia: $ruvia, vcpkg: $vcpkg, toolchain: $toolchain, toolchain_sha256: $toolchain_sha256, version: $version}' \
+            > build/linux-agent-release/release.json
+          (cd build/linux-agent-release && sha256sum "assets/$asset" linux-agent.json release.json > SHA256SUMS)
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: linux-agent-${{ github.sha }}
+          path: build/linux-agent-release/
+          if-no-files-found: error
+          retention-days: 14
+
   windows:
     name: Windows Agent MSVC and MSI
     needs: resolve_toolchain

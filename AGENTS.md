@@ -13,14 +13,14 @@
 ## 2. 技术与部署约束
 
 - Agent、共享协议、网关统一使用 C++23；网关 Web 框架使用 Ruvia（`ruvia::web`）；前端使用 React + TypeScript + Tailwind CSS + HeroUI Pro，数据库为 MariaDB。语言标准按 target 声明。
-- Windows Agent 采用 LocalSystem 系统服务 + 目标会话桌面工作进程架构，支持未登录、锁屏和 UAC 桌面；安装后不创建托盘图标或常驻用户窗口。SSH/ConPTY 继承 Agent 服务运行账户，不做操作系统用户映射。
+- Windows Agent 采用 LocalSystem 系统服务 + 目标会话桌面工作进程架构，支持未登录、锁屏和 UAC 桌面；安装后不创建托盘图标或常驻用户窗口。Linux x64 Agent 采用全静态 musl 单文件 + `systemd` 服务，仅提供内嵌 PTY 交互终端与跨平台文件传输（不含 Linux 桌面采集与探针）。SSH/ConPTY/PTY 均继承 Agent 服务运行账户，不做操作系统用户映射。
 - Windows 桌面采集统一使用 DXGI Desktop Duplication，不保留 WGC 或 GDI 回退；生产画面统一使用整帧视频，光标形状与位置独立传输，控制端使用本地即时光标。
 - Agent 使用 `ruvia::core` 管理生命周期；Agent ↔ Server 使用原生加密 QUIC/UDP 优先、TLS/TCP 降级，不使用 HTTP/WebSocket/WSS，不经过 CDN HTTP 代理，不建立浏览器直连 Agent 的 P2P。Agent-only 配置不构建网关或安装数据库客户端。共享协议不得暴露 Ruvia 类型。
 - Ruvia 通过根 CMake FetchContent 接入并固定完整提交 SHA，只使用公开 API；若本任务修改并推送了 Ruvia，须同步更新 SHA 并完成两端验证。
 - 网关 Web 入口只监听 HTTP/WS，由外部反向代理终止 HTTPS/WSS；HTTP、WebSocket、路由和中间件统一由 Ruvia 承担，不另建 Beast 服务端。
 - C/C++ 依赖统一使用 vcpkg manifest（不固定 `builtin-baseline`，使用最新依赖），CMake 通过显式命令行参数配置；不得依赖本机临时安装的库。
 - Windows Agent 使用 `x64-windows-static` 与 `/MT` 静态链接第三方库与 CRT，不依赖额外 DLL、VC++ Redistributable、.NET、独立 sshd/VNC 服务或媒体扩展；可选媒体组件动态探测，缺失时回退内嵌软件编码。
-- Agent 只操作本机，SSH/VNC 必须内嵌；禁止连接独立 sshd/VNC Server、开放公网 SSH/VNC 端口或实现内网跳板。
+- Linux x64 Agent 使用 `x64-linux-musl` 全静态链接，不依赖动态加载器（`INTERP`）、独立 sshd 或系统运行库。
 - 前端以 HeroUI Pro Dashboard Template 1.0.13 为视觉与布局基准；工作台与控制台独立菜单，由管理员专属工作区下拉切换，普通用户只显示工作台。仅提供已接通的真实能力，不建占位页面或虚构数据。
 - 前端使用 Bun，提交 `bun.lock`，安装使用 `bun install --frozen-lockfile`；Bun 仅用于开发与构建。
 
@@ -29,9 +29,11 @@
 ### 3.1 目录归属
 
 ```text
-agent/                         # Windows Agent，独立 CMake target
-  features/<feature>/          # 注册、连接、桌面、更新、SSH、VNC 等运行能力
+agent/                         # 跨平台 Agent（Windows x64 / Linux x64），独立 CMake target
+  features/<feature>/          # 注册、连接、桌面（仅 Windows）、更新、文件、终端等运行能力
   platform/windows/            # 服务、令牌、采集、输入、ConPTY、DPAPI、登录组件
+  platform/linux/              # systemd 服务、凭据权限、PTY 终端、POSIX 文件、重启、自更新
+  platform/platform.transport.h # 跨平台核心接口与实现分派
   config/                      # Agent 配置
   main.cpp                     # 角色选择与装配
 server/                        # 平台与网关服务，独立 CMake target

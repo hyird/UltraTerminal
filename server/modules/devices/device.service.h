@@ -12,13 +12,13 @@
 namespace ultraterimal::server {
 class DeviceService {
   public:
-    ruvia::task<DeviceInfo> createDevice(ruvia::db_executor db, std::string userId, std::string name) const;
+    ruvia::task<DeviceInfo> createDevice(ruvia::db_executor db, std::string userId, std::string name, std::string platform = "windows-x64") const;
     ruvia::task<std::optional<std::string>> createEnrollment(ruvia::db_executor db, std::string userId, std::string deviceId) const;
     ruvia::task<std::optional<std::string>> enrollmentDevice(ruvia::db_executor db, std::string code) const;
     ruvia::task<std::optional<DeviceRegistration>> registerDevice(ruvia::db_executor db, std::string code, std::string name) const;
     ruvia::task<std::optional<DeviceIdentity>> authenticate(ruvia::db_executor db, std::string credential) const;
     ruvia::task<bool> heartbeat(ruvia::db_executor db, DeviceIdentity device) const;
-    ruvia::task<bool> capabilities(ruvia::db_executor db, DeviceIdentity device, std::string protobuf, std::string agentVersion = {}) const;
+    ruvia::task<bool> capabilities(ruvia::db_executor db, DeviceIdentity device, std::string protobuf, std::string agentVersion = {}, std::string platform = {}) const;
     ruvia::task<std::vector<DeviceInfo>> list(ruvia::db_executor db, std::string userId, bool administration = false) const;
     ruvia::task<bool> rename(ruvia::db_executor db, std::string userId, std::string deviceId, std::string name) const;
     ruvia::task<bool> transferOwner(ruvia::db_executor db, std::string actorId, std::string deviceId, std::string targetUserId) const;

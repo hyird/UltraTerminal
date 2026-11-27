@@ -8,8 +8,7 @@
 #include <string>
 
 #include "features/connection/connection.transport.h"
-#include "platform/windows/credential.transport.h"
-#include "platform/windows/file.transport.h"
+#include "platform/platform.transport.h"
 
 namespace ultraterimal::agent {
 namespace {

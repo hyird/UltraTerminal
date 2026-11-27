@@ -3,6 +3,19 @@
 #include <spdlog/spdlog.h>
 
 namespace ultraterimal::server {
+namespace {
+DeviceOnlineState makeOnlineState(const ControlConnection& conn) {
+    return DeviceOnlineState{
+        true,
+        conn.agentVersion,
+        conn.platform,
+        conn.capabilities.capture_available(),
+        conn.capabilities.terminal() || (conn.capabilities.ssh() && conn.capabilities.conpty()),
+        conn.capabilities.windows_login_settings(),
+    };
+}
+} // namespace
+
 ruvia::web_worker_ref resolveWebWorker(std::string_view key) {
     const auto workers = ruvia::app().worker_refs();
     if (workers.empty()) {
@@ -36,7 +49,7 @@ ruvia::task<DeviceOnlineState> queryDeviceOnlineState(const ruvia::worker_ref& c
         if (it == rt.controlConnections.end() || !it->second->ready) {
             return DeviceOnlineState{};
         }
-        return DeviceOnlineState{true, it->second->agentVersion};
+        return makeOnlineState(*it->second);
     });
     co_return result.value_or(DeviceOnlineState{});
 }
@@ -48,7 +61,7 @@ ruvia::task<std::unordered_map<std::string, DeviceOnlineState>> queryDeviceOnlin
         for (const auto& id : deviceIds) {
             const auto it = local.controlConnections.find(id);
             if (it != local.controlConnections.end() && it->second->ready) {
-                states.emplace(id, DeviceOnlineState{true, it->second->agentVersion});
+                states.emplace(id, makeOnlineState(*it->second));
             }
         }
         co_return states;
@@ -68,7 +81,7 @@ ruvia::task<std::unordered_map<std::string, DeviceOnlineState>> queryDeviceOnlin
                 for (const auto& id : ids) {
                     const auto it = rt.controlConnections.find(id);
                     if (it != rt.controlConnections.end() && it->second->ready) {
-                        out.emplace_back(id, DeviceOnlineState{true, it->second->agentVersion});
+                        out.emplace_back(id, makeOnlineState(*it->second));
                     }
                 }
                 return out;
@@ -318,7 +331,8 @@ ruvia::task<DeviceSessionCapabilities> queryDeviceSessionCapabilities(const ruvi
         }
         const auto& caps = found->second->capabilities;
         const bool inputSupported = caps.capture_available() && caps.desktop_input_contract() == 2;
-        const bool requestedSupported = kind == wire::DESKTOP ? caps.capture_available() && (!writeControl || caps.desktop_input_contract() == inputContract) : (kind == wire::VNC ? caps.vnc() : caps.ssh() && caps.conpty());
+        const bool terminalSupported = caps.terminal() || (caps.ssh() && caps.conpty());
+        const bool requestedSupported = kind == wire::DESKTOP ? caps.capture_available() && (!writeControl || caps.desktop_input_contract() == inputContract) : (kind == wire::VNC ? caps.vnc() : terminalSupported);
         return DeviceSessionCapabilities{true, inputSupported, requestedSupported};
     });
     co_return result.value_or(DeviceSessionCapabilities{});
@@ -358,6 +372,23 @@ void closeDesktopSession(ServerRuntime& local, const std::string& sessionId, Des
         auto& rt = ctx.worker_state<ServerRuntime>();
         if (const auto it = rt.desktopSessions.find(sessionId); it != rt.desktopSessions.end()) {
             it->second->close(reason, origin);
+        }
+        co_return;
+    });
+}
+
+void closeTerminalSession(ServerRuntime& local, const std::string& sessionId, TerminalCloseReason reason) {
+    const auto target = resolveWebWorker(sessionId);
+    if (!target.valid() || target.is_current()) {
+        if (const auto it = local.terminalSessions.find(sessionId); it != local.terminalSessions.end()) {
+            it->second->close(reason);
+        }
+        return;
+    }
+    (void)target.post([sessionId, reason](ruvia::web_worker_context& ctx) -> ruvia::task<void> {
+        auto& rt = ctx.worker_state<ServerRuntime>();
+        if (const auto it = rt.terminalSessions.find(sessionId); it != rt.terminalSessions.end()) {
+            it->second->close(reason);
         }
         co_return;
     });

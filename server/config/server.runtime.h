@@ -19,6 +19,7 @@
 #include "features/desktop/desktop.runtime.h"
 #include "features/file/file.runtime.h"
 #include "features/status/status.runtime.h"
+#include "features/terminal/terminal.runtime.h"
 #include "modules/devices/device.service.h"
 #include "modules/devices/update.service.h"
 #include "modules/identity/identity.service.h"
@@ -43,6 +44,7 @@ struct ServerRuntime {
     // Reserve the device during handshake; only a validated HELLO makes it ready.
     std::unordered_map<std::string, std::shared_ptr<ControlConnection>> controlConnections;
     std::unordered_map<std::string, std::shared_ptr<DesktopSession>> desktopSessions;
+    std::unordered_map<std::string, std::shared_ptr<TerminalSession>> terminalSessions;
 
     explicit ServerRuntime(ServerConfig value, std::shared_ptr<ServerSharedState> sharedState = std::make_shared<ServerSharedState>())
         : config(std::move(value)),
@@ -55,6 +57,10 @@ struct ServerRuntime {
 struct DeviceOnlineState {
     bool online = false;
     std::string agentVersion;
+    std::string platform = "windows-x64";
+    bool captureAvailable = false;
+    bool terminalAvailable = false;
+    bool windowsLoginAvailable = false;
 };
 struct DeviceSessionCapabilities {
     bool ready = false;
@@ -157,4 +163,5 @@ ruvia::task<bool> enqueueDeviceRestart(const ruvia::worker_ref& caller, ServerRu
 ruvia::task<DeviceSessionCapabilities> queryDeviceSessionCapabilities(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::SessionKind kind, bool writeControl, std::uint32_t inputContract);
 ruvia::task<bool> dispatchSessionOpen(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::Envelope openCommand, const std::vector<std::string>& preemptedSessions);
 void closeDesktopSession(ServerRuntime& local, const std::string& sessionId, DesktopCloseReason reason, DesktopCloseOrigin origin = DesktopCloseOrigin::kServer);
+void closeTerminalSession(ServerRuntime& local, const std::string& sessionId, TerminalCloseReason reason = TerminalCloseReason::kServerStopped);
 } // namespace ultraterimal::server

@@ -21,6 +21,7 @@ class ControlConnection {
     bool ready = false;
     wire::Capabilities capabilities;
     std::string agentVersion;
+    std::string platform = "windows-x64";
     bool updatePending = false;
     bool enqueue(wire::Envelope message);
     ruvia::task<std::optional<std::string>> receive(ruvia::stop_token stop);

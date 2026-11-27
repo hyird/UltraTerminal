@@ -52,11 +52,18 @@ export function RequestsPanel() {
       } else {
         const device = devices.find((device) => device.id === item.deviceId);
         if (!device) throw new Error("设备授权已撤销");
-        await desktops.connect(
-          { ...device, writeControl: item.writeControl },
-          item.id,
-          true,
-        );
+        if (!device.captureAvailable) {
+          await desktops.connectTerminal(
+            { ...device, writeControl: item.writeControl },
+            item.id,
+          );
+        } else {
+          await desktops.connect(
+            { ...device, writeControl: item.writeControl },
+            item.id,
+            true,
+          );
+        }
         setConnecting(null);
         requests.setOpen(false);
       }

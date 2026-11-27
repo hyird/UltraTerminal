@@ -1,0 +1,63 @@
+[Version]
+Signature="$Windows NT$"
+Class=Display
+ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+CatalogFile=ultraterimal_idd.cat
+DriverVer=11/27/2026,1.0.65.3
+PnpLockdown=1
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64.10.0...19041
+
+[Standard.NTamd64.10.0...19041]
+%DeviceName%=UltraterimalIdd_Install, Root\UltraterimalIdd
+
+[UltraterimalIdd_Install.NT]
+CopyFiles=UMDriverCopy
+
+[UltraterimalIdd_Install.NT.HW]
+AddReg=UltraterimalIdd_HW_AddReg
+
+[UltraterimalIdd_HW_AddReg]
+HKR,,"UpperFilters",0x00010000,"IndirectKmd"
+HKR,"WUDF","DeviceGroup",0x00000000,"IddCx"
+
+[UltraterimalIdd_Install.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+[UltraterimalIdd_Install.NT.Wdf]
+UmdfService=UltraterimalIdd,UltraterimalIdd_Install_Wdf
+UmdfServiceOrder=UltraterimalIdd
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfHostProcessSharing=ProcessSharingDisabled
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+
+[UltraterimalIdd_Install_Wdf]
+UmdfLibraryVersion=2.31.0
+ServiceBinary=%13%\ultraterimal_idd.dll
+UmdfExtensions=IddCx0102
+
+[WUDFRD_ServiceInstall]
+DisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+
+[DestinationDirs]
+UMDriverCopy=13
+
+[UMDriverCopy]
+ultraterimal_idd.dll
+
+[SourceDisksFiles]
+ultraterimal_idd.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[Strings]
+ManufacturerName="Ultraterimal"
+DiskName="Ultraterimal Virtual Display Driver Disk"
+DeviceName="Ultraterimal Virtual Display"

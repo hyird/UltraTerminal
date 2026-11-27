@@ -1,4 +1,5 @@
 import { ApiError, jsonRequest, record, text, xsrfToken } from "../../lib/http";
+import type { DevicePlatform } from "../devices/device.types";
 
 export interface DeviceFileEntry {
   name: string;
@@ -109,9 +110,21 @@ export function deviceFileDownloadUrl(
   return `/api/devices/files/download?${query.toString()}`;
 }
 
-export function joinWindowsPath(base: string, name: string): string {
+export function joinRemotePath(
+  base: string,
+  name: string,
+  platform: DevicePlatform = "windows-x64",
+): string {
+  if (platform === "linux-x64") {
+    if (!base || base === "/") return `/${name}`;
+    return base.endsWith("/") ? `${base}${name}` : `${base}/${name}`;
+  }
   if (!base) return name;
   return base.endsWith("\\") ? `${base}${name}` : `${base}\\${name}`;
+}
+
+export function joinWindowsPath(base: string, name: string): string {
+  return joinRemotePath(base, name, "windows-x64");
 }
 
 export function uploadDeviceFile(

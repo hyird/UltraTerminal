@@ -8,15 +8,31 @@ import {
 } from "react";
 import { useNavigate } from "react-router";
 import type { DesktopTicket } from "../sessions/desktop/desktop.types";
+import type { TerminalTicket } from "../sessions/terminal/terminal.types";
 import type { Device } from "../pages/devices/device.types";
-import { closeDesktop, openDesktop } from "../pages/devices/device.service";
-export interface DesktopEntry {
-  device: Device;
-  ticket: DesktopTicket;
-  reconnectFailures?: number;
-}
+import {
+  closeDesktop,
+  openDesktop,
+  openTerminal,
+} from "../pages/devices/device.service";
+
+export type SessionEntry =
+  | {
+      kind: "desktop";
+      device: Device;
+      ticket: DesktopTicket;
+      reconnectFailures?: number;
+    }
+  | {
+      kind: "terminal";
+      device: Device;
+      ticket: TerminalTicket;
+    };
+
+export type DesktopEntry = SessionEntry;
+
 interface DesktopState {
-  entries: DesktopEntry[];
+  entries: SessionEntry[];
   active: string;
   connecting: string;
   connect: (
@@ -25,13 +41,18 @@ interface DesktopState {
     preempt?: boolean,
     verificationCode?: string,
   ) => Promise<void>;
+  connectTerminal: (
+    device: Device,
+    approvalId?: string,
+    verificationCode?: string,
+  ) => Promise<void>;
   activate: (id: string) => void;
   close: (id: string) => void;
   replace: (id: string, ticket: DesktopTicket, failures: number) => void;
 }
 const Context = createContext<DesktopState | null>(null);
 export function DesktopProvider({ children }: { children: ReactNode }) {
-  const [entries, setEntries] = useState<DesktopEntry[]>([]);
+  const [entries, setEntries] = useState<SessionEntry[]>([]);
   const [active, setActive] = useState("");
   const [connecting, setConnecting] = useState("");
   const mounted = useRef(true);
@@ -56,7 +77,7 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
     verificationCode?: string,
   ) {
     const existing = current.current.find(
-      (entry) => entry.device.id === device.id,
+      (entry) => entry.kind === "desktop" && entry.device.id === device.id,
     );
     if (existing) {
       activate(existing.ticket.id);
@@ -77,7 +98,39 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
         await closeDesktop(ticket.id);
         return;
       }
-      setEntries((items) => [...items, { device, ticket }]);
+      setEntries((items) => [...items, { kind: "desktop", device, ticket }]);
+      activate(ticket.id);
+    } finally {
+      pending.current = false;
+      if (mounted.current) setConnecting("");
+    }
+  }
+  async function connectTerminal(
+    device: Device,
+    approvalId?: string,
+    verificationCode?: string,
+  ) {
+    const existing = current.current.find(
+      (entry) => entry.kind === "terminal" && entry.device.id === device.id,
+    );
+    if (existing) {
+      activate(existing.ticket.id);
+      return;
+    }
+    if (pending.current) return;
+    pending.current = true;
+    setConnecting(device.id);
+    try {
+      const ticket = await openTerminal(
+        device.id,
+        approvalId,
+        verificationCode,
+      );
+      if (!mounted.current) {
+        await closeDesktop(ticket.id);
+        return;
+      }
+      setEntries((items) => [...items, { kind: "terminal", device, ticket }]);
       activate(ticket.id);
     } finally {
       pending.current = false;
@@ -95,7 +148,7 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
   function replace(id: string, ticket: DesktopTicket, failures: number) {
     setEntries((items) =>
       items.map((entry) =>
-        entry.ticket.id === id
+        entry.kind === "desktop" && entry.ticket.id === id
           ? { ...entry, ticket, reconnectFailures: failures }
           : entry,
       ),
@@ -104,7 +157,16 @@ export function DesktopProvider({ children }: { children: ReactNode }) {
   }
   return (
     <Context.Provider
-      value={{ entries, active, connecting, connect, activate, close, replace }}
+      value={{
+        entries,
+        active,
+        connecting,
+        connect,
+        connectTerminal,
+        activate,
+        close,
+        replace,
+      }}
     >
       {children}
     </Context.Provider>

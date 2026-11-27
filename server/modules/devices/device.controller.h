@@ -15,15 +15,18 @@ class DeviceInstallerController final {
     RUVIA_CONTROLLER_GROUP("")
     RUVIA_ROUTES_BEGIN(DeviceInstallerController)
     RUVIA_GET("/install.ps1", script);
+    RUVIA_GET("/install.sh", linuxScript);
     RUVIA_ROUTES_END
   private:
     ruvia::task<ruvia::http_response> script(ruvia::context& context);
+    ruvia::task<ruvia::http_response> linuxScript(ruvia::context& context);
 };
 class DeviceController final {
   public:
     RUVIA_CONTROLLER_GROUP("/api")
     RUVIA_ROUTES_BEGIN(DeviceController)
     RUVIA_GET("/install.ps1", install, ruvia::rate_limit<30, 60000>);
+    RUVIA_GET("/install.sh", installSh, ruvia::rate_limit<30, 60000>);
     RUVIA_POST("/install/manifest", installManifest, ruvia::rate_limit<20, 60000>, ruvia::strict_json_body<InstallManifestRequest>);
     RUVIA_POST("/install/package", installPackage, ruvia::rate_limit<10, 60000>, ruvia::strict_json_body<InstallPackageRequest>);
     RUVIA_POST("/enrollments", enrollment, ruvia::csrf_middleware, BrowserOrigin, UserAuthentication, ruvia::rate_limit<20, 60000>, ruvia::strict_json_body<DeviceEnrollmentRequest>);
@@ -44,6 +47,7 @@ class DeviceController final {
     ruvia::task<ruvia::http_response> grants(ruvia::context& context);
     ruvia::task<ruvia::http_response> saveGrant(ruvia::context& context, const DeviceGrantRequest& body);
     ruvia::task<ruvia::http_response> install(ruvia::context& context);
+    ruvia::task<ruvia::http_response> installSh(ruvia::context& context);
     ruvia::task<ruvia::http_response> installManifest(ruvia::context& context, const InstallManifestRequest& body);
     ruvia::task<ruvia::http_response> installPackage(ruvia::context& context, const InstallPackageRequest& body);
     ruvia::task<ruvia::http_response> enrollment(ruvia::context& context, const DeviceEnrollmentRequest& body);

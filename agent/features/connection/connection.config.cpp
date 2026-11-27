@@ -205,7 +205,13 @@ ConnectionConfig loadConfig(const std::filesystem::path& path, bool enrollment) 
         }
         return std::filesystem::path(std::u8string(text.begin(), text.end()));
     };
-    config.caFile = utf8Path("ca_file");
+    const auto caText = string("ca_file");
+    if (caText.find('\0') != std::string::npos) {
+        throw std::runtime_error("Invalid configuration path");
+    }
+    if (caText != "system") {
+        config.caFile = std::filesystem::path(std::u8string(caText.begin(), caText.end()));
+    }
     config.credentialFile = utf8Path("credential_file");
     if (config.host.size() > 253 || config.host.find_first_of("/\\ \t\r\n") != std::string::npos || config.host.find('\0') != std::string::npos || config.host.empty()) {
         throw std::runtime_error("Invalid gateway host");
@@ -217,7 +223,7 @@ ConnectionConfig loadConfig(const std::filesystem::path& path, bool enrollment) 
         throw std::runtime_error("Invalid device identifier");
     }
     const auto base = std::filesystem::absolute(path).parent_path();
-    if (config.caFile.is_relative()) {
+    if (!config.caFile.empty() && config.caFile.is_relative()) {
         config.caFile = base / config.caFile;
     }
     if (config.credentialFile.is_relative()) {
@@ -296,7 +302,7 @@ std::string connectionConfigJson(const ConnectionConfig& config) {
     field("host", config.host);
     field("port", config.port);
     field("device_id", config.deviceId);
-    field("ca_file", utf8(config.caFile));
+    field("ca_file", config.caFile.empty() ? std::string_view("system") : std::string_view(utf8(config.caFile)));
     field("credential_file", utf8(config.credentialFile));
     if (!config.address.empty()) {
         field("address", config.address);

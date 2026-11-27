@@ -13,6 +13,8 @@ class WindowsAgentUpdate {
     WindowsAgentUpdate();
     ~WindowsAgentUpdate();
     std::filesystem::path root() const;
+    std::filesystem::path configPath() const { return root() / "agent.json"; }
+    std::filesystem::path stagePath() const { return root() / ".update/package.msi"; }
     const wire::AgentUpdate& request() const;
     int install();
     void failed(std::uint32_t code) noexcept;

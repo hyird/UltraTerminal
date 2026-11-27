@@ -2,4 +2,5 @@
 #include <string_view>
 namespace ultraterimal::server {
 inline constexpr std::string_view kWindowsInstallScript = R"ut_installer(@ULTRATERIMAL_INSTALL_SCRIPT@)ut_installer";
+inline constexpr std::string_view kLinuxInstallScript = R"ut_linux_sh(@ULTRATERIMAL_LINUX_INSTALL_SCRIPT@)ut_linux_sh";
 }
