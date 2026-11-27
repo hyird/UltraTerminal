@@ -17,6 +17,7 @@
 
 #include "features/control/control.runtime.h"
 #include "features/desktop/desktop.runtime.h"
+#include "features/file/file.runtime.h"
 #include "features/status/status.runtime.h"
 #include "modules/devices/device.service.h"
 #include "modules/devices/update.service.h"
@@ -29,6 +30,7 @@ namespace ultraterimal::server {
 struct ServerSharedState {
     std::shared_ptr<DesktopBudget> desktopBudget = std::make_shared<DesktopBudget>(256 * 1024 * 1024);
     std::shared_ptr<std::atomic_bool> telegramConfiguring = std::make_shared<std::atomic_bool>(false);
+    std::shared_ptr<FileTransferHub> fileTransfers = std::make_shared<FileTransferHub>();
 };
 struct ServerRuntime {
     ServerConfig config;
@@ -147,6 +149,9 @@ void closeDeviceControl(ServerRuntime& local, const std::string& deviceId);
 void sendDeviceSessionClose(ServerRuntime& local, const std::string& deviceId, const std::string& sessionId, std::string reason);
 ruvia::task<DeviceUpdateResult> dispatchDeviceUpdate(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, const std::string& userId, const AgentRelease& release);
 ruvia::task<std::optional<wire::WindowsLoginResult>> requestDeviceWindowsLogin(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::WindowsLoginRequest request);
+ruvia::task<std::optional<wire::FileListResult>> requestDeviceFileList(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::FileListRequest request);
+ruvia::task<std::optional<wire::FileStatResult>> requestDeviceFileStat(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::FileStatRequest request);
+ruvia::task<bool> dispatchDeviceFileTransfer(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::FileTransferStart request);
 ruvia::task<DeviceRestartCapability> queryDeviceRestartCapability(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId);
 ruvia::task<bool> enqueueDeviceRestart(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::WindowsRestartRequest request);
 ruvia::task<DeviceSessionCapabilities> queryDeviceSessionCapabilities(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::SessionKind kind, bool writeControl, std::uint32_t inputContract);

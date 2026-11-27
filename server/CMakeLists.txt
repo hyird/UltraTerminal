@@ -46,7 +46,9 @@ add_executable(ultraterimal-server main.cpp
     modules/identity/identity.controller.cpp
     modules/devices/device.controller.cpp
     modules/sessions/session.controller.cpp
-    features/desktop/desktop.controller.cpp)
+    features/desktop/desktop.controller.cpp
+    features/file/file.runtime.cpp
+    features/file/file.controller.cpp)
 target_compile_features(ultraterimal-server PRIVATE cxx_std_23)
 target_include_directories(ultraterimal-server PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set_target_properties(ultraterimal-server PROPERTIES CXX_EXTENSIONS OFF OUTPUT_NAME gateway)

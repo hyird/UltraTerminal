@@ -33,6 +33,7 @@ import {
   restartPermission,
 } from "../devices/device.service";
 import { DesktopReconnect } from "./reconnect.service";
+import { DesktopFilesDialog } from "./files.panel";
 import { requestApproval } from "../identity/identity.service";
 import { useDevices } from "../devices/device_state";
 export function DesktopWorkspace() {
@@ -114,6 +115,7 @@ function DesktopPanel({
   const [bitrate, setBitrate] = useState(0);
   const [canRestart, setCanRestart] = useState(false);
   const [restart, setRestart] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const restartKey = useRef("");
@@ -358,6 +360,13 @@ function DesktopPanel({
         <div className="flex-1" />
         <Button
           variant="tertiary"
+          isDisabled={ended}
+          onPress={() => setFilesOpen(true)}
+        >
+          文件
+        </Button>
+        <Button
+          variant="tertiary"
           onPress={() => {
             const action = document.fullscreenElement
               ? document.exitFullscreen()
@@ -411,6 +420,14 @@ function DesktopPanel({
         )}
       </div>
 
+      {filesOpen && !ended && (
+        <DesktopFilesDialog
+          deviceId={entry.device.id}
+          deviceName={entry.device.name}
+          writeControl={entry.ticket.writeControl}
+          onClose={() => setFilesOpen(false)}
+        />
+      )}
       {verification && (
         <Dialog
           title={verification === "totp" ? "重连验证" : "重连验证"}

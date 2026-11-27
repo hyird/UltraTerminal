@@ -3,7 +3,7 @@ package ultraterimal.wire;
 
 // First record of an authenticated TLS/QUIC connection, before Envelope traffic.
 message NativeConnect {
-  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; AGENT_UPDATE = 4; }
+  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; AGENT_UPDATE = 4; FILE_TRANSFER = 5; }
   uint32 protocol_version = 1;
   Purpose purpose = 2;
   bytes credential = 3;
@@ -34,6 +34,7 @@ message Capabilities {
   // Contract 1: each writable desktop InputEvent carries its input binding's Envelope.generation.
   uint32 desktop_input_contract = 12;
   bool agent_update = 13;
+  bool file_transfer = 14;
 }
 // Update packages travel over an independent authenticated native connection.
 message AgentUpdate { string version = 1; string sha256 = 2; uint64 size = 3; }
@@ -180,6 +181,83 @@ message WindowsRestartResult {
   string operation_id = 1;
   Status status = 2;
   uint32 win32_error = 3;
+}
+enum FileErrorCode {
+  FILE_ERROR_NONE = 0;
+  FILE_ERROR_INVALID_PATH = 1;
+  FILE_ERROR_NOT_FOUND = 2;
+  FILE_ERROR_PERMISSION_DENIED = 3;
+  FILE_ERROR_FILE_LOCKED = 4;
+  FILE_ERROR_ALREADY_EXISTS = 5;
+  FILE_ERROR_IS_DIRECTORY = 6;
+  FILE_ERROR_NOT_DIRECTORY = 7;
+  FILE_ERROR_LIMIT_EXCEEDED = 8;
+  FILE_ERROR_IO_FAILED = 9;
+  FILE_ERROR_CANCELLED = 10;
+}
+message FileEntry {
+  string name = 1;
+  bool directory = 2;
+  uint64 size = 3;
+  int64 modified_unix_seconds = 4;
+}
+message FileListRequest {
+  uint64 request_id = 1;
+  string path = 2; // Empty lists Windows logical drives.
+}
+message FileListResult {
+  uint64 request_id = 1;
+  bool success = 2;
+  FileErrorCode error = 3;
+  string normalized_path = 4;
+  string parent_path = 5;
+  repeated FileEntry entries = 6;
+  bool truncated = 7;
+}
+message FileStatRequest {
+  uint64 request_id = 1;
+  string path = 2;
+}
+message FileStatResult {
+  uint64 request_id = 1;
+  bool success = 2;
+  FileErrorCode error = 3;
+  bool exists = 4;
+  bool directory = 5;
+  uint64 size = 6;
+  string name = 7;
+}
+message FileTransferStart {
+  enum Direction { UNSPECIFIED = 0; DOWNLOAD = 1; UPLOAD = 2; }
+  string transfer_id = 1;
+  Direction direction = 2;
+  string path = 3;
+  bool overwrite = 4;
+}
+// Messages on an independent authenticated FILE_TRANSFER native connection.
+message FileTransferHello {
+  string transfer_id = 1;
+}
+message FileTransferMeta {
+  string filename = 1;
+  uint64 size = 2; // Zero for streamed ZIP archives whose final size is unknown upfront.
+  bool archive_zip = 3;
+}
+message FileTransferChunk {
+  bytes data = 1;
+}
+message FileTransferFinish {
+  bool success = 1;
+  FileErrorCode error = 2;
+  uint64 bytes_transferred = 3;
+}
+message FileTransferFrame {
+  oneof body {
+    FileTransferHello hello = 1;
+    FileTransferMeta meta = 2;
+    FileTransferChunk chunk = 3;
+    FileTransferFinish finish = 4;
+  }
 }
 message VideoFrame {
   bytes data = 1;
@@ -383,5 +461,10 @@ message Envelope {
     DesktopSecureAttentionResult desktop_secure_attention_result = 42;
     DesktopVideoCapabilities desktop_video_capabilities = 45;
     DesktopPipelineReport desktop_pipeline_report = 47;
+    FileListRequest file_list_request = 48;
+    FileListResult file_list_result = 49;
+    FileStatRequest file_stat_request = 50;
+    FileStatResult file_stat_result = 51;
+    FileTransferStart file_transfer_start = 52;
   }
 }

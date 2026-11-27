@@ -1,6 +1,7 @@
 #include "control.runtime.h"
 
 #include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
 #include <asio/experimental/awaitable_operators.hpp>
 #include <asio/redirect_error.hpp>
 #include <asio/steady_timer.hpp>
@@ -22,10 +23,12 @@
 #include "config/version.config.h"
 #include "connection.transport.h"
 #include "features/desktop/session.runtime.h"
+#include "features/file/file.runtime.h"
 #include "features/logging/log.runtime.h"
 #include "platform/windows/capability.transport.h"
 #include "platform/windows/credential.transport.h"
 #include "platform/windows/desktop_launch.transport.h"
+#include "platform/windows/file.transport.h"
 #include "platform/windows/system_restart.transport.h"
 #include "platform/windows/update.transport.h"
 #include "platform/windows/windows_login.transport.h"
@@ -42,6 +45,7 @@ wire::Envelope makeHello(const ConnectionConfig& config, bool desktop = false) {
     const auto capabilities = detectCapabilities();
     auto* reported = hello.mutable_hello()->mutable_capabilities();
     reported->set_windows_login_settings(true);
+    reported->set_file_transfer(true);
     reported->set_agent_update(nativeSystemRestartPlatform().isSessionZeroLocalSystem());
     reported->set_system_restart(nativeSystemRestartPlatform().isSessionZeroLocalSystem());
     reported->set_boot_time_unix_seconds(systemBootTimeUnixSeconds());
@@ -310,6 +314,31 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                         *response.mutable_windows_restart_result() = std::move(result);
                         enqueue(std::move(response));
                     }
+                } else if (message->has_file_list_request()) {
+                    auto operation = ruvia::run_blocking(loop.worker(),
+                                                         [request = std::move(*message->mutable_file_list_request())]() mutable {
+                                                             return listWindowsFiles(request);
+                                                         });
+                    auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
+                    if (!ended) {
+                        wire::Envelope response;
+                        *response.mutable_file_list_result() = std::move(result);
+                        enqueue(std::move(response));
+                    }
+                } else if (message->has_file_stat_request()) {
+                    auto operation = ruvia::run_blocking(loop.worker(),
+                                                         [request = std::move(*message->mutable_file_stat_request())]() mutable {
+                                                             return statWindowsFile(request);
+                                                         });
+                    auto result = ((co_await ruvia::as_awaitable(std::move(operation))).take_value());
+                    if (!ended) {
+                        wire::Envelope response;
+                        *response.mutable_file_stat_result() = std::move(result);
+                        enqueue(std::move(response));
+                    }
+                } else if (message->has_file_transfer_start()) {
+                    auto transferLoop = loopPool ? loopPool->next_loop() : loop;
+                    asio::co_spawn(transferLoop.executor(), runFileTransfer(transferLoop, config, std::move(*message->mutable_file_transfer_start())), asio::detached);
                 } else if (message->has_heartbeat()) {
                     if (!heartbeatPending || !message->session_id().empty() || !message->channel_id().empty()) {
                         throw std::runtime_error("Unexpected heartbeat acknowledgment");

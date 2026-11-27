@@ -10,6 +10,18 @@ const errorMessages: Record<string, string> = {
     "设备 Agent 版本不支持当前控制协议，请先升级 Agent",
   approval_required: "请使用当前账号绑定的 Telegram 确认本次连接",
   session_rejected: "设备已有活动会话或当前连接条件不满足",
+  invalid_path: "路径无效",
+  not_found: "文件或目录不存在",
+  permission_denied: "无权访问目标文件或目录",
+  file_locked: "目标文件正在被其他程序占用",
+  already_exists: "目标文件已存在",
+  is_directory: "目标路径是目录，无法覆盖为文件",
+  not_directory: "目标路径不是目录",
+  limit_exceeded: "目录文件数或总大小超过打包上限",
+  too_many_transfers: "当前并发文件传输数已达上限，请稍后再试",
+  transfer_timeout: "等待设备建立文件传输连接超时",
+  transfer_aborted: "文件传输已中断",
+  io_failed: "文件读写失败",
 };
 export class ApiError extends Error {
   constructor(
@@ -33,7 +45,7 @@ export class ApiError extends Error {
   }
 }
 
-function xsrfToken(): string {
+export function xsrfToken(): string {
   if (typeof document === "undefined") return "";
   for (const part of document.cookie.split(";")) {
     const trimmed = part.trim();

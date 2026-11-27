@@ -190,6 +190,104 @@ ruvia::task<std::optional<wire::WindowsLoginResult>> requestDeviceWindowsLogin(c
     co_return std::move(*outcome.value);
 }
 
+ruvia::task<std::optional<wire::FileListResult>> requestDeviceFileList(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::FileListRequest request) {
+    const auto target = resolveWebWorker(deviceId);
+    if (!target.valid() || target.is_current()) {
+        const auto found = local.controlConnections.find(deviceId);
+        if (found == local.controlConnections.end() || !found->second->ready || !found->second->capabilities.file_transfer()) {
+            co_return std::nullopt;
+        }
+        co_return co_await found->second->fileList(std::move(request));
+    }
+    auto [completion, receiver] = ruvia::make_one_shot<WorkerRpcOutcome<std::optional<wire::FileListResult>>>(caller);
+    const auto posted = target.post([guard = WorkerRpcGuard<std::optional<wire::FileListResult>>(std::move(completion)), deviceId, request = std::move(request)](ruvia::web_worker_context& ctx) mutable -> ruvia::task<void> {
+        WorkerRpcOutcome<std::optional<wire::FileListResult>> out;
+        try {
+            auto& rt = ctx.worker_state<ServerRuntime>();
+            const auto found = rt.controlConnections.find(deviceId);
+            if (found != rt.controlConnections.end() && found->second->ready && found->second->capabilities.file_transfer()) {
+                out.value.emplace(co_await found->second->fileList(std::move(request)));
+            } else {
+                out.value.emplace(std::nullopt);
+            }
+        } catch (...) {
+            out.failure = std::current_exception();
+        }
+        guard.answer(std::move(out));
+        co_return;
+    });
+    if (!posted.accepted()) {
+        co_return std::nullopt;
+    }
+    auto waited = co_await receiver.wait();
+    if (!waited.has_value()) {
+        co_return std::nullopt;
+    }
+    auto outcome = std::move(waited).take_value();
+    if (outcome.failure) {
+        std::rethrow_exception(outcome.failure);
+    }
+    if (outcome.aborted || !outcome.value) {
+        co_return std::nullopt;
+    }
+    co_return std::move(*outcome.value);
+}
+
+ruvia::task<std::optional<wire::FileStatResult>> requestDeviceFileStat(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::FileStatRequest request) {
+    const auto target = resolveWebWorker(deviceId);
+    if (!target.valid() || target.is_current()) {
+        const auto found = local.controlConnections.find(deviceId);
+        if (found == local.controlConnections.end() || !found->second->ready || !found->second->capabilities.file_transfer()) {
+            co_return std::nullopt;
+        }
+        co_return co_await found->second->fileStat(std::move(request));
+    }
+    auto [completion, receiver] = ruvia::make_one_shot<WorkerRpcOutcome<std::optional<wire::FileStatResult>>>(caller);
+    const auto posted = target.post([guard = WorkerRpcGuard<std::optional<wire::FileStatResult>>(std::move(completion)), deviceId, request = std::move(request)](ruvia::web_worker_context& ctx) mutable -> ruvia::task<void> {
+        WorkerRpcOutcome<std::optional<wire::FileStatResult>> out;
+        try {
+            auto& rt = ctx.worker_state<ServerRuntime>();
+            const auto found = rt.controlConnections.find(deviceId);
+            if (found != rt.controlConnections.end() && found->second->ready && found->second->capabilities.file_transfer()) {
+                out.value.emplace(co_await found->second->fileStat(std::move(request)));
+            } else {
+                out.value.emplace(std::nullopt);
+            }
+        } catch (...) {
+            out.failure = std::current_exception();
+        }
+        guard.answer(std::move(out));
+        co_return;
+    });
+    if (!posted.accepted()) {
+        co_return std::nullopt;
+    }
+    auto waited = co_await receiver.wait();
+    if (!waited.has_value()) {
+        co_return std::nullopt;
+    }
+    auto outcome = std::move(waited).take_value();
+    if (outcome.failure) {
+        std::rethrow_exception(outcome.failure);
+    }
+    if (outcome.aborted || !outcome.value) {
+        co_return std::nullopt;
+    }
+    co_return std::move(*outcome.value);
+}
+
+ruvia::task<bool> dispatchDeviceFileTransfer(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::FileTransferStart request) {
+    const auto target = resolveWebWorker(deviceId);
+    auto result = co_await callOnWebWorker<bool>(caller, local, target, [deviceId, request = std::move(request)](ServerRuntime& rt) mutable {
+        const auto found = rt.controlConnections.find(deviceId);
+        if (found == rt.controlConnections.end() || !found->second->ready || !found->second->capabilities.file_transfer()) {
+            return false;
+        }
+        return found->second->enqueueFileTransfer(std::move(request));
+    });
+    co_return result.value_or(false);
+}
+
 ruvia::task<DeviceRestartCapability> queryDeviceRestartCapability(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId) {
     const auto target = resolveWebWorker(deviceId);
     auto result = co_await callOnWebWorker<DeviceRestartCapability>(caller, local, target, [deviceId](ServerRuntime& rt) {

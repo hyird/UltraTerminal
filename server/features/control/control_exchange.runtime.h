@@ -152,6 +152,18 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
             }
             continue;
         }
+        if (incoming->has_file_list_result()) {
+            if (!connection.fileListReply(incoming->file_list_result())) {
+                break;
+            }
+            continue;
+        }
+        if (incoming->has_file_stat_result()) {
+            if (!connection.fileStatReply(incoming->file_stat_result())) {
+                break;
+            }
+            continue;
+        }
         if (incoming->has_windows_restart_result()) {
             const auto result = incoming->windows_restart_result();
             if (!connection.windowsRestartReply(result)) {

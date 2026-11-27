@@ -1,4 +1,5 @@
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(libde265 CONFIG REQUIRED)
 set(dav1d_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
 find_path(DAV1D_INCLUDE_DIR dav1d/dav1d.h PATHS "${dav1d_root}/include" NO_DEFAULT_PATH REQUIRED)
@@ -69,6 +70,8 @@ add_library(ultraterimal-agent-core-objects OBJECT
     platform/windows/system_restart.transport.cpp
     platform/windows/update.transport.cpp
     features/update/update.runtime.cpp
+    platform/windows/file.transport.cpp
+    features/file/file.runtime.cpp
     platform/windows/login_broker.transport.cpp
     platform/windows/login_install.transport.cpp
     platform/windows/capability.transport.cpp
@@ -104,7 +107,7 @@ foreach(agent_core_target IN LISTS agent_core_targets)
     target_include_directories(${agent_core_target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_compile_definitions(${agent_core_target} PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
     target_compile_options(${agent_core_target} PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc)
-    target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi OpenH264::OpenH264 de265 dav1d::dav1d
+    target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi OpenH264::OpenH264 de265 dav1d::dav1d ZLIB::ZLIB
         PUBLIC ultraterimal::protocol ruvia::core OpenSSL::SSL OpenSSL::Crypto)
 endforeach()
 add_executable(ultraterimal-agent main.cpp)

@@ -179,11 +179,13 @@ export function Dialog({
   children,
   onClose,
   busy = false,
+  size = "sm",
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   busy?: boolean;
+  size?: "sm" | "md" | "lg";
 }) {
   return (
     <Modal.Backdrop
@@ -194,7 +196,7 @@ export function Dialog({
       isDismissable={!busy}
       isKeyboardDismissDisabled={busy}
     >
-      <Modal.Container size="sm" placement="center" scroll="inside">
+      <Modal.Container size={size} placement="center" scroll="inside">
         <Modal.Dialog aria-busy={busy}>
           <Modal.CloseTrigger aria-label="关闭对话框" isDisabled={busy} />
           <Modal.Header>

@@ -7,6 +7,7 @@
 
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_session.protocol.h"
+#include "ultraterimal/protocol/file.protocol.h"
 #include "ultraterimal/protocol/update.protocol.h"
 
 namespace ultraterimal::protocol {
@@ -394,6 +395,44 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
             return invalid();
         }
         break;
+    case wire::Envelope::kFileListRequest:
+        if (!m.file_list_request().request_id() || !validFilePathText(m.file_list_request().path(), true) || !m.session_id().empty() || !m.channel_id().empty()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kFileListResult: {
+        const auto& result = m.file_list_result();
+        if (!result.request_id() || !wire::FileErrorCode_IsValid(result.error()) || !validFilePathText(result.normalized_path(), true) || !validFilePathText(result.parent_path(), true) ||
+            static_cast<std::size_t>(result.entries_size()) > kMaximumFileListEntries || !m.session_id().empty() || !m.channel_id().empty()) {
+            return invalid();
+        }
+        for (const auto& entry : result.entries()) {
+            if (entry.name().empty() || entry.name().size() > 512 || entry.name().find('\0') != std::string::npos) {
+                return invalid();
+            }
+        }
+        break;
+    }
+    case wire::Envelope::kFileStatRequest:
+        if (!m.file_stat_request().request_id() || !validFilePathText(m.file_stat_request().path(), false) || !m.session_id().empty() || !m.channel_id().empty()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kFileStatResult: {
+        const auto& result = m.file_stat_result();
+        if (!result.request_id() || !wire::FileErrorCode_IsValid(result.error()) || result.name().size() > 512 || result.name().find('\0') != std::string::npos || !m.session_id().empty() || !m.channel_id().empty()) {
+            return invalid();
+        }
+        break;
+    }
+    case wire::Envelope::kFileTransferStart: {
+        const auto& start = m.file_transfer_start();
+        if (!validTransferId(start.transfer_id()) || (start.direction() != wire::FileTransferStart::DOWNLOAD && start.direction() != wire::FileTransferStart::UPLOAD) ||
+            !validFilePathText(start.path(), false) || !m.session_id().empty() || !m.channel_id().empty()) {
+            return invalid();
+        }
+        break;
+    }
     default:
         break;
     }

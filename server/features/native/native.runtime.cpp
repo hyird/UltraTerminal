@@ -26,6 +26,7 @@
 #include "config/server.runtime.h"
 #include "features/control/control_exchange.runtime.h"
 #include "features/desktop/desktop_exchange.runtime.h"
+#include "features/file/file.runtime.h"
 #include "native.transport.h"
 #include "quic.transport.h"
 #include "stream.transport.h"
@@ -83,6 +84,8 @@ ruvia::task<void> serveAuthenticated(ruvia::web_worker_context& context, DeviceI
             co_await runControlConnection(authenticated, *channel);
         } else if (purpose == wire::NativeConnect::AGENT_UPDATE) {
             co_await serveAgentUpdate(authenticated, *channel);
+        } else if (purpose == wire::NativeConnect::FILE_TRANSFER) {
+            co_await serveFileTransfer(authenticated, *channel, *authenticated.worker_state<ServerRuntime>().shared->fileTransfers, authenticated.request_state<DeviceIdentity>().id);
         } else {
             co_await runDesktopChannel(authenticated, *channel, protocol::ChannelSource::kAgent);
         }
@@ -280,7 +283,9 @@ struct NativePeer : std::enable_shared_from_this<NativePeer> {
                 co_await self->stream->close();
                 co_return;
             }
-            self->maximum = purpose == wire::NativeConnect::CONTROL ? protocol::kMaximumControlBytes : protocol::kMaximumMessageBytes;
+            self->maximum = purpose == wire::NativeConnect::CONTROL         ? protocol::kMaximumControlBytes
+                            : purpose == wire::NativeConnect::FILE_TRANSFER ? protocol::kMaximumFileTransferFrameBytes
+                                                                            : protocol::kMaximumMessageBytes;
             self->authDeadline.cancel();
             auto device = *outcome.device;
             const auto targetWorker = purpose == wire::NativeConnect::CONTROL ? ruvia::app().worker_for(device.id) : workers[peerId % workers.size()];

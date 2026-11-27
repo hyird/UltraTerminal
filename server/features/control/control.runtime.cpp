@@ -70,6 +70,84 @@ bool ControlConnection::windowsRestartReply(const wire::WindowsRestartResult& re
 std::vector<std::string> ControlConnection::restartOperations() const {
     return {sentRestartOperations_.begin(), sentRestartOperations_.end()};
 }
+ruvia::task<std::optional<wire::FileListResult>> ControlConnection::fileList(wire::FileListRequest request) {
+    if (!ready || !capabilities.file_transfer() || fileListPending_.size() >= 16 || fileListRequest_ == std::numeric_limits<std::uint64_t>::max()) {
+        co_return std::nullopt;
+    }
+    const auto id = ++fileListRequest_;
+    auto [completion, receiver] = ruvia::make_one_shot<wire::FileListResult>(worker_);
+    fileListPending_.emplace(id, std::move(completion));
+    struct Pending {
+        std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::FileListResult>>& map;
+        std::uint64_t id;
+        ~Pending() { map.erase(id); }
+    } pending{fileListPending_, id};
+    request.set_request_id(id);
+    wire::Envelope envelope;
+    envelope.mutable_file_list_request()->Swap(&request);
+    if (!enqueue(std::move(envelope))) {
+        co_return std::nullopt;
+    }
+    auto result = co_await receiver.wait({.timeout_ = std::chrono::seconds(10)});
+    if (!result.has_value()) {
+        co_return std::nullopt;
+    }
+    co_return std::move(result).take_value();
+}
+bool ControlConnection::fileListReply(const wire::FileListResult& result) {
+    if (!result.request_id() || result.request_id() > fileListRequest_) {
+        return false;
+    }
+    if (const auto it = fileListPending_.find(result.request_id()); it != fileListPending_.end()) {
+        auto completion = std::move(it->second);
+        fileListPending_.erase(it);
+        (void)completion.complete(result);
+    }
+    return true;
+}
+ruvia::task<std::optional<wire::FileStatResult>> ControlConnection::fileStat(wire::FileStatRequest request) {
+    if (!ready || !capabilities.file_transfer() || fileStatPending_.size() >= 16 || fileStatRequest_ == std::numeric_limits<std::uint64_t>::max()) {
+        co_return std::nullopt;
+    }
+    const auto id = ++fileStatRequest_;
+    auto [completion, receiver] = ruvia::make_one_shot<wire::FileStatResult>(worker_);
+    fileStatPending_.emplace(id, std::move(completion));
+    struct Pending {
+        std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::FileStatResult>>& map;
+        std::uint64_t id;
+        ~Pending() { map.erase(id); }
+    } pending{fileStatPending_, id};
+    request.set_request_id(id);
+    wire::Envelope envelope;
+    envelope.mutable_file_stat_request()->Swap(&request);
+    if (!enqueue(std::move(envelope))) {
+        co_return std::nullopt;
+    }
+    auto result = co_await receiver.wait({.timeout_ = std::chrono::seconds(10)});
+    if (!result.has_value()) {
+        co_return std::nullopt;
+    }
+    co_return std::move(result).take_value();
+}
+bool ControlConnection::fileStatReply(const wire::FileStatResult& result) {
+    if (!result.request_id() || result.request_id() > fileStatRequest_) {
+        return false;
+    }
+    if (const auto it = fileStatPending_.find(result.request_id()); it != fileStatPending_.end()) {
+        auto completion = std::move(it->second);
+        fileStatPending_.erase(it);
+        (void)completion.complete(result);
+    }
+    return true;
+}
+bool ControlConnection::enqueueFileTransfer(wire::FileTransferStart request) {
+    if (!ready || !capabilities.file_transfer()) {
+        return false;
+    }
+    wire::Envelope envelope;
+    envelope.mutable_file_transfer_start()->Swap(&request);
+    return enqueue(std::move(envelope));
+}
 bool ControlConnection::enqueue(wire::Envelope message) {
     if (!ready || sequence_ == std::numeric_limits<std::uint64_t>::max()) {
         return false;
@@ -105,5 +183,21 @@ void ControlConnection::close() {
         result.set_request_id(loginRequest_);
         (void)loginPending_->complete(std::move(result));
     }
+    for (auto& [id, completion] : fileListPending_) {
+        wire::FileListResult result;
+        result.set_request_id(id);
+        result.set_success(false);
+        result.set_error(wire::FILE_ERROR_CANCELLED);
+        (void)completion.complete(std::move(result));
+    }
+    fileListPending_.clear();
+    for (auto& [id, completion] : fileStatPending_) {
+        wire::FileStatResult result;
+        result.set_request_id(id);
+        result.set_success(false);
+        result.set_error(wire::FILE_ERROR_CANCELLED);
+        (void)completion.complete(std::move(result));
+    }
+    fileStatPending_.clear();
 }
 } // namespace ultraterimal::server
