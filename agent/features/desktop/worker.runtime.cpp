@@ -17,6 +17,7 @@
 #include "input_freshness.runtime.h"
 #include "optimization.runtime.h"
 #include "pipeline.runtime.h"
+#include "platform/windows/desktop.transport.h"
 #include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_process.transport.h"
 #include "platform/windows/input.transport.h"
@@ -171,12 +172,21 @@ class DesktopWorker {
                 if (writeControl_ && update->configuration) {
                     stage = "input_release";
                     if (input_) {
-                        input_->releaseAll();
+                        try {
+                            input_->releaseAll();
+                        } catch (...) {
+                        }
                         input_.reset();
                     }
                     stage = "input_binding";
-                    input_ = std::make_unique<DesktopInput>(update->desktopLeft, update->desktopTop,
-                                                            update->configuration->width(), update->configuration->height());
+                    try {
+                        input_ = std::make_unique<DesktopInput>(update->desktopLeft, update->desktopTop,
+                                                                update->configuration->width(), update->configuration->height());
+                    } catch (const DesktopChanged&) {
+                        video_.invalidate();
+                        refresh_ = true;
+                        continue;
+                    }
                     inputGeneration_ = update->generation;
                     inputFreshnessEnabled_ = update->configuration->session_version() == protocol::kDesktopSessionVersion && (update->configuration->session_features() & protocol::kDesktopInputFreshness);
                     if (inputFreshnessEnabled_) {

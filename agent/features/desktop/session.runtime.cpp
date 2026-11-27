@@ -283,10 +283,15 @@ struct DesktopSession::State : std::enable_shared_from_this<State> {
                     independentFailure = failureCode == wire::DesktopFault::STARTUP_TIMEOUT || failureCode == wire::DesktopFault::PROTOCOL_REJECTED;
                 }
                 const bool replaceable = !independentFailure && !result.terminal.has_session_error() && !result.forcedExit && binding.replaceableExit(current, code, workerStarted, workerFault ? std::optional{workerFault->code()} : std::nullopt);
-                if (!ended && changed && replaceable && handoffs.admit()) {
+                if (!ended && replaceable && handoffs.admit()) {
                     resources = {};
                     login.reset();
                     result.terminal.Clear();
+                    if (code == kWindowsSessionTerminationExitCode) {
+                        transition.expires_after(std::chrono::milliseconds(250));
+                        std::error_code delayError;
+                        co_await transition.async_wait(asio::redirect_error(asio::use_awaitable, delayError));
+                    }
                     continue;
                 }
                 if (!ended && failure) {

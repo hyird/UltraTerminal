@@ -36,6 +36,15 @@ void require(HRESULT status, const char* operation) {
     if (status == DXGI_ERROR_ACCESS_LOST || status == DXGI_ERROR_DEVICE_REMOVED || status == DXGI_ERROR_DEVICE_RESET || status == DXGI_ERROR_SESSION_DISCONNECTED) {
         throw CaptureReset(wire::DesktopFault::CAPTURE_DEVICE_LOST);
     }
+    if (status == E_ACCESSDENIED) {
+        throw CaptureReset(wire::DesktopFault::CAPTURE_ACCESS_DENIED);
+    }
+    if (status == DXGI_ERROR_UNSUPPORTED) {
+        throw CaptureReset(wire::DesktopFault::CAPTURE_UNSUPPORTED);
+    }
+    if (status == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE) {
+        throw CaptureReset(wire::DesktopFault::CAPTURE_BUSY);
+    }
     if (FAILED(status)) {
         throw std::system_error(static_cast<int>(status), std::system_category(), operation);
     }
@@ -68,14 +77,17 @@ class DisplayActivity {
         reason.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
         reason.Reason.SimpleReasonString = description;
         request_.reset(PowerCreateRequest(&reason));
-        if (!request_ || !PowerSetRequest(request_.get(), PowerRequestSystemRequired) ||
-            !PowerSetRequest(request_.get(), PowerRequestDisplayRequired) || !SetThreadExecutionState(ES_DISPLAY_REQUIRED)) {
-            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Keep remote desktop display available");
+        if (request_) {
+            (void)PowerSetRequest(request_.get(), PowerRequestSystemRequired);
+            (void)PowerSetRequest(request_.get(), PowerRequestDisplayRequired);
         }
+        (void)SetThreadExecutionState(ES_DISPLAY_REQUIRED);
     }
     ~DisplayActivity() {
-        PowerClearRequest(request_.get(), PowerRequestDisplayRequired);
-        PowerClearRequest(request_.get(), PowerRequestSystemRequired);
+        if (request_) {
+            PowerClearRequest(request_.get(), PowerRequestDisplayRequired);
+            PowerClearRequest(request_.get(), PowerRequestSystemRequired);
+        }
     }
 
   private:
@@ -367,7 +379,7 @@ DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_un
         }
     }
     if (!selected) {
-        throw DesktopFailure(wire::DesktopFault::DISPLAY_UNAVAILABLE, "Requested desktop display is unavailable");
+        throw CaptureReset(wire::DesktopFault::DISPLAY_UNAVAILABLE);
     }
     DXGI_OUTPUT_DESC outputDescription{};
     require(selected->GetDesc(&outputDescription), "Get selected desktop bounds");

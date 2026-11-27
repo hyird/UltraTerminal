@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -247,11 +248,14 @@ int main() {
         require(!binding.replaceableExit(1, 1430522123, false, wire::DesktopFault::ENCODE_FAILED), "Independent worker failure was erased");
         require(binding.replaceableExit(1, 1430522123, true, wire::DesktopFault::IPC_FAILED), "Expected old-worker pipe teardown rejected");
         require(binding.select(1) && !binding.changed(1), "Second selection retained obsolete handoff state");
+        require(binding.replaceableExit(1, agent::kWindowsSessionTerminationExitCode, true, std::nullopt), "OS session logoff termination was not replaceable on same session ID");
         agent::DesktopHandoffBudget budget;
-        require(budget.admit() && budget.admit() && budget.admit(), "Handoff budget too small");
-        for (unsigned attempt = 0; attempt < 100; ++attempt) {
-            require(!budget.admit(), "Flapping console replenished handoff budget");
+        const auto start = agent::DesktopHandoffBudget::Clock::time_point{} + std::chrono::seconds(1);
+        for (unsigned attempt = 0; attempt < 8; ++attempt) {
+            require(budget.admit(start + std::chrono::seconds(attempt)), "Handoff budget too small");
         }
+        require(!budget.admit(start + std::chrono::seconds(59)), "Flapping console exceeded handoff window budget");
+        require(budget.admit(start + std::chrono::seconds(60)), "Handoff budget did not reset after window");
         std::cout << "Desktop continuity, stale-input barriers and finite handoff budget passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -161,16 +161,27 @@ struct DesktopInput::State {
                 stale = true;
             }
             if (stale) {
-                release();
+                try {
+                    release();
+                } catch (...) {
+                }
                 return;
             }
             DpiScope dpi;
             if (!(desktop == VirtualDesktop{})) {
-                throw std::runtime_error("Desktop geometry changed during input");
+                stale = true;
+                try {
+                    release();
+                } catch (...) {
+                }
+                return;
             }
             lastDesktopCheck = now;
         } else if (stale) {
-            release();
+            try {
+                release();
+            } catch (...) {
+            }
             return;
         }
         INPUT input{};

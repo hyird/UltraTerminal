@@ -62,12 +62,25 @@ std::uint64_t requireInputDesktop() {
     if (!input.handle && system) {
         throw DesktopChanged("Input desktop is temporarily inaccessible");
     }
-    const auto target = objectName(input.handle);
-    const auto current = objectName(GetThreadDesktop(GetCurrentThreadId()));
-    if (objectName(GetProcessWindowStation()) != L"WinSta0" ||
-        (!system && (target != L"Default" || target != current)) ||
-        (system && target != L"Default" && target != L"Winlogon")) {
+    std::wstring target, current, station;
+    try {
+        target = objectName(input.handle);
+        current = objectName(GetThreadDesktop(GetCurrentThreadId()));
+        station = objectName(GetProcessWindowStation());
+    } catch (const std::runtime_error&) {
+        if (system) {
+            throw DesktopChanged("Interactive desktop is temporarily unavailable");
+        }
+        throw;
+    }
+    if (station != L"WinSta0") {
         throw std::runtime_error("Interactive desktop changed or locked");
+    }
+    if (!system && (target != L"Default" || target != current)) {
+        throw std::runtime_error("Interactive desktop changed or locked");
+    }
+    if (system && target != L"Default" && target != L"Winlogon") {
+        throw DesktopChanged("Interactive desktop is in transition");
     }
     if (system && target != current) {
         if (context.generation == std::numeric_limits<std::uint64_t>::max()) {
