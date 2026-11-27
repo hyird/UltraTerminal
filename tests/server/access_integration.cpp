@@ -301,11 +301,11 @@ int main() {
         pool.start();
         const auto loop = pool.loop(0);
         auto client = std::make_shared<ruvia::db_client>(loop, toRuviaDbConfig(database, 2));
-        auto submitted = loop.submit([client, &phase]() -> ruvia::task<void> {
+        auto submitted = loop.submit([](std::shared_ptr<ruvia::db_client> client, const char*& phaseRef) -> ruvia::task<void> {
             co_await client->connect();
             std::exception_ptr failure;
             try {
-                co_await runIntegration(client->db(), phase);
+                co_await runIntegration(client->db(), phaseRef);
             } catch (...) {
                 failure = std::current_exception();
             }
@@ -313,7 +313,7 @@ int main() {
             if (failure) {
                 std::rethrow_exception(failure);
             }
-        }());
+        }(client, phase));
         check(submitted.accepted(), "Cannot submit integration task");
         try {
             std::move(submitted).take_value().take_value();

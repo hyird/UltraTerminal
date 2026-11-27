@@ -15,7 +15,7 @@ GatewayRuntime::GatewayRuntime(const DatabaseConfig& database) : ownerId_(random
     pool_.start();
     const auto loop = pool_.loop(0);
     client_ = std::make_shared<ruvia::db_client>(loop, toRuviaDbConfig(database, 1));
-    auto submitted = loop.submit([client = client_, ownerId = ownerId_]() -> ruvia::task<void> {
+    auto submitted = loop.submit([](std::shared_ptr<ruvia::db_client> client, std::string ownerId) -> ruvia::task<void> {
         co_await client->connect();
         const auto db = client->db();
         if (!(co_await acquireGatewayLease(db, ownerId))) {
@@ -24,7 +24,7 @@ GatewayRuntime::GatewayRuntime(const DatabaseConfig& database) : ownerId_(random
         }
         co_await SessionService().recoverAfterRestart(db);
         co_await DeviceService().recoverRestarts(db);
-    }());
+    }(client_, ownerId_));
     if (!submitted.accepted()) {
         pool_.join();
         throw std::runtime_error("Cannot initialize gateway database lease");
@@ -43,7 +43,7 @@ void GatewayRuntime::start() {
     }
     started_ = true;
     const auto loop = pool_.loop(0);
-    auto submitted = loop.submit([client = client_, ownerId = ownerId_, failed = failed_, stopToken = stop_.token(), worker = loop.worker()]() -> ruvia::task<void> {
+    auto submitted = loop.submit([](std::shared_ptr<ruvia::db_client> client, std::string ownerId, std::shared_ptr<std::atomic<bool>> failed, ruvia::stop_token stopToken, ruvia::worker_ref worker) -> ruvia::task<void> {
         const auto db = client->db();
         while (co_await ruvia::sleep_for(worker, std::chrono::seconds(2), stopToken) == ruvia::sleep_status::elapsed) {
             if (!(co_await renewGatewayLease(db, ownerId))) {
@@ -52,7 +52,7 @@ void GatewayRuntime::start() {
                 break;
             }
         }
-    }());
+    }(client_, ownerId_, failed_, stop_.token(), loop.worker()));
     if (!submitted.accepted()) {
         throw std::runtime_error("Cannot watch gateway database lease");
     }
@@ -73,10 +73,10 @@ void GatewayRuntime::stop() {
     }
     if (client_) {
         const auto loop = pool_.loop(0);
-        auto submitted = loop.submit([client = client_, ownerId = ownerId_]() -> ruvia::task<void> {
+        auto submitted = loop.submit([](std::shared_ptr<ruvia::db_client> client, std::string ownerId) -> ruvia::task<void> {
             co_await releaseGatewayLease(client->db(), ownerId);
             co_await client->shutdown();
-        }());
+        }(client_, ownerId_));
         if (submitted.accepted()) {
             try {
                 std::move(submitted).take_value().take_value();

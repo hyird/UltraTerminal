@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
             pool.start();
             const auto loop = pool.loop(0);
             auto client = std::make_shared<ruvia::db_client>(loop, toRuviaDbConfig(config.database, 1));
-            auto submitted = loop.submit([client, username = textValue(request.get<"username">()), password = textValue(request.get<"password">())]() -> ruvia::task<void> {
+            auto submitted = loop.submit([](std::shared_ptr<ruvia::db_client> client, std::string username, std::string password) -> ruvia::task<void> {
                 co_await client->connect();
                 std::exception_ptr failure;
                 try {
@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
                 if (failure) {
                     std::rethrow_exception(failure);
                 }
-            }());
+            }(client, textValue(request.get<"username">()), textValue(request.get<"password">())));
             if (!submitted.accepted()) {
                 pool.join();
                 throw std::runtime_error("Cannot run bootstrap task");
