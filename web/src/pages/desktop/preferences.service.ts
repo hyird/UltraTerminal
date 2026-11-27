@@ -1,6 +1,6 @@
 export interface DesktopPreferences {
   scale: "fit" | "native";
-  resolution: { width: number; height: number } | null;
+  resolution: { width: number; height: number } | "auto" | null;
 }
 
 function storageKey(userId: string, deviceId: string) {
@@ -21,7 +21,9 @@ export function loadDesktopPreferences(
     );
     if (!value || typeof value !== "object") return defaults;
     if ("scale" in value && value.scale === "native") defaults.scale = "native";
-    if (
+    if ("resolution" in value && value.resolution === "auto") {
+      defaults.resolution = "auto";
+    } else if (
       "resolution" in value &&
       value.resolution &&
       typeof value.resolution === "object"

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -47,6 +48,23 @@ constexpr DisplayModeSpec kModes[] = {
     {2560, 1440, 60},
     {3840, 2160, 60},
 };
+
+std::mutex gCustomModeMutex;
+DisplayModeSpec gCustomMode{0, 0, 60};
+
+std::vector<DisplayModeSpec> collectActiveModes() {
+    std::vector<DisplayModeSpec> result(std::begin(kModes), std::end(kModes));
+    std::lock_guard lock(gCustomModeMutex);
+    if (isValidCustomMode(gCustomMode.width, gCustomMode.height)) {
+        const bool exists = std::any_of(result.begin(), result.end(), [&](const DisplayModeSpec& m) {
+            return m.width == gCustomMode.width && m.height == gCustomMode.height;
+        });
+        if (!exists) {
+            result.push_back(gCustomMode);
+        }
+    }
+    return result;
+}
 
 void fillSignalInfo(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& mode, UINT width, UINT height, UINT vSync, UINT vSyncDivider) {
     mode = {};
@@ -118,6 +136,28 @@ class SharedMemoryPublisher {
     bool needsInitialFrame() noexcept {
         ensureOpen();
         return region_ && region_->header.frameSeq.load(std::memory_order_acquire) == 0;
+    }
+
+    bool pollCustomModeRequest(UINT& outWidth, UINT& outHeight, std::uint32_t& outSeq) noexcept {
+        ensureOpen();
+        if (!region_) {
+            return false;
+        }
+        const auto reqSeq = region_->header.requestedModeSeq.load(std::memory_order_acquire);
+        const auto appSeq = region_->header.appliedModeSeq.load(std::memory_order_relaxed);
+        if (reqSeq == 0 || reqSeq == appSeq) {
+            return false;
+        }
+        outWidth = region_->header.requestedWidth.load(std::memory_order_relaxed);
+        outHeight = region_->header.requestedHeight.load(std::memory_order_relaxed);
+        outSeq = reqSeq;
+        return true;
+    }
+
+    void acknowledgeCustomMode(std::uint32_t seq) noexcept {
+        if (region_) {
+            region_->header.appliedModeSeq.store(seq, std::memory_order_release);
+        }
     }
 
     void markActive(bool active, bool inSysMem) noexcept {
@@ -212,8 +252,8 @@ class SharedMemoryPublisher {
 
 class SwapChainProcessor {
   public:
-    SwapChainProcessor(IDDCX_SWAPCHAIN swapChain, HANDLE availableEvent, LUID adapterLuid)
-        : swapChain_(swapChain), availableEvent_(availableEvent), adapterLuid_(adapterLuid) {
+    SwapChainProcessor(IDDCX_MONITOR monitor, IDDCX_SWAPCHAIN swapChain, HANDLE availableEvent, LUID adapterLuid)
+        : monitor_(monitor), swapChain_(swapChain), availableEvent_(availableEvent), adapterLuid_(adapterLuid) {
         stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         thread_ = std::thread([this] { run(); });
     }
@@ -335,11 +375,39 @@ class SwapChainProcessor {
             cachedFormat = format;
         };
 
+        auto handleCustomModeRequest = [&]() noexcept {
+            UINT reqW = 0;
+            UINT reqH = 0;
+            std::uint32_t reqSeq = 0;
+            if (!publisher.pollCustomModeRequest(reqW, reqH, reqSeq)) {
+                return;
+            }
+            if (monitor_ && isValidCustomMode(reqW, reqH)) {
+                {
+                    std::lock_guard lock(gCustomModeMutex);
+                    gCustomMode = {reqW, reqH, 60};
+                }
+                const auto modes = collectActiveModes();
+                std::vector<IDDCX_TARGET_MODE> targetModes;
+                targetModes.reserve(modes.size());
+                for (const auto& m : modes) {
+                    targetModes.push_back(createTargetMode(m.width, m.height, m.vSync));
+                }
+                IDARG_IN_UPDATEMODES updateIn{};
+                updateIn.Reason = IDDCX_UPDATE_REASON_HOST_LINK_BANDWIDTH;
+                updateIn.TargetModeCount = static_cast<UINT>(targetModes.size());
+                updateIn.pTargetModes = targetModes.data();
+                (void)IddCxMonitorUpdateModes(monitor_, &updateIn);
+            }
+            publisher.acknowledgeCustomMode(reqSeq);
+        };
+
         HANDLE waitHandles[2] = {availableEvent_, stopEvent_};
         while (true) {
             if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0) {
                 break;
             }
+            handleCustomModeRequest();
             const auto acqStart = std::chrono::steady_clock::now();
             if (inSysMem) {
                 IDDCX_METADATA meta{};
@@ -436,6 +504,7 @@ class SwapChainProcessor {
         publisher.markActive(false, inSysMem != FALSE);
     }
 
+    IDDCX_MONITOR monitor_ = nullptr;
     IDDCX_SWAPCHAIN swapChain_ = nullptr;
     HANDLE availableEvent_ = nullptr;
     HANDLE stopEvent_ = nullptr;
@@ -466,7 +535,7 @@ NTSTATUS EvtMonitorAssignSwapChain(IDDCX_MONITOR monitor, const IDARG_IN_SETSWAP
     try {
         auto* ctx = getMonitorContext(monitor);
         ctx->processor.reset();
-        ctx->processor = std::make_unique<SwapChainProcessor>(inArgs->hSwapChain, inArgs->hNextSurfaceAvailable, inArgs->RenderAdapterLuid);
+        ctx->processor = std::make_unique<SwapChainProcessor>(monitor, inArgs->hSwapChain, inArgs->hNextSurfaceAvailable, inArgs->RenderAdapterLuid);
         return STATUS_SUCCESS;
     } catch (...) {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -480,45 +549,48 @@ NTSTATUS EvtMonitorUnassignSwapChain(IDDCX_MONITOR monitor) noexcept {
 }
 
 NTSTATUS EvtMonitorGetDefaultDescriptionModes(IDDCX_MONITOR, const IDARG_IN_GETDEFAULTDESCRIPTIONMODES* inArgs, IDARG_OUT_GETDEFAULTDESCRIPTIONMODES* outArgs) noexcept {
-    outArgs->DefaultMonitorModeBufferOutputCount = static_cast<UINT>(std::size(kModes));
+    const auto modes = collectActiveModes();
+    outArgs->DefaultMonitorModeBufferOutputCount = static_cast<UINT>(modes.size());
     outArgs->PreferredMonitorModeIdx = 0;
     if (inArgs->DefaultMonitorModeBufferInputCount == 0) {
         return STATUS_SUCCESS;
     }
-    if (inArgs->DefaultMonitorModeBufferInputCount < std::size(kModes)) {
+    if (inArgs->DefaultMonitorModeBufferInputCount < modes.size()) {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    for (std::size_t i = 0; i < std::size(kModes); ++i) {
-        inArgs->pDefaultMonitorModes[i] = createMonitorMode(kModes[i].width, kModes[i].height, kModes[i].vSync);
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        inArgs->pDefaultMonitorModes[i] = createMonitorMode(modes[i].width, modes[i].height, modes[i].vSync);
     }
     return STATUS_SUCCESS;
 }
 
 NTSTATUS EvtMonitorQueryTargetModes(IDDCX_MONITOR, const IDARG_IN_QUERYTARGETMODES* inArgs, IDARG_OUT_QUERYTARGETMODES* outArgs) noexcept {
-    outArgs->TargetModeBufferOutputCount = static_cast<UINT>(std::size(kModes));
+    const auto modes = collectActiveModes();
+    outArgs->TargetModeBufferOutputCount = static_cast<UINT>(modes.size());
     if (inArgs->TargetModeBufferInputCount == 0) {
         return STATUS_SUCCESS;
     }
-    if (inArgs->TargetModeBufferInputCount < std::size(kModes)) {
+    if (inArgs->TargetModeBufferInputCount < modes.size()) {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    for (std::size_t i = 0; i < std::size(kModes); ++i) {
-        inArgs->pTargetModes[i] = createTargetMode(kModes[i].width, kModes[i].height, kModes[i].vSync);
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        inArgs->pTargetModes[i] = createTargetMode(modes[i].width, modes[i].height, modes[i].vSync);
     }
     return STATUS_SUCCESS;
 }
 
 NTSTATUS EvtParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* inArgs, IDARG_OUT_PARSEMONITORDESCRIPTION* outArgs) noexcept {
-    outArgs->MonitorModeBufferOutputCount = static_cast<UINT>(std::size(kModes));
+    const auto modes = collectActiveModes();
+    outArgs->MonitorModeBufferOutputCount = static_cast<UINT>(modes.size());
     outArgs->PreferredMonitorModeIdx = 0;
     if (inArgs->MonitorModeBufferInputCount == 0) {
         return STATUS_SUCCESS;
     }
-    if (inArgs->MonitorModeBufferInputCount < std::size(kModes)) {
+    if (inArgs->MonitorModeBufferInputCount < modes.size()) {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    for (std::size_t i = 0; i < std::size(kModes); ++i) {
-        inArgs->pMonitorModes[i] = createMonitorMode(kModes[i].width, kModes[i].height, kModes[i].vSync);
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        inArgs->pMonitorModes[i] = createMonitorMode(modes[i].width, modes[i].height, modes[i].vSync);
     }
     return STATUS_SUCCESS;
 }

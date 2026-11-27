@@ -140,6 +140,10 @@ function DesktopPanel({
   const [canRestart, setCanRestart] = useState(false);
   const [restart, setRestart] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [autoResolution, setAutoResolution] = useState(
+    () => initialPreferences.current.resolution === "auto",
+  );
+  const viewport = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const restartKey = useRef("");
@@ -272,6 +276,7 @@ function DesktopPanel({
     const resolution = initialPreferences.current.resolution;
     if (
       resolution &&
+      resolution !== "auto" &&
       modes.some(
         (mode) =>
           mode.width === resolution.width && mode.height === resolution.height,
@@ -281,6 +286,52 @@ function DesktopPanel({
       session.current?.resize(resolution.width, resolution.height);
     }
   }, [modes, sample?.width, sample?.height]);
+  useEffect(() => {
+    if (!autoResolution || !visible || ended || !entry.ticket.writeControl) {
+      return;
+    }
+    const container = viewport.current;
+    if (!container) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const rect = container.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.min(
+          3840,
+          Math.max(640, Math.floor(rect.width * dpr) & ~1),
+        );
+        const height = Math.min(
+          2160,
+          Math.max(480, Math.floor(rect.height * dpr) & ~1),
+        );
+        if (
+          width >= 640 &&
+          height >= 480 &&
+          (sample?.width !== width || sample?.height !== height)
+        ) {
+          session.current?.resize(width, height);
+        }
+      }, 400);
+    };
+    schedule();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    window.addEventListener("resize", schedule);
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+    };
+  }, [
+    autoResolution,
+    visible,
+    ended,
+    entry.ticket.writeControl,
+    sample?.width,
+    sample?.height,
+  ]);
   async function reboot(event: React.FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -357,21 +408,42 @@ function DesktopPanel({
                 compact
                 label="Windows 分辨率"
                 disabled={ended}
-                value={sample ? `${sample.width}x${sample.height}` : ""}
+                value={
+                  autoResolution
+                    ? "auto"
+                    : sample
+                      ? `${sample.width}x${sample.height}`
+                      : ""
+                }
                 onChange={(value) => {
+                  if (value === "auto") {
+                    resolutionRestored.current = true;
+                    setAutoResolution(true);
+                    updatePreferences({ resolution: "auto" });
+                    return;
+                  }
                   const mode = modes.find(
                     (item) => `${item.width}x${item.height}` === value,
                   );
                   if (mode) {
                     resolutionRestored.current = true;
+                    setAutoResolution(false);
                     updatePreferences({ resolution: mode });
                     session.current?.resize(mode.width, mode.height);
                   }
                 }}
-                items={modes.map((item) => ({
-                  id: `${item.width}x${item.height}`,
-                  label: `${item.width} × ${item.height}`,
-                }))}
+                items={[
+                  {
+                    id: "auto",
+                    label: sample
+                      ? `跟随窗口 (${sample.width} × ${sample.height})`
+                      : "跟随窗口",
+                  },
+                  ...modes.map((item) => ({
+                    id: `${item.width}x${item.height}`,
+                    label: `${item.width} × ${item.height}`,
+                  })),
+                ]}
               />
             )}
           </>
@@ -430,6 +502,7 @@ function DesktopPanel({
         </Button>
       </div>
       <div
+        ref={viewport}
         className="relative flex min-h-0 min-w-0 w-full max-w-full flex-1 overflow-hidden bg-[#111317] outline-none data-[scale=native]:overflow-auto"
         data-desktop-viewport
         data-scale={scale}

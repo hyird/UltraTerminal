@@ -14,11 +14,19 @@ inline constexpr wchar_t kHardwareId[] = L"Root\\UltraterimalIdd";
 inline constexpr wchar_t kAdapterFriendlyName[] = L"Ultraterimal Virtual Display";
 
 inline constexpr std::uint32_t kShmMagic = 0x55544944u; // "UTID"
-inline constexpr std::uint32_t kShmVersion = 1u;
+inline constexpr std::uint32_t kShmVersion = 2u;
+inline constexpr std::uint32_t kMinCustomWidth = 640u;
+inline constexpr std::uint32_t kMinCustomHeight = 480u;
 inline constexpr std::uint32_t kMaxWidth = 3840u;
 inline constexpr std::uint32_t kMaxHeight = 2160u;
 inline constexpr std::size_t kMaxFrameBytes = static_cast<std::size_t>(kMaxWidth) * kMaxHeight * 4u;
 inline constexpr std::uint32_t kFormatBgra8 = 87u; // DXGI_FORMAT_B8G8R8A8_UNORM
+
+inline constexpr bool isValidCustomMode(std::uint32_t width, std::uint32_t height) noexcept {
+    return width >= kMinCustomWidth && width <= kMaxWidth &&
+           height >= kMinCustomHeight && height <= kMaxHeight &&
+           (width % 2u) == 0u && (height % 2u) == 0u;
+}
 
 struct DirtyRect {
     std::int32_t left = 0;
@@ -88,6 +96,10 @@ struct SharedHeader {
     std::atomic<std::uint32_t> reserved{0};
     std::atomic<std::uint64_t> frameSeq{0};
     std::atomic<std::uint64_t> heartbeatQpc{0};
+    std::atomic<std::uint32_t> requestedWidth{0};
+    std::atomic<std::uint32_t> requestedHeight{0};
+    std::atomic<std::uint32_t> requestedModeSeq{0};
+    std::atomic<std::uint32_t> appliedModeSeq{0};
     SlotMetadata slots[2]{};
 };
 

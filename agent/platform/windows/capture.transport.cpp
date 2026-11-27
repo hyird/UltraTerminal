@@ -21,6 +21,7 @@
 #include "cursor.transport.h"
 #include "desktop.transport.h"
 #include "handle.types.h"
+#include "idd/idd_shared.protocol.h"
 #include "idd_capture.transport.h"
 #include "idd_topology.transport.h"
 
@@ -544,9 +545,22 @@ bool DesktopCapture::resize(std::uint32_t width, std::uint32_t height) {
     if (requireInputDesktop() != state_->desktopGeneration) {
         throw CaptureReset();
     }
-    const auto modes = displayModes();
-    if (std::ranges::none_of(modes, [=](const auto& mode) { return mode.width == width && mode.height == height; })) {
-        return false;
+    auto hasMode = [&] {
+        const auto modes = displayModes();
+        return std::ranges::any_of(modes, [=](const auto& mode) { return mode.width == width && mode.height == height; });
+    };
+    if (!hasMode()) {
+        if (!state_->iddCapture || !idd::isValidCustomMode(width, height) ||
+            !state_->iddCapture->requestCustomMode(width, height)) {
+            return false;
+        }
+        const auto deadline = Clock::now() + std::chrono::milliseconds(400);
+        while (!hasMode() && Clock::now() < deadline) {
+            Sleep(20);
+        }
+        if (!hasMode()) {
+            return false;
+        }
     }
     DEVMODEW current{};
     current.dmSize = sizeof(current);

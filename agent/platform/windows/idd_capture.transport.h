@@ -27,6 +27,11 @@ class IddSharedCapture {
     // Waits briefly for the IDD driver to start publishing after a topology switch.
     bool waitForDriverReady(std::chrono::milliseconds timeout) noexcept;
 
+    // Requests the IDD driver to dynamically register a custom even resolution
+    // (640x480..3840x2160) via IddCxMonitorUpdateModes so Windows accepts it.
+    bool requestCustomMode(std::uint32_t width, std::uint32_t height,
+                           std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) noexcept;
+
     // Reads the next frame (or the latest frame on first capture).
     // Returns false on timeout (no new frame); returns true when a frame was
     // delivered (either via directConsumer or into frame.bgra).

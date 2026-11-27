@@ -59,5 +59,14 @@ int main() {
         const auto band = idd::computeDirtyBand(1920, 1080, many);
         assert(band.fullFrame);
     }
+    // 3. Custom mode validation tests
+    assert(idd::isValidCustomMode(1920, 1080));
+    assert(idd::isValidCustomMode(1512, 982));
+    assert(idd::isValidCustomMode(640, 480));
+    assert(idd::isValidCustomMode(3840, 2160));
+    assert(!idd::isValidCustomMode(638, 480));
+    assert(!idd::isValidCustomMode(1921, 1080));
+    assert(!idd::isValidCustomMode(1920, 1081));
+    assert(!idd::isValidCustomMode(4096, 2160));
     return 0;
 }

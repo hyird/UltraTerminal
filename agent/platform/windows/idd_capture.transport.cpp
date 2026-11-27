@@ -154,6 +154,25 @@ bool IddSharedCapture::waitForDriverReady(std::chrono::milliseconds timeout) noe
     return hasFrame();
 }
 
+bool IddSharedCapture::requestCustomMode(std::uint32_t width, std::uint32_t height,
+                                         std::chrono::milliseconds timeout) noexcept {
+    if (!state_ || !state_->region || !idd::isValidCustomMode(width, height) || !isActiveInSystemMemory()) {
+        return false;
+    }
+    auto& header = state_->region->header;
+    header.requestedWidth.store(width, std::memory_order_relaxed);
+    header.requestedHeight.store(height, std::memory_order_relaxed);
+    const auto seq = header.requestedModeSeq.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+    const auto deadline = Clock::now() + timeout;
+    while (Clock::now() < deadline) {
+        if (header.appliedModeSeq.load(std::memory_order_acquire) == seq) {
+            return true;
+        }
+        Sleep(10);
+    }
+    return header.appliedModeSeq.load(std::memory_order_acquire) == seq;
+}
+
 bool IddSharedCapture::acquireFrame(std::chrono::milliseconds timeout,
                                     bool forceInitialFrame,
                                     std::uint64_t captureEpoch,
