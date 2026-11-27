@@ -11,7 +11,7 @@ ruvia::task<ruvia::http_response> IdentityController::health(ruvia::context& con
     co_return ruvia::make_health_response(context);
 }
 ruvia::task<ruvia::http_response> IdentityController::login(ruvia::context& context, const LoginRequest& body) {
-    const auto session = co_await context.worker_state<ServerRuntime>().identities.login(context.db(), textValue(body.get<"username">()), textValue(body.get<"password">()), optionalTextValue(body.get<"code">()));
+    const auto session = co_await context.worker_state<ServerRuntime>().identities.login(context.db(), textValue(body.get<"username">()), textValue(body.get<"password">()), optionalTextValue(body.get<"code">()), &context);
     if (!session) {
         if (session.error() == LoginError::kFactorRequired) {
             co_return context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "factor_required", .message_ = "Authenticator verification required"});
@@ -43,7 +43,7 @@ ruvia::task<ruvia::http_response> IdentityController::security(ruvia::context& c
 }
 ruvia::task<ruvia::http_response> IdentityController::changeSecurity(ruvia::context& context, const ChangeSecurityRequest& body) {
     const auto user = context.request_state<UserIdentity>();
-    const auto result = co_await context.worker_state<ServerRuntime>().identities.changeSecurity(context.db(), user, textValue(body.get<"action">()), optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"new_password">()), optionalTextValue(body.get<"telegram_proof">()));
+    const auto result = co_await context.worker_state<ServerRuntime>().identities.changeSecurity(context.db(), user, textValue(body.get<"action">()), optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"new_password">()), optionalTextValue(body.get<"telegram_proof">()), &context);
     if (!result) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "security_rejected", .message_ = "Verification failed"});
     }
@@ -73,7 +73,7 @@ ruvia::task<ruvia::http_response> IdentityController::createAccount(ruvia::conte
     const auto& service = context.worker_state<ServerRuntime>().identities;
     const auto user = context.request_state<UserIdentity>();
     const auto db = context.db();
-    const bool result = user.role == "admin" && (co_await service.reauthenticate(db, user, optionalTextValue(body.get<"current_password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()))) && (co_await service.createAccount(db, user, textValue(body.get<"username">()), textValue(body.get<"password">()), textValue(body.get<"role">())));
+    const bool result = user.role == "admin" && (co_await service.reauthenticate(db, user, optionalTextValue(body.get<"current_password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()), &context)) && (co_await service.createAccount(db, user, textValue(body.get<"username">()), textValue(body.get<"password">()), textValue(body.get<"role">()), &context));
     if (!result) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "account_rejected", .message_ = "Account operation rejected"});
     }
@@ -84,7 +84,7 @@ ruvia::task<ruvia::http_response> IdentityController::updateAccount(ruvia::conte
     const auto& service = context.worker_state<ServerRuntime>().identities;
     const auto user = context.request_state<UserIdentity>();
     const auto db = context.db();
-    const bool result = user.role == "admin" && (co_await service.reauthenticate(db, user, optionalTextValue(body.get<"current_password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()))) && (co_await service.updateAccount(db, user, id, textValue(body.get<"role">()), body.get<"disabled">(), optionalTextValue(body.get<"password">())));
+    const bool result = user.role == "admin" && (co_await service.reauthenticate(db, user, optionalTextValue(body.get<"current_password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()), &context)) && (co_await service.updateAccount(db, user, id, textValue(body.get<"role">()), body.get<"disabled">(), optionalTextValue(body.get<"password">()), &context));
     if (!result) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "account_rejected", .message_ = "Account operation rejected"});
     }

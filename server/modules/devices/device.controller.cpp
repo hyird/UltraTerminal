@@ -31,9 +31,8 @@ ruvia::task<ruvia::http_response> DeviceController::update(ruvia::context& conte
         const auto device = textValue(body.get<"device_id">());
         auto& runtime = context.worker_state<ServerRuntime>();
         const auto user = context.request_state<UserIdentity>().id;
-        const auto devices = co_await runtime.devices.list(context.db(), user);
-        const bool allowed = std::any_of(devices.begin(), devices.end(), [&](const auto& found) { return found.id == device && found.canManage; });
-        if (!allowed) {
+        const auto found = co_await runtime.devices.find(context.db(), user, device);
+        if (!found || !found->canManage) {
             co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "access_denied", .message_ = "Only the device registrant can update its Agent"});
         }
         stage = "release_lookup";
@@ -151,7 +150,7 @@ ruvia::task<ruvia::http_response> DeviceController::transferOwner(ruvia::context
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto user = context.request_state<UserIdentity>();
     const auto db = context.db();
-    const bool transferred = user.role == "admin" && (co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"current_password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()))) && (co_await runtime.devices.transferOwner(db, user.id, device, owner));
+    const bool transferred = user.role == "admin" && (co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"current_password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()), &context)) && (co_await runtime.devices.transferOwner(db, user.id, device, owner));
     if (!transferred) {
         co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "owner_transfer_rejected", .message_ = "Owner transfer rejected"});
     }

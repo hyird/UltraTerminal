@@ -22,6 +22,8 @@ class SessionService {
     // Re-checks grants for an established channel; callers must end its live I/O on false.
     ruvia::task<std::vector<SessionInfo>> revalidate(ruvia::db_executor db, std::string userId = {}) const;
     ruvia::task<bool> authorized(ruvia::db_executor db, std::string sessionId) const;
+    ruvia::task<bool> authorizeDesktopFileTransfer(ruvia::db_executor db, UserIdentity user, std::string deviceId, std::string sessionId, bool requireWrite) const;
+    ruvia::task<void> auditFileTransfer(ruvia::db_executor db, std::string userId, std::string deviceId, std::string sessionId, std::string eventType, bool success, std::string reason = {}) const;
     ruvia::task<std::optional<SessionInfo>> get(ruvia::db_executor db, std::string userId, std::string sessionId) const;
     ruvia::task<bool> closeForDevice(ruvia::db_executor db, DeviceIdentity device, std::string sessionId, SessionEnd reason) const;
     ruvia::task<void> disconnectDevice(ruvia::db_executor db, DeviceIdentity device) const;

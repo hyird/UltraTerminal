@@ -42,9 +42,11 @@ interface OverwritePromptState {
 
 export function DesktopFilesPanel({
   deviceId,
+  sessionId,
   writeControl,
 }: {
   deviceId: string;
+  sessionId: string;
   writeControl: boolean;
 }) {
   const [currentPath, setCurrentPath] = useState("");
@@ -66,7 +68,7 @@ export function DesktopFilesPanel({
       setLoading(true);
       setError("");
       try {
-        const result = await listDeviceFiles(deviceId, targetPath);
+        const result = await listDeviceFiles(deviceId, sessionId, targetPath);
         if (!mounted.current) return;
         setCurrentPath(result.normalizedPath);
         setParentPath(result.parentPath);
@@ -79,7 +81,7 @@ export function DesktopFilesPanel({
         if (mounted.current) setLoading(false);
       }
     },
-    [deviceId],
+    [deviceId, sessionId],
   );
 
   useEffect(() => {
@@ -114,7 +116,7 @@ export function DesktopFilesPanel({
       const targetPath = joinWindowsPath(currentPath, file.name);
       let overwrite = false;
       try {
-        const info = await statDeviceFile(deviceId, targetPath);
+        const info = await statDeviceFile(deviceId, sessionId, targetPath);
         if (info.exists) {
           if (info.directory) {
             toast.danger(`目标路径“${file.name}”是同名目录，无法覆盖为文件`);
@@ -134,6 +136,7 @@ export function DesktopFilesPanel({
       setUploading({ name: file.name, loaded: 0, total: file.size });
       const handle = uploadDeviceFile(
         deviceId,
+        sessionId,
         targetPath,
         file,
         overwrite,
@@ -165,7 +168,7 @@ export function DesktopFilesPanel({
   function triggerDownload(entry: DeviceFileEntry) {
     const targetPath = joinWindowsPath(currentPath, entry.name);
     const link = document.createElement("a");
-    link.href = deviceFileDownloadUrl(deviceId, targetPath);
+    link.href = deviceFileDownloadUrl(deviceId, sessionId, targetPath);
     link.download = entry.directory ? `${entry.name}.zip` : entry.name;
     link.rel = "noopener";
     document.body.appendChild(link);

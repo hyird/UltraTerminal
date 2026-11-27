@@ -2,6 +2,7 @@
 
 #include <array>
 #include <binary_text_encoding.h>
+#include <controller.h>
 #include <crypto.h>
 #include <span>
 #include <stdexcept>
@@ -13,6 +14,11 @@
 #include "security.protocol.h"
 namespace ultraterimal::server {
 namespace {
+struct DerivedPassword {
+    std::string salt;
+    int iterations = 0;
+    std::string hash;
+};
 std::string passwordHash(std::string_view password, std::string_view salt, int iterations) {
     if (password.size() > 1024 || salt.size() != 64 || iterations < 600000 || iterations > 2000000) {
         throw std::invalid_argument("Invalid password hash parameters");
@@ -23,11 +29,32 @@ std::string passwordHash(std::string_view password, std::string_view salt, int i
     }
     return ruvia::encode_lower_hex(std::as_bytes(std::span(bytes)));
 }
+ruvia::task<std::string> derivePasswordHash(ruvia::context* context, std::string password, std::string salt, int iterations) {
+    if (context) {
+        co_return (co_await context->run_blocking([password = std::move(password), salt = std::move(salt), iterations] {
+            return passwordHash(password, salt, iterations);
+        })).take_value();
+    }
+    co_return passwordHash(password, salt, iterations);
+}
 bool validUsername(std::string_view username) {
     return username.size() >= 3 && username.size() <= 64 && username.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == std::string_view::npos;
 }
-bool passwordMatches(const ruvia::db_row& row, std::string_view password) {
-    return !password.empty() && password.size() <= 1024 && constantEqual(dbField<std::string>(row["password_hash"]), passwordHash(password, dbField<std::string>(row["password_salt"]), dbField<int>(row["password_iterations"])));
+bool derivedPasswordMatches(const ruvia::db_row& row, const std::optional<DerivedPassword>& derived) {
+    return derived && derived->salt == dbField<std::string>(row["password_salt"]) && derived->iterations == dbField<int>(row["password_iterations"]) && constantEqual(dbField<std::string>(row["password_hash"]), derived->hash);
+}
+ruvia::task<std::optional<DerivedPassword>> precomputeUserPassword(ruvia::db_executor db, ruvia::context* context, std::string userId, std::string password) {
+    if (password.empty() || password.size() > 1024) {
+        co_return std::nullopt;
+    }
+    const auto rows = co_await db.query("SELECT password_salt,password_iterations FROM users WHERE id=? AND NOT disabled", userId);
+    if (rows.empty()) {
+        co_return std::nullopt;
+    }
+    const auto salt = dbField<std::string>(rows[0][0]);
+    const auto iterations = dbField<int>(rows[0][1]);
+    auto hash = co_await derivePasswordHash(context, std::move(password), salt, iterations);
+    co_return DerivedPassword{salt, iterations, std::move(hash)};
 }
 ruvia::task<void> failedAttempt(ruvia::db_transaction& tx, std::string id) {
     co_await tx.execute("UPDATE users SET login_blocked_until=CASE WHEN failed_logins>=4 THEN UTC_TIMESTAMP(6)+INTERVAL 5 MINUTE ELSE login_blocked_until END,failed_logins=CASE WHEN failed_logins>=4 THEN 0 ELSE failed_logins+1 END WHERE id=?", id);
@@ -50,7 +77,7 @@ ruvia::task<bool> factorMatches(ruvia::db_transaction& tx, const ruvia::db_row& 
     const auto deleted = co_await tx.query("DELETE FROM recovery_codes WHERE user_id=? AND code_hash=? RETURNING code_hash", id, tokenHash(code));
     co_return !deleted.empty();
 }
-ruvia::task<bool> operationProofMatches(ruvia::db_transaction& tx, const ruvia::db_row& row, std::string key, std::string password, std::string code, UserIdentity user, std::string telegramProof) {
+ruvia::task<bool> operationProofMatches(ruvia::db_transaction& tx, const ruvia::db_row& row, std::string key, std::string password, const std::optional<DerivedPassword>& derivedPassword, std::string code, UserIdentity user, std::string telegramProof) {
     if (!telegramProof.empty()) {
         if (!password.empty() || !code.empty() || telegramProof.size() != 32) {
             co_return false;
@@ -66,7 +93,7 @@ ruvia::task<bool> operationProofMatches(ruvia::db_transaction& tx, const ruvia::
     }
     // Exactly one proof: an empty or ambiguous request must never authenticate.
     if (!password.empty()) {
-        co_return code.empty() && passwordMatches(row, password);
+        co_return code.empty() && derivedPasswordMatches(row, derivedPassword);
     }
     const auto encrypted = dbField<std::string>(row["totp_secret"]);
     if (encrypted.empty() || code.size() != 6 || code.find_first_not_of("0123456789") != std::string_view::npos) {
@@ -118,14 +145,28 @@ ruvia::task<void> IdentityService::bootstrap(ruvia::db_executor db, std::string 
     co_await tx.execute("INSERT INTO audit_events(user_id,event_type,success) VALUES(?,'identity.bootstrap',true)", id);
     co_await tx.commit();
 }
-ruvia::task<std::expected<LoginSession, LoginError>> IdentityService::login(ruvia::db_executor db, std::string username, std::string password, std::string code) const {
+ruvia::task<std::expected<LoginSession, LoginError>> IdentityService::login(ruvia::db_executor db, std::string username, std::string password, std::string code, ruvia::context* context) const {
     if (!validUsername(username) || password.empty() || password.size() > 1024 || code.size() > 32) {
         co_return std::unexpected(LoginError::kInvalidCredentials);
+    }
+    // Derive PBKDF2 outside any DB transaction and on the blocking pool to avoid
+    // stalling the I/O event loop or holding row locks during CPU-bound hashing.
+    std::optional<DerivedPassword> derived;
+    const auto preview = co_await db.query("SELECT password_salt,password_iterations,disabled,coalesce(login_blocked_until>UTC_TIMESTAMP(6),false) AS blocked FROM users WHERE username=?", username);
+    if (preview.empty()) {
+        (void)co_await derivePasswordHash(context, password, std::string(64, '0'), 600000);
+        co_await db.execute("INSERT INTO audit_events(event_type,success) VALUES('identity.login',false)");
+        co_return std::unexpected(LoginError::kInvalidCredentials);
+    }
+    if (!dbField<bool>(preview[0]["disabled"]) && !dbField<bool>(preview[0]["blocked"])) {
+        const auto salt = dbField<std::string>(preview[0]["password_salt"]);
+        const auto iterations = dbField<int>(preview[0]["password_iterations"]);
+        auto hash = co_await derivePasswordHash(context, password, salt, iterations);
+        derived = DerivedPassword{salt, iterations, std::move(hash)};
     }
     auto tx = co_await db.begin_transaction(kReadCommitted);
     const auto rows = co_await tx.query("SELECT *,FLOOR(UNIX_TIMESTAMP()) AS unix_time,coalesce(login_blocked_until>UTC_TIMESTAMP(6),false) AS blocked FROM users WHERE username=? FOR UPDATE", username);
     if (rows.empty()) {
-        (void)passwordHash(password, std::string(64, '0'), 600000);
         co_await tx.execute("INSERT INTO audit_events(event_type,success) VALUES('identity.login',false)");
         co_await tx.commit();
         co_return std::unexpected(LoginError::kInvalidCredentials);
@@ -134,7 +175,7 @@ ruvia::task<std::expected<LoginSession, LoginError>> IdentityService::login(ruvi
     if (dbField<bool>(rows[0]["disabled"]) || dbField<bool>(rows[0]["blocked"])) {
         co_return std::unexpected(LoginError::kInvalidCredentials);
     }
-    const bool passwordValid = passwordMatches(rows[0], password);
+    const bool passwordValid = derivedPasswordMatches(rows[0], derived);
     if (passwordValid && code.empty() && !dbField<std::string>(rows[0]["totp_secret"]).empty()) {
         co_return std::unexpected(LoginError::kFactorRequired);
     }
@@ -224,7 +265,7 @@ ruvia::task<bool> IdentityService::verifyConnectionFactor(ruvia::db_transaction&
     if (rows.empty() || dbField<bool>(rows[0]["blocked"])) {
         co_return false;
     }
-    const bool ok = co_await operationProofMatches(tx, rows[0], key_, {}, code, user, {});
+    const bool ok = co_await operationProofMatches(tx, rows[0], key_, {}, std::nullopt, code, user, {});
     if (!ok) {
         co_await failedAttempt(tx, user.id);
     } else {
@@ -232,13 +273,17 @@ ruvia::task<bool> IdentityService::verifyConnectionFactor(ruvia::db_transaction&
     }
     co_return ok;
 }
-ruvia::task<bool> IdentityService::reauthenticate(ruvia::db_executor db, UserIdentity user, std::string password, std::string code, std::string telegramProof) const {
+ruvia::task<bool> IdentityService::reauthenticate(ruvia::db_executor db, UserIdentity user, std::string password, std::string code, std::string telegramProof, ruvia::context* context) const {
+    std::optional<DerivedPassword> derived;
+    if (!password.empty() && code.empty() && telegramProof.empty()) {
+        derived = co_await precomputeUserPassword(db, context, user.id, password);
+    }
     auto tx = co_await db.begin_transaction(kReadCommitted);
     const auto rows = co_await actorRows(tx, user);
     if (rows.empty() || dbField<bool>(rows[0]["blocked"])) {
         co_return false;
     }
-    const bool ok = co_await operationProofMatches(tx, rows[0], key_, password, code, user, telegramProof);
+    const bool ok = co_await operationProofMatches(tx, rows[0], key_, password, derived, code, user, telegramProof);
     if (!ok) {
         co_await failedAttempt(tx, user.id);
     } else {
@@ -247,7 +292,17 @@ ruvia::task<bool> IdentityService::reauthenticate(ruvia::db_executor db, UserIde
     co_await tx.commit();
     co_return ok;
 }
-ruvia::task<std::optional<SecurityChange>> IdentityService::changeSecurity(ruvia::db_executor db, UserIdentity user, std::string action, std::string password, std::string code, std::string newPassword, std::string telegramProof) const {
+ruvia::task<std::optional<SecurityChange>> IdentityService::changeSecurity(ruvia::db_executor db, UserIdentity user, std::string action, std::string password, std::string code, std::string newPassword, std::string telegramProof, ruvia::context* context) const {
+    std::optional<DerivedPassword> derived;
+    if (action != "confirm" && !password.empty() && code.empty() && telegramProof.empty()) {
+        derived = co_await precomputeUserPassword(db, context, user.id, password);
+    }
+    std::string newSalt;
+    std::string newDigest;
+    if (action == "password" && newPassword.size() >= 12 && newPassword.size() <= 1024) {
+        newSalt = randomToken();
+        newDigest = co_await derivePasswordHash(context, newPassword, newSalt, 600000);
+    }
     auto tx = co_await db.begin_transaction(kReadCommitted);
     const auto rows = co_await actorRows(tx, user);
     if (rows.empty() || dbField<bool>(rows[0]["blocked"])) {
@@ -256,7 +311,7 @@ ruvia::task<std::optional<SecurityChange>> IdentityService::changeSecurity(ruvia
     const bool enabled = !dbField<std::string>(rows[0]["totp_secret"]).empty();
     const bool validAction = (action == "begin" || action == "confirm") ? !enabled : action == "disable" || action == "recovery" ? enabled
                                                                                                                                  : action == "password" && newPassword.size() >= 12 && newPassword.size() <= 1024;
-    const bool proofOk = validAction && (action == "confirm" ? (password.empty() && telegramProof.empty()) : co_await operationProofMatches(tx, rows[0], key_, password, code, user, telegramProof));
+    const bool proofOk = validAction && (action == "confirm" ? (password.empty() && telegramProof.empty()) : co_await operationProofMatches(tx, rows[0], key_, password, derived, code, user, telegramProof));
     if (!proofOk) {
         co_await failedAttempt(tx, user.id);
         co_await tx.commit();
@@ -284,8 +339,7 @@ ruvia::task<std::optional<SecurityChange>> IdentityService::changeSecurity(ruvia
         co_await tx.execute("UPDATE users SET totp_secret='',totp_last_step=-1,totp_pending='',totp_pending_expires_at=NULL WHERE id=?", user.id);
         co_await tx.repository<RecoveryCodeEntity>().delete_by(RecoveryCodeEntity::column<"user_id">() == user.id);
     } else if (action == "password") {
-        const auto salt = randomToken();
-        co_await tx.execute("UPDATE users SET password_salt=?,password_hash=?,password_iterations=600000 WHERE id=?", salt, passwordHash(newPassword, salt, 600000), user.id);
+        co_await tx.execute("UPDATE users SET password_salt=?,password_hash=?,password_iterations=600000 WHERE id=?", newSalt, newDigest, user.id);
     }
     if (action == "confirm" || action == "recovery") {
         co_await tx.repository<RecoveryCodeEntity>().delete_by(RecoveryCodeEntity::column<"user_id">() == user.id);
@@ -318,11 +372,13 @@ ruvia::task<std::optional<std::vector<AccountInfo>>> IdentityService::accounts(r
     co_await tx.commit();
     co_return result;
 }
-ruvia::task<bool> IdentityService::createAccount(ruvia::db_executor db, UserIdentity actor, std::string username, std::string password, std::string role) const {
+ruvia::task<bool> IdentityService::createAccount(ruvia::db_executor db, UserIdentity actor, std::string username, std::string password, std::string role, ruvia::context* context) const {
     if (!validUsername(username) || password.size() < 12 || password.size() > 1024 || (role != "admin" && role != "user")) {
         co_return false;
     }
-    const auto salt = randomToken(), digest = passwordHash(password, salt, 600000), id = "u-" + randomToken();
+    const auto salt = randomToken();
+    const auto digest = co_await derivePasswordHash(context, password, salt, 600000);
+    const auto id = "u-" + randomToken();
     auto tx = co_await db.begin_transaction(kReadCommitted);
     if (!(co_await adminAllowed(tx, actor))) {
         co_return false;
@@ -338,9 +394,15 @@ ruvia::task<bool> IdentityService::createAccount(ruvia::db_executor db, UserIden
     co_await tx.commit();
     co_return true;
 }
-ruvia::task<bool> IdentityService::updateAccount(ruvia::db_executor db, UserIdentity actor, std::string id, std::string role, bool disabled, std::string password) const {
+ruvia::task<bool> IdentityService::updateAccount(ruvia::db_executor db, UserIdentity actor, std::string id, std::string role, bool disabled, std::string password, ruvia::context* context) const {
     if ((role != "admin" && role != "user") || (!password.empty() && (password.size() < 12 || password.size() > 1024))) {
         co_return false;
+    }
+    std::string salt;
+    std::string digest;
+    if (!password.empty()) {
+        salt = randomToken();
+        digest = co_await derivePasswordHash(context, password, salt, 600000);
     }
     auto tx = co_await db.begin_transaction(kReadCommitted);
     if (!(co_await adminAllowed(tx, actor))) {
@@ -357,8 +419,7 @@ ruvia::task<bool> IdentityService::updateAccount(ruvia::db_executor db, UserIden
     }
     co_await tx.execute("UPDATE users SET role=?,disabled=? WHERE id=?", role, disabled, id);
     if (!password.empty()) {
-        const auto salt = randomToken();
-        co_await tx.execute("UPDATE users SET password_salt=?,password_hash=?,password_iterations=600000,failed_logins=0,login_blocked_until=NULL WHERE id=?", salt, passwordHash(password, salt, 600000), id);
+        co_await tx.execute("UPDATE users SET password_salt=?,password_hash=?,password_iterations=600000,failed_logins=0,login_blocked_until=NULL WHERE id=?", salt, digest, id);
     }
     co_await invalidateLogins(tx, id, {});
     co_await tx.execute("INSERT INTO audit_events(user_id,event_type,success,reason) VALUES(?,'identity.update',true,?)", actor.id, id);

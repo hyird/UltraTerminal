@@ -24,6 +24,7 @@ GatewayRuntime::GatewayRuntime(const DatabaseConfig& database) : ownerId_(random
         }
         co_await SessionService().recoverAfterRestart(db);
         co_await DeviceService().recoverRestarts(db);
+        co_await pruneExpiredHistory(db);
     }(client_, ownerId_));
     if (!submitted.accepted()) {
         pool_.join();
@@ -45,11 +46,16 @@ void GatewayRuntime::start() {
     const auto loop = pool_.loop(0);
     auto submitted = loop.submit([](std::shared_ptr<ruvia::db_client> client, std::string ownerId, std::shared_ptr<std::atomic<bool>> failed, ruvia::stop_token stopToken, ruvia::worker_ref worker) -> ruvia::task<void> {
         const auto db = client->db();
+        auto nextPrune = std::chrono::steady_clock::now() + std::chrono::hours(1);
         while (co_await ruvia::sleep_for(worker, std::chrono::seconds(2), stopToken) == ruvia::sleep_status::elapsed) {
             if (!(co_await renewGatewayLease(db, ownerId))) {
                 *failed = true;
                 ruvia::app().request_stop();
                 break;
+            }
+            if (std::chrono::steady_clock::now() >= nextPrune) {
+                co_await pruneExpiredHistory(db);
+                nextPrune = std::chrono::steady_clock::now() + std::chrono::hours(1);
             }
         }
     }(client_, ownerId_, failed_, stop_.token(), loop.worker()));

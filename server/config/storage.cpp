@@ -116,4 +116,14 @@ ruvia::task<void> releaseGatewayLease(ruvia::db_executor db, std::string_view ow
     } catch (...) {
     }
 }
+ruvia::task<void> pruneExpiredHistory(ruvia::db_executor db) {
+    try {
+        co_await db.execute("DELETE FROM session_channels WHERE expires_at<UTC_TIMESTAMP(6)-INTERVAL 7 DAY LIMIT 1000");
+        co_await db.execute("DELETE FROM connection_verifications WHERE expires_at<UTC_TIMESTAMP(6)-INTERVAL 7 DAY LIMIT 1000");
+        co_await db.execute("DELETE FROM identity_telegram_verifications WHERE expires_at<UTC_TIMESTAMP(6)-INTERVAL 7 DAY LIMIT 1000");
+        co_await db.execute("DELETE FROM remote_sessions WHERE state='closed' AND ended_at<UTC_TIMESTAMP(6)-INTERVAL 30 DAY LIMIT 1000");
+        co_await db.execute("DELETE FROM audit_events WHERE created_at<UTC_TIMESTAMP(6)-INTERVAL 90 DAY LIMIT 1000");
+    } catch (...) {
+    }
+}
 } // namespace ultraterimal::server

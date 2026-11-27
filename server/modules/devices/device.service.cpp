@@ -90,11 +90,8 @@ ruvia::task<std::optional<DeviceIdentity>> DeviceService::authenticate(ruvia::db
     co_return DeviceIdentity{found->get<"id">(), hash};
 }
 ruvia::task<bool> DeviceService::heartbeat(ruvia::db_executor db, DeviceIdentity device) const {
-    auto tx = co_await db.begin_transaction(kReadCommitted);
-    const auto rows = co_await tx.query("SELECT id FROM devices WHERE id=? AND credential_hash=? AND revoked_at IS NULL FOR UPDATE", device.id, device.credentialHash);
-    co_await tx.execute("UPDATE devices SET last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", device.id, device.credentialHash);
-    co_await tx.commit();
-    co_return !rows.empty();
+    const auto updated = co_await db.execute("UPDATE devices SET last_seen_at=UTC_TIMESTAMP(6) WHERE id=? AND credential_hash=? AND revoked_at IS NULL", device.id, device.credentialHash);
+    co_return updated.affected_rows() == 1;
 }
 ruvia::task<bool> DeviceService::capabilities(ruvia::db_executor db, DeviceIdentity device, std::string protobuf, std::string agentVersion) const {
     if (protobuf.size() > 65536) {

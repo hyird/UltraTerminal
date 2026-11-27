@@ -33,7 +33,7 @@ ruvia::task<ruvia::http_response> TelegramController::configure(ruvia::context& 
     const auto user = context.request_state<UserIdentity>();
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto db = context.db();
-    const bool allowed = user.role == "admin" && (co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">())));
+    const bool allowed = user.role == "admin" && (co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()), &context));
     if (!allowed || runtime.shared->telegramConfiguring->exchange(true, std::memory_order_acq_rel)) {
         co_return rejected(context);
     }
@@ -101,7 +101,7 @@ ruvia::task<ruvia::http_response> TelegramController::bind(ruvia::context& conte
     const auto user = context.request_state<UserIdentity>();
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto db = context.db();
-    if (!(co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">())))) {
+    if (!(co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()), &context))) {
         co_return rejected(context);
     }
     const auto link = co_await runtime.telegram.beginBinding(db, user);
@@ -116,7 +116,7 @@ ruvia::task<ruvia::http_response> TelegramController::unbind(ruvia::context& con
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto user = context.request_state<UserIdentity>();
     const auto db = context.db();
-    if (!(co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">())))) {
+    if (!(co_await runtime.identities.reauthenticate(db, user, optionalTextValue(body.get<"password">()), optionalTextValue(body.get<"code">()), optionalTextValue(body.get<"telegram_proof">()), &context))) {
         co_return rejected(context);
     }
     co_await runtime.telegram.unbind(db, user);

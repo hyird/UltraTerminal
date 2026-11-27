@@ -371,6 +371,7 @@ function DesktopPanel({
               {filesOpen && !ended && (
                 <DesktopFilesPanel
                   deviceId={entry.device.id}
+                  sessionId={entry.ticket.id}
                   writeControl={entry.ticket.writeControl}
                 />
               )}

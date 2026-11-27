@@ -241,6 +241,32 @@ ruvia::task<bool> SessionService::authorized(ruvia::db_executor db, std::string 
     co_await tx.commit();
     co_return !active.empty();
 }
+ruvia::task<bool> SessionService::authorizeDesktopFileTransfer(ruvia::db_executor db, UserIdentity user, std::string deviceId, std::string sessionId, bool requireWrite) const {
+    if (deviceId.empty() || deviceId.size() > 128 || sessionId.empty() || sessionId.size() > 128 || !validToken(user.loginHash)) {
+        co_return false;
+    }
+    const auto rows = co_await db.query(
+        "SELECT 1 FROM remote_sessions s "
+        "JOIN devices d ON d.id=s.device_id AND d.revoked_at IS NULL "
+        "JOIN users u ON u.id=s.user_id AND NOT u.disabled "
+        "JOIN device_grants g ON g.device_id=s.device_id AND g.user_id=s.user_id AND g.desktop=true AND g.revision=s.grant_revision "
+        "JOIN login_sessions l ON l.token_hash=s.login_token_hash AND l.user_id=s.user_id AND l.expires_at>UTC_TIMESTAMP(6) "
+        "WHERE s.id=? AND s.user_id=? AND s.device_id=? AND s.login_token_hash=? AND s.kind=? "
+        "AND (s.state='active' OR (s.state='pending' AND s.setup_expires_at>UTC_TIMESTAMP(6))) "
+        "AND (NOT ? OR (s.write_control=true AND g.write_control=true))",
+        sessionId, user.id, deviceId, user.loginHash, static_cast<int>(wire::DESKTOP), requireWrite);
+    co_return !rows.empty();
+}
+ruvia::task<void> SessionService::auditFileTransfer(ruvia::db_executor db, std::string userId, std::string deviceId, std::string sessionId, std::string eventType, bool success, std::string reason) const {
+    try {
+        if (reason.empty()) {
+            co_await db.execute("INSERT INTO audit_events(user_id,device_id,session_id,event_type,success) VALUES(?,?,?,?,?)", userId, deviceId, sessionId, eventType, success);
+        } else {
+            co_await db.execute("INSERT INTO audit_events(user_id,device_id,session_id,event_type,success,reason) VALUES(?,?,?,?,?,?)", userId, deviceId, sessionId, eventType, success, reason);
+        }
+    } catch (...) {
+    }
+}
 ruvia::task<void> SessionService::recoverAfterRestart(ruvia::db_executor db) const {
     auto tx = co_await db.begin_transaction(kReadCommitted);
     auto rows = co_await tx.query("SELECT id,user_id,device_id FROM remote_sessions WHERE state<>'closed' FOR UPDATE");

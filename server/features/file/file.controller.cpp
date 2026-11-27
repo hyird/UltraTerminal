@@ -117,15 +117,15 @@ std::string safeAsciiFallbackName(std::string_view filename) {
 
 ruvia::task<ruvia::http_response> FileController::list(ruvia::context& context) {
     const auto deviceId = std::string(context.request().query("device_id").value_or(""));
+    const auto sessionId = std::string(context.request().query("session_id").value_or(""));
     const auto path = std::string(context.request().query("path").value_or(""));
-    if (deviceId.empty() || deviceId.size() > 128 || !protocol::validFilePathText(path, true)) {
-        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id or path"});
+    if (deviceId.empty() || deviceId.size() > 128 || sessionId.empty() || sessionId.size() > 128 || !protocol::validFilePathText(path, true)) {
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id, session_id or path"});
     }
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto& user = context.request_state<UserIdentity>();
-    const auto device = co_await runtime.devices.find(context.db(), user.id, deviceId);
-    if (!device || !device->desktop) {
-        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "Device access denied"});
+    if (!(co_await runtime.sessions.authorizeDesktopFileTransfer(context.db(), user, deviceId, sessionId, false))) {
+        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "需要有效的远程桌面会话才能访问文件"});
     }
 
     wire::FileListRequest req;
@@ -157,15 +157,15 @@ ruvia::task<ruvia::http_response> FileController::list(ruvia::context& context) 
 
 ruvia::task<ruvia::http_response> FileController::stat(ruvia::context& context) {
     const auto deviceId = std::string(context.request().query("device_id").value_or(""));
+    const auto sessionId = std::string(context.request().query("session_id").value_or(""));
     const auto path = std::string(context.request().query("path").value_or(""));
-    if (deviceId.empty() || deviceId.size() > 128 || !protocol::validFilePathText(path, false)) {
-        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id or path"});
+    if (deviceId.empty() || deviceId.size() > 128 || sessionId.empty() || sessionId.size() > 128 || !protocol::validFilePathText(path, false)) {
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id, session_id or path"});
     }
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto& user = context.request_state<UserIdentity>();
-    const auto device = co_await runtime.devices.find(context.db(), user.id, deviceId);
-    if (!device || !device->desktop) {
-        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "Device access denied"});
+    if (!(co_await runtime.sessions.authorizeDesktopFileTransfer(context.db(), user, deviceId, sessionId, false))) {
+        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "需要有效的远程桌面会话才能访问文件"});
     }
 
     wire::FileStatRequest req;
@@ -188,16 +188,16 @@ ruvia::task<ruvia::http_response> FileController::stat(ruvia::context& context) 
 
 ruvia::task<void> FileController::download(ruvia::context& context) {
     const auto deviceId = std::string(context.request().query("device_id").value_or(""));
+    const auto sessionId = std::string(context.request().query("session_id").value_or(""));
     const auto path = std::string(context.request().query("path").value_or(""));
-    if (deviceId.empty() || deviceId.size() > 128 || !protocol::validFilePathText(path, false)) {
-        context.respond(context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id or path"}));
+    if (deviceId.empty() || deviceId.size() > 128 || sessionId.empty() || sessionId.size() > 128 || !protocol::validFilePathText(path, false)) {
+        context.respond(context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id, session_id or path"}));
         co_return;
     }
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto& user = context.request_state<UserIdentity>();
-    const auto device = co_await runtime.devices.find(context.db(), user.id, deviceId);
-    if (!device || !device->desktop) {
-        context.respond(context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "Device access denied"}));
+    if (!(co_await runtime.sessions.authorizeDesktopFileTransfer(context.db(), user, deviceId, sessionId, false))) {
+        context.respond(context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "需要有效的远程桌面会话才能下载文件"}));
         co_return;
     }
 
@@ -285,9 +285,11 @@ ruvia::task<void> FileController::download(ruvia::context& context) {
         } else if (frame->has_finish()) {
             if (!frame->finish().success()) {
                 spdlog::warn("file_download_failed device_id={} user_id={} error={}", deviceId, user.id, protocol::fileErrorCodeName(frame->finish().error()));
+                co_await runtime.sessions.auditFileTransfer(context.db(), user.id, deviceId, sessionId, "file.download", false, std::string(protocol::fileErrorCodeName(frame->finish().error())));
                 throw std::runtime_error("file_download_agent_error");
             }
             co_await writer.finish();
+            co_await runtime.sessions.auditFileTransfer(context.db(), user.id, deviceId, sessionId, "file.download", true, meta.archive_zip() ? "zip" : "file");
             spdlog::info("file_download_completed device_id={} user_id={} zip={} bytes={}", deviceId, user.id, meta.archive_zip(), frame->finish().bytes_transferred());
             co_return;
         } else {
@@ -298,16 +300,16 @@ ruvia::task<void> FileController::download(ruvia::context& context) {
 
 ruvia::task<ruvia::http_response> FileController::upload(ruvia::context& context) {
     const auto deviceId = std::string(context.request().query("device_id").value_or(""));
+    const auto sessionId = std::string(context.request().query("session_id").value_or(""));
     const auto path = std::string(context.request().query("path").value_or(""));
     const bool overwrite = context.request().query("overwrite").value_or("0") == "1";
-    if (deviceId.empty() || deviceId.size() > 128 || !protocol::validFilePathText(path, false)) {
-        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id or path"});
+    if (deviceId.empty() || deviceId.size() > 128 || sessionId.empty() || sessionId.size() > 128 || !protocol::validFilePathText(path, false)) {
+        co_return context.error({.status_ = ruvia::http_status::bad_request, .code_ = "invalid_request", .message_ = "Invalid device_id, session_id or path"});
     }
     auto& runtime = context.worker_state<ServerRuntime>();
     const auto& user = context.request_state<UserIdentity>();
-    const auto device = co_await runtime.devices.find(context.db(), user.id, deviceId);
-    if (!device || !device->desktop || !device->writeControl) {
-        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "需要设备控制权限才能上传文件"});
+    if (!(co_await runtime.sessions.authorizeDesktopFileTransfer(context.db(), user, deviceId, sessionId, true))) {
+        co_return context.error({.status_ = ruvia::http_status::forbidden, .code_ = "forbidden", .message_ = "需要有效的可控制远程桌面会话才能上传文件"});
     }
 
     auto bridge = runtime.shared->fileTransfers->create(deviceId, wire::FileTransferStart::UPLOAD, context.worker());
@@ -402,9 +404,11 @@ ruvia::task<ruvia::http_response> FileController::upload(ruvia::context& context
     }
     if (!finalFrame->finish().success()) {
         const auto err = finalFrame->finish().error();
+        co_await runtime.sessions.auditFileTransfer(context.db(), user.id, deviceId, sessionId, "file.upload", false, std::string(protocol::fileErrorCodeName(err)));
         co_return context.error({.status_ = fileErrorStatus(err), .code_ = protocol::fileErrorCodeName(err), .message_ = fileErrorMessage(err)});
     }
 
+    co_await runtime.sessions.auditFileTransfer(context.db(), user.id, deviceId, sessionId, "file.upload", true, overwrite ? "overwrite" : "create");
     spdlog::info("file_upload_completed device_id={} user_id={} bytes={}", deviceId, user.id, finalFrame->finish().bytes_transferred());
     FileUploadResponse response;
     response.set<"filename">(filename);

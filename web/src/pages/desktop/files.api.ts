@@ -47,9 +47,14 @@ function boolField(value: unknown): boolean {
 
 export async function listDeviceFiles(
   deviceId: string,
+  sessionId: string,
   path: string,
 ): Promise<DeviceFileList> {
-  const query = new URLSearchParams({ device_id: deviceId, path });
+  const query = new URLSearchParams({
+    device_id: deviceId,
+    session_id: sessionId,
+    path,
+  });
   const raw = record(
     await jsonRequest(`/api/devices/files/list?${query.toString()}`),
   );
@@ -72,9 +77,14 @@ export async function listDeviceFiles(
 
 export async function statDeviceFile(
   deviceId: string,
+  sessionId: string,
   path: string,
 ): Promise<DeviceFileStat> {
-  const query = new URLSearchParams({ device_id: deviceId, path });
+  const query = new URLSearchParams({
+    device_id: deviceId,
+    session_id: sessionId,
+    path,
+  });
   const raw = record(
     await jsonRequest(`/api/devices/files/stat?${query.toString()}`),
   );
@@ -86,8 +96,16 @@ export async function statDeviceFile(
   };
 }
 
-export function deviceFileDownloadUrl(deviceId: string, path: string): string {
-  const query = new URLSearchParams({ device_id: deviceId, path });
+export function deviceFileDownloadUrl(
+  deviceId: string,
+  sessionId: string,
+  path: string,
+): string {
+  const query = new URLSearchParams({
+    device_id: deviceId,
+    session_id: sessionId,
+    path,
+  });
   return `/api/devices/files/download?${query.toString()}`;
 }
 
@@ -98,6 +116,7 @@ export function joinWindowsPath(base: string, name: string): string {
 
 export function uploadDeviceFile(
   deviceId: string,
+  sessionId: string,
   targetPath: string,
   file: File,
   overwrite: boolean,
@@ -106,6 +125,7 @@ export function uploadDeviceFile(
   const xhr = new XMLHttpRequest();
   const query = new URLSearchParams({
     device_id: deviceId,
+    session_id: sessionId,
     path: targetPath,
     overwrite: overwrite ? "1" : "0",
   });

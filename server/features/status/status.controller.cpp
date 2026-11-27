@@ -124,21 +124,30 @@ ruvia::task<void> writeStatus(ruvia::context& context, StatusSubscription& subsc
         }
         co_await send(context, snapshot);
         co_await sendAccount(context, context.request_state<UserIdentity>());
+        std::uint64_t heartbeatTicks = 0;
         while (!scope.stop_requested()) {
             const auto event = co_await subscription.receive(scope.token());
-            if (!event || scope.stop_requested()) {
+            if (!event || scope.stop_requested() || subscription.closed()) {
                 break;
+            }
+            if (*event == "h") {
+                if (++heartbeatTicks % 10 == 0) {
+                    const auto user = co_await runtime.identities.authenticate(context.db(), token);
+                    if (!user || user->id != subscription.userId || (administration && user->role != "admin") || subscription.closed()) {
+                        break;
+                    }
+                }
+                awaitingPong = true;
+                PingEvent ping;
+                ping.set<"type">("ping");
+                co_await send(context, ping);
+                continue;
             }
             const auto user = co_await runtime.identities.authenticate(context.db(), token);
             if (!user || user->id != subscription.userId || (administration && user->role != "admin") || subscription.closed()) {
                 break;
             }
-            if (*event == "h") {
-                awaitingPong = true;
-                PingEvent ping;
-                ping.set<"type">("ping");
-                co_await send(context, ping);
-            } else if (event->starts_with("u:")) {
+            if (event->starts_with("u:")) {
                 co_await sendAccount(context, *user);
             } else if (event->starts_with("d:")) {
                 const auto id = event->substr(2);
