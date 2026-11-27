@@ -102,13 +102,11 @@ body {
 [hidden] {
   display: none !important;
 }
-[data-desktop-viewport],
-[data-desktop-viewport]:focus,
-[data-desktop-viewport]:focus-visible,
-[data-desktop-viewport] canvas,
-[data-desktop-viewport] canvas:focus,
-[data-desktop-viewport] canvas:focus-visible {
-  outline: none;
+:focus,
+:focus-visible,
+[data-focus-visible="true"] {
+  outline: none !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
 }
 [data-desktop-viewport] canvas[data-control="ready"]:focus {
   cursor: var(--desktop-cursor, default);
