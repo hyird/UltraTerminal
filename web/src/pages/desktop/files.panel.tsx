@@ -40,16 +40,12 @@ interface OverwritePromptState {
   resolve: (overwrite: boolean) => void;
 }
 
-export function DesktopFilesDialog({
+export function DesktopFilesPanel({
   deviceId,
-  deviceName,
   writeControl,
-  onClose,
 }: {
   deviceId: string;
-  deviceName: string;
   writeControl: boolean;
-  onClose: () => void;
 }) {
   const [currentPath, setCurrentPath] = useState("");
   const [parentPath, setParentPath] = useState("");
@@ -179,210 +175,200 @@ export function DesktopFilesDialog({
 
   return (
     <>
-      <Dialog title={`文件管理 · ${deviceName}`} onClose={onClose} size="lg">
-        <div
-          className={`flex flex-col gap-3 ${dragging ? "ring-2 ring-accent rounded-md" : ""}`}
-          onDragOver={(event) => {
-            if (!writeControl || !currentPath) return;
-            event.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            setDragging(false);
-            if (event.dataTransfer.files.length && !uploading) {
-              void handleUploadFiles(event.dataTransfer.files);
-            }
-          }}
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant="tertiary"
-              isDisabled={loading || !currentPath}
-              onPress={() => void loadDirectory("")}
-            >
-              全部磁盘
-            </Button>
-            <Button
-              size="sm"
-              variant="tertiary"
-              isDisabled={loading || !currentPath}
-              onPress={() => void loadDirectory(parentPath)}
-            >
-              上一级
-            </Button>
-            <Button
-              size="sm"
-              variant="tertiary"
-              isDisabled={loading}
-              onPress={() => void loadDirectory(currentPath)}
-            >
-              刷新
-            </Button>
-            <div className="text-muted min-w-0 flex-1 truncate rounded bg-default/50 px-2.5 py-1 text-xs">
-              {currentPath || "此电脑（磁盘列表）"}
-            </div>
-            {writeControl && (
-              <>
-                <input
-                  ref={fileInput}
-                  type="file"
-                  multiple
-                  hidden
-                  onChange={(event) => {
-                    const files = event.target.files;
-                    if (files && files.length) {
-                      void handleUploadFiles(files);
-                    }
-                    event.target.value = "";
-                  }}
-                />
-                <Button
-                  size="sm"
-                  variant="primary"
-                  isDisabled={loading || !currentPath || Boolean(uploading)}
-                  onPress={() => fileInput.current?.click()}
-                >
-                  上传文件
-                </Button>
-              </>
-            )}
+      <div
+        className={`flex flex-col gap-2.5 ${dragging ? "ring-2 ring-accent rounded-md" : ""}`}
+        onDragOver={(event) => {
+          if (!writeControl || !currentPath) return;
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          if (event.dataTransfer.files.length && !uploading) {
+            void handleUploadFiles(event.dataTransfer.files);
+          }
+        }}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="tertiary"
+            isDisabled={loading || !currentPath}
+            onPress={() => void loadDirectory("")}
+          >
+            全部磁盘
+          </Button>
+          <Button
+            size="sm"
+            variant="tertiary"
+            isDisabled={loading || !currentPath}
+            onPress={() => void loadDirectory(parentPath)}
+          >
+            上一级
+          </Button>
+          <Button
+            size="sm"
+            variant="tertiary"
+            isDisabled={loading}
+            onPress={() => void loadDirectory(currentPath)}
+          >
+            刷新
+          </Button>
+          <div className="text-muted min-w-0 flex-1 truncate rounded bg-default/50 px-2.5 py-1 text-xs">
+            {currentPath || "此电脑（磁盘列表）"}
           </div>
-
-          {uploading && (
-            <div className="bg-default/40 flex items-center gap-3 rounded px-3 py-2 text-xs">
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-medium">
-                  正在上传：{uploading.name}（
-                  {uploading.total > 0
-                    ? `${Math.min(100, Math.round((uploading.loaded * 100) / uploading.total))}%`
-                    : formatBytes(uploading.loaded)}
-                  ）
-                </div>
-                <div className="bg-default mt-1 h-1.5 w-full overflow-hidden rounded">
-                  <div
-                    className="bg-accent h-full transition-all"
-                    style={{
-                      width: `${
-                        uploading.total > 0
-                          ? Math.min(
-                              100,
-                              Math.round(
-                                (uploading.loaded * 100) / uploading.total,
-                              ),
-                            )
-                          : 100
-                      }%`,
-                    }}
-                  />
-                </div>
-              </div>
+          {writeControl && (
+            <>
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                hidden
+                onChange={(event) => {
+                  const files = event.target.files;
+                  if (files && files.length) {
+                    void handleUploadFiles(files);
+                  }
+                  event.target.value = "";
+                }}
+              />
               <Button
                 size="sm"
-                variant="danger-soft"
-                onPress={() => activeUpload.current?.abort()}
+                variant="primary"
+                isDisabled={loading || !currentPath || Boolean(uploading)}
+                onPress={() => fileInput.current?.click()}
               >
-                取消
+                上传文件
               </Button>
-            </div>
-          )}
-
-          {error && (
-            <div className="text-danger bg-danger/10 rounded px-3 py-2 text-xs">
-              {error}
-            </div>
-          )}
-
-          {truncated && (
-            <div className="text-warning bg-warning/10 rounded px-3 py-1.5 text-xs">
-              当前目录项过多，仅显示前 {entries.length} 项。
-            </div>
-          )}
-
-          <div className="border-border max-h-[60vh] overflow-y-auto rounded border">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-default/50 text-muted sticky top-0">
-                <tr>
-                  <th className="px-3 py-2 font-medium">名称</th>
-                  <th className="w-24 px-3 py-2 font-medium">大小</th>
-                  <th className="w-44 px-3 py-2 font-medium max-sm:hidden">
-                    修改时间
-                  </th>
-                  <th className="w-32 px-3 py-2 text-right font-medium">
-                    操作
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-border divide-y">
-                {loading ? (
-                  <tr>
-                    <td
-                      colSpan={4}
-                      className="text-muted px-3 py-8 text-center"
-                    >
-                      正在加载目录…
-                    </td>
-                  </tr>
-                ) : entries.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={4}
-                      className="text-muted px-3 py-8 text-center"
-                    >
-                      目录为空
-                    </td>
-                  </tr>
-                ) : (
-                  entries.map((entry) => (
-                    <tr key={entry.name} className="hover:bg-default/30">
-                      <td className="max-w-0 truncate px-3 py-2">
-                        {entry.directory ? (
-                          <button
-                            type="button"
-                            className="text-accent hover:underline cursor-pointer text-left font-medium"
-                            onClick={() =>
-                              void loadDirectory(
-                                joinWindowsPath(currentPath, entry.name),
-                              )
-                            }
-                          >
-                            {entry.name}
-                          </button>
-                        ) : (
-                          <span>{entry.name}</span>
-                        )}
-                      </td>
-                      <td className="text-muted px-3 py-2 whitespace-nowrap">
-                        {entry.directory ? "文件夹" : formatBytes(entry.size)}
-                      </td>
-                      <td className="text-muted px-3 py-2 whitespace-nowrap max-sm:hidden">
-                        {formatModified(entry.modifiedUnixSeconds)}
-                      </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <Button
-                          size="sm"
-                          variant="tertiary"
-                          onPress={() => triggerDownload(entry)}
-                        >
-                          {entry.directory ? "打包下载 .zip" : "下载"}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          {writeControl && currentPath && (
-            <p className="text-muted text-xs">
-              支持点击“上传文件”或直接拖拽本地文件到此窗口上传；目录下载会自动流式打包为
-              ZIP。
-            </p>
+            </>
           )}
         </div>
-      </Dialog>
+
+        {uploading && (
+          <div className="bg-default/40 flex items-center gap-3 rounded px-3 py-2 text-xs">
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium">
+                正在上传：{uploading.name}（
+                {uploading.total > 0
+                  ? `${Math.min(100, Math.round((uploading.loaded * 100) / uploading.total))}%`
+                  : formatBytes(uploading.loaded)}
+                ）
+              </div>
+              <div className="bg-default mt-1 h-1.5 w-full overflow-hidden rounded">
+                <div
+                  className="bg-accent h-full transition-all"
+                  style={{
+                    width: `${
+                      uploading.total > 0
+                        ? Math.min(
+                            100,
+                            Math.round(
+                              (uploading.loaded * 100) / uploading.total,
+                            ),
+                          )
+                        : 100
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="danger-soft"
+              onPress={() => activeUpload.current?.abort()}
+            >
+              取消
+            </Button>
+          </div>
+        )}
+
+        {error && (
+          <div className="text-danger bg-danger/10 rounded px-3 py-2 text-xs">
+            {error}
+          </div>
+        )}
+
+        {truncated && (
+          <div className="text-warning bg-warning/10 rounded px-3 py-1.5 text-xs">
+            当前目录项过多，仅显示前 {entries.length} 项。
+          </div>
+        )}
+
+        <div className="border-border max-h-[50vh] overflow-y-auto rounded border">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-default/50 text-muted sticky top-0">
+              <tr>
+                <th className="px-3 py-2 font-medium">名称</th>
+                <th className="w-24 px-3 py-2 font-medium">大小</th>
+                <th className="w-44 px-3 py-2 font-medium max-sm:hidden">
+                  修改时间
+                </th>
+                <th className="w-32 px-3 py-2 text-right font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-border divide-y">
+              {loading ? (
+                <tr>
+                  <td colSpan={4} className="text-muted px-3 py-8 text-center">
+                    正在加载目录…
+                  </td>
+                </tr>
+              ) : entries.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="text-muted px-3 py-8 text-center">
+                    目录为空
+                  </td>
+                </tr>
+              ) : (
+                entries.map((entry) => (
+                  <tr key={entry.name} className="hover:bg-default/30">
+                    <td className="max-w-0 truncate px-3 py-2">
+                      {entry.directory ? (
+                        <button
+                          type="button"
+                          className="text-accent hover:underline cursor-pointer text-left font-medium"
+                          onClick={() =>
+                            void loadDirectory(
+                              joinWindowsPath(currentPath, entry.name),
+                            )
+                          }
+                        >
+                          {entry.name}
+                        </button>
+                      ) : (
+                        <span>{entry.name}</span>
+                      )}
+                    </td>
+                    <td className="text-muted px-3 py-2 whitespace-nowrap">
+                      {entry.directory ? "文件夹" : formatBytes(entry.size)}
+                    </td>
+                    <td className="text-muted px-3 py-2 whitespace-nowrap max-sm:hidden">
+                      {formatModified(entry.modifiedUnixSeconds)}
+                    </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      <Button
+                        size="sm"
+                        variant="tertiary"
+                        onPress={() => triggerDownload(entry)}
+                      >
+                        {entry.directory ? "打包下载 .zip" : "下载"}
+                      </Button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        {writeControl && currentPath && (
+          <p className="text-muted text-xs">
+            支持点击“上传文件”或直接拖拽本地文件到此面板上传；目录下载会自动流式打包为
+            ZIP。
+          </p>
+        )}
+      </div>
 
       {overwritePrompt && (
         <Dialog

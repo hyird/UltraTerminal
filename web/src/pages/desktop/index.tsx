@@ -3,6 +3,7 @@ import {
   Button,
   Dropdown,
   Label,
+  Popover,
   ToggleButton,
   ToggleButtonGroup,
   toast,
@@ -33,7 +34,7 @@ import {
   restartPermission,
 } from "../devices/device.service";
 import { DesktopReconnect } from "./reconnect.service";
-import { DesktopFilesDialog } from "./files.panel";
+import { DesktopFilesPanel } from "./files.panel";
 import { requestApproval } from "../identity/identity.service";
 import { useDevices } from "../devices/device_state";
 export function DesktopWorkspace() {
@@ -358,13 +359,24 @@ function DesktopPanel({
           </span>
         </div>
         <div className="flex-1" />
-        <Button
-          variant="tertiary"
-          isDisabled={ended}
-          onPress={() => setFilesOpen(true)}
-        >
-          文件
-        </Button>
+        <Popover isOpen={filesOpen && !ended} onOpenChange={setFilesOpen}>
+          <Button variant="tertiary" isDisabled={ended}>
+            文件
+          </Button>
+          <Popover.Content
+            placement="bottom end"
+            className="w-[min(44rem,calc(100vw-2rem))] max-w-none"
+          >
+            <Popover.Dialog className="p-3">
+              {filesOpen && !ended && (
+                <DesktopFilesPanel
+                  deviceId={entry.device.id}
+                  writeControl={entry.ticket.writeControl}
+                />
+              )}
+            </Popover.Dialog>
+          </Popover.Content>
+        </Popover>
         <Button
           variant="tertiary"
           onPress={() => {
@@ -420,14 +432,6 @@ function DesktopPanel({
         )}
       </div>
 
-      {filesOpen && !ended && (
-        <DesktopFilesDialog
-          deviceId={entry.device.id}
-          deviceName={entry.device.name}
-          writeControl={entry.ticket.writeControl}
-          onClose={() => setFilesOpen(false)}
-        />
-      )}
       {verification && (
         <Dialog
           title={verification === "totp" ? "重连验证" : "重连验证"}

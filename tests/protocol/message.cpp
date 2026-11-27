@@ -377,6 +377,17 @@ int main() {
         require(capabilityDecoded && capabilityDecoded->hello().capabilities().system_restart() &&
                     capabilityDecoded->hello().capabilities().boot_time_unix_seconds() == 123456789,
                 "Restart capabilities round trip failed");
+        wire::Envelope fileList;
+        fileList.set_protocol_version(protocol::kVersion);
+        fileList.set_sequence(2);
+        fileList.mutable_file_list_request()->set_request_id(1);
+        fileList.mutable_file_list_request()->set_path("C:\\");
+        auto fileListBytes = protocol::encodeMessage(fileList);
+        require(fileListBytes.has_value(), "Device-level FileListRequest rejected");
+        auto fileListDecoded = protocol::decodeMessage(*fileListBytes);
+        require(fileListDecoded && fileListDecoded->has_file_list_request() && fileListDecoded->file_list_request().path() == "C:\\", "FileListRequest round trip failed");
+        fileList.set_session_id("session");
+        require(!protocol::encodeMessage(fileList), "FileListRequest accepted session_id");
         std::cout << "Protocol bounds, compatibility and channel type checks passed\n";
         return 0;
     } catch (const std::exception& error) {
