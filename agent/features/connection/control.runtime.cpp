@@ -28,9 +28,11 @@
 #include "platform/platform.transport.h"
 #ifdef _WIN32
 #include "features/desktop/session.runtime.h"
+#include "features/desktop/tool.runtime.h"
 #include "platform/windows/desktop_launch.transport.h"
 #include "platform/windows/windows_login.transport.h"
 #endif
+#include "ultraterimal/protocol/automation.protocol.h"
 #include "ultraterimal/protocol/message.protocol.h"
 
 namespace ultraterimal::agent {
@@ -46,6 +48,7 @@ wire::Envelope makeHello(const ConnectionConfig& config, bool desktop = false) {
     reported->set_platform(std::string(platformName()));
     reported->set_file_transfer(true);
     reported->set_terminal(true);
+    reported->set_exec_command(true);
     reported->set_ssh(true);
     reported->set_agent_update(canManageSystemPower());
     reported->set_system_restart(canManageSystemPower());
@@ -58,12 +61,14 @@ wire::Envelope makeHello(const ConnectionConfig& config, bool desktop = false) {
     const bool desktopAvailable = desktop && selected && selected != 0xffffffff &&
                                   (!capabilities.processSession || capabilities.attachedDisplays);
     reported->set_capture_available(desktopAvailable);
+    reported->set_desktop_automation(desktopAvailable);
     reported->set_h264_software(desktopAvailable);
     reported->set_desktop_input_contract(2);
 #else
     (void)desktop;
     reported->set_windows_login_settings(false);
     reported->set_capture_available(false);
+    reported->set_desktop_automation(false);
     reported->set_h264_software(false);
 #endif
     return hello;
@@ -135,7 +140,8 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
     std::unique_ptr<DeviceTransport> transport;
     std::deque<std::string> outbound;
     std::size_t queuedBytes = 0;
-    std::uint64_t outgoingSequence = 1, incomingSequence = 0, deadlineGeneration = 0;
+    std::uint64_t outgoingSequence = 1, incomingSequence = 0, deadlineGeneration = 0, connectionGeneration = 0;
+    unsigned activeExecCommands = 0, activeDesktopTools = 0;
     ControlStatistics statistics;
     std::mt19937 random{std::random_device{}()};
     AgentLogBuffer logs{std::to_string(random()) + "-" + std::to_string(random())};
@@ -365,6 +371,121 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                 } else if (message->has_file_transfer_start()) {
                     auto transferLoop = loopPool ? loopPool->next_loop() : loop;
                     asio::co_spawn(transferLoop.executor(), runFileTransfer(transferLoop, config, std::move(*message->mutable_file_transfer_start())), asio::detached);
+                } else if (message->has_exec_command_request()) {
+                    auto req = std::move(*message->mutable_exec_command_request());
+                    if (activeExecCommands >= 8) {
+                        wire::Envelope response;
+                        response.mutable_exec_command_result()->set_request_id(req.request_id());
+                        response.mutable_exec_command_result()->set_success(false);
+                        response.mutable_exec_command_result()->set_error(wire::EXEC_ERROR_CANCELLED);
+                        response.mutable_exec_command_result()->set_exit_code(-1);
+                        enqueue(std::move(response));
+                    } else {
+                        ++activeExecCommands;
+                        const auto generation = connectionGeneration;
+                        auto self = shared_from_this();
+                        asio::co_spawn(
+                            loop.executor(),
+                            [self, generation, req = std::move(req)]() mutable -> asio::awaitable<void> {
+                                struct ExecGuard {
+                                    std::shared_ptr<State> state;
+                                    ~ExecGuard() {
+                                        if (state->activeExecCommands > 0) {
+                                            --state->activeExecCommands;
+                                        }
+                                    }
+                                } guard{self};
+                                wire::ExecCommandResult result;
+                                try {
+                                    result = ((co_await ruvia::as_awaitable(ruvia::run_blocking(self->loop.worker(), [req = std::move(req)]() mutable {
+                                                  return runPlatformExec(req);
+                                              }))).take_value());
+                                } catch (...) {
+                                    result.set_request_id(req.request_id());
+                                    result.set_success(false);
+                                    result.set_error(wire::EXEC_ERROR_SPAWN_FAILED);
+                                    result.set_exit_code(-1);
+                                }
+                                if (!self->ended && self->connectionGeneration == generation) {
+                                    try {
+                                        wire::Envelope response;
+                                        *response.mutable_exec_command_result() = std::move(result);
+                                        self->enqueue(std::move(response));
+                                    } catch (...) {
+                                        self->disconnect();
+                                    }
+                                }
+                            },
+                            asio::detached);
+                    }
+                } else if (message->has_desktop_snapshot_start()) {
+#ifdef _WIN32
+                    auto req = std::move(*message->mutable_desktop_snapshot_start());
+                    if (!desktopExecutable.empty() && activeDesktopTools < 2) {
+                        ++activeDesktopTools;
+                        auto self = shared_from_this();
+                        auto toolLoop = loopPool ? loopPool->next_loop() : loop;
+                        asio::co_spawn(
+                            loop.executor(),
+                            [self, toolLoop, req = std::move(req)]() mutable -> asio::awaitable<void> {
+                                struct ToolGuard {
+                                    std::shared_ptr<State> state;
+                                    ~ToolGuard() {
+                                        if (state->activeDesktopTools > 0) {
+                                            --state->activeDesktopTools;
+                                        }
+                                    }
+                                } guard{self};
+                                co_await runDesktopSnapshot(toolLoop, self->config, self->desktopExecutable, std::move(req));
+                            },
+                            asio::detached);
+                    }
+#endif
+                } else if (message->has_desktop_action_request()) {
+                    auto req = std::move(*message->mutable_desktop_action_request());
+#ifdef _WIN32
+                    if (desktopExecutable.empty() || activeDesktopTools >= 2) {
+                        wire::Envelope response;
+                        response.mutable_desktop_action_result()->set_request_id(req.request_id());
+                        response.mutable_desktop_action_result()->set_success(false);
+                        response.mutable_desktop_action_result()->set_error(desktopExecutable.empty() ? wire::DESKTOP_TOOL_ERROR_UNAVAILABLE : wire::DESKTOP_TOOL_ERROR_BUSY);
+                        enqueue(std::move(response));
+                    } else {
+                        ++activeDesktopTools;
+                        const auto generation = connectionGeneration;
+                        auto self = shared_from_this();
+                        auto toolLoop = loopPool ? loopPool->next_loop() : loop;
+                        asio::co_spawn(
+                            loop.executor(),
+                            [self, generation, toolLoop, req = std::move(req)]() mutable -> asio::awaitable<void> {
+                                struct ToolGuard {
+                                    std::shared_ptr<State> state;
+                                    ~ToolGuard() {
+                                        if (state->activeDesktopTools > 0) {
+                                            --state->activeDesktopTools;
+                                        }
+                                    }
+                                } guard{self};
+                                wire::DesktopActionResult result = co_await runDesktopAction(toolLoop, self->desktopExecutable, std::move(req));
+                                if (!self->ended && self->connectionGeneration == generation) {
+                                    try {
+                                        wire::Envelope response;
+                                        *response.mutable_desktop_action_result() = std::move(result);
+                                        self->enqueue(std::move(response));
+                                    } catch (...) {
+                                        self->disconnect();
+                                    }
+                                }
+                            },
+                            asio::detached);
+                    }
+#else
+                    wire::Envelope response;
+                    response.mutable_desktop_action_result()->set_request_id(req.request_id());
+                    response.mutable_desktop_action_result()->set_success(false);
+                    response.mutable_desktop_action_result()->set_error(wire::DESKTOP_TOOL_ERROR_UNSUPPORTED);
+                    enqueue(std::move(response));
+#endif
                 } else if (message->has_heartbeat()) {
                     if (!heartbeatPending || !message->session_id().empty() || !message->channel_id().empty()) {
                         throw std::runtime_error("Unexpected heartbeat acknowledgment");
@@ -561,6 +682,7 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
         auto retry = std::chrono::milliseconds(500);
         while (!self->stopping) {
             self->ended = false;
+            ++self->connectionGeneration;
             self->outgoingSequence = 1;
             self->incomingSequence = 0;
             self->heartbeatPending = false;

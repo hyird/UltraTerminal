@@ -21,4 +21,12 @@ export const identityApi = {
     }),
   cancelApproval: (id: string) => jsonRequest("/api/approvals/cancel", { id }),
   approvals: () => jsonRequest("/api/approvals"),
+  tokens: () => jsonRequest("/api/tokens"),
+  createToken: (body: {
+    name: string;
+    scopes: string[];
+    device_ids?: string[];
+    expires_in_days?: number | null;
+  }) => jsonRequest("/api/tokens/create", body),
+  revokeToken: (id: string) => jsonRequest("/api/tokens/revoke", { id }),
 };

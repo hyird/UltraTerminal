@@ -11,8 +11,10 @@ add_library(ultraterimal-server-core STATIC
     modules/identity/identity.service.cpp
     modules/identity/security.protocol.cpp
     modules/telegram/telegram.service.cpp
+    modules/tokens/token.service.cpp
     modules/devices/device.service.cpp
-    modules/sessions/session.service.cpp)
+    modules/sessions/session.service.cpp
+    features/mcp/mcp.protocol.cpp)
 target_include_directories(ultraterimal-server-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(ultraterimal-server-core PUBLIC cxx_std_23)
 set_target_properties(ultraterimal-server-core PROPERTIES CXX_EXTENSIONS OFF)
@@ -57,13 +59,16 @@ add_executable(ultraterimal-server main.cpp
     features/status/status.runtime.cpp
     features/status/status.controller.cpp
     modules/telegram/telegram.controller.cpp
+    modules/tokens/token.controller.cpp
     modules/identity/identity.controller.cpp
     modules/devices/device.controller.cpp
     modules/sessions/session.controller.cpp
     features/desktop/desktop.controller.cpp
     features/terminal/terminal.controller.cpp
     features/file/file.runtime.cpp
-    features/file/file.controller.cpp)
+    features/file/file.controller.cpp
+    features/mcp/snapshot.runtime.cpp
+    features/mcp/mcp.controller.cpp)
 target_compile_features(ultraterimal-server PRIVATE cxx_std_23)
 target_include_directories(ultraterimal-server PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set_target_properties(ultraterimal-server PROPERTIES CXX_EXTENSIONS OFF OUTPUT_NAME gateway)

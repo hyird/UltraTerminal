@@ -157,7 +157,10 @@ function DesktopPanel({
   function triggerResize(width: number, height: number) {
     setResizingTarget({ width, height });
     clearTimeout(resizingClearTimer.current);
-    resizingClearTimer.current = setTimeout(() => setResizingTarget(null), 3000);
+    resizingClearTimer.current = setTimeout(
+      () => setResizingTarget(null),
+      3000,
+    );
     session.current?.resize(width, height);
   }
   const [busy, setBusy] = useState(false);

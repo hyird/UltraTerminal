@@ -41,3 +41,11 @@ target_compile_options(server-terminal-tests PRIVATE
     "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
 add_test(NAME server.terminal COMMAND server-terminal-tests)
 set_tests_properties(server.terminal PROPERTIES LABELS unit TIMEOUT 15)
+
+add_executable(server-mcp-tests mcp.cpp)
+target_link_libraries(server-mcp-tests PRIVATE ultraterimal-server-core ruvia::web)
+target_compile_options(server-mcp-tests PRIVATE
+    "$<$<CXX_COMPILER_ID:MSVC>:/W4;/WX;/permissive-;/utf-8;/EHsc>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>")
+add_test(NAME server.mcp COMMAND server-mcp-tests)
+set_tests_properties(server.mcp PROPERTIES LABELS unit TIMEOUT 15)

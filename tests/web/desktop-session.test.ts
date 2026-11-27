@@ -92,12 +92,16 @@ function harness(
     decode(chunk: EncodedVideoChunk) {
       this.chunks.push(chunk);
     }
-    output(index = this.chunks.length - 1) {
+    output(
+      index = this.chunks.length - 1,
+      displayWidth = 256,
+      displayHeight = 128,
+    ) {
       const timestamp = this.chunks[index].timestamp;
       this.callbacks.output({
         timestamp,
-        displayWidth: 256,
-        displayHeight: 128,
+        displayWidth,
+        displayHeight,
         close() {},
         marker: "video",
       } as unknown as VideoFrame);
@@ -115,9 +119,30 @@ function harness(
   const stage = { parentElement: viewport, style: { width: "", height: "" } };
   const makeCanvas = () => {
     let attributes: unknown;
+    let width = 256;
+    let height = 128;
+    let dimensionWrites = 0;
     return {
-      width: 256,
-      height: 128,
+      get width() {
+        return width;
+      },
+      set width(value: number) {
+        dimensionWrites++;
+        width = value;
+      },
+      get height() {
+        return height;
+      },
+      set height(value: number) {
+        dimensionWrites++;
+        height = value;
+      },
+      get dimensionWrites() {
+        return dimensionWrites;
+      },
+      resetDimensionWrites() {
+        dimensionWrites = 0;
+      },
       dataset: {} as Record<string, string>,
       parentElement: stage,
       get attributes() {
@@ -560,5 +585,42 @@ test("DesktopSession rejects replayed sequence and foreign bindings before decod
     } finally {
       await h.dispose();
     }
+  }
+});
+
+test("DesktopSession preserves painted canvas across tab visibility resume and resizes on frame draw", async () => {
+  const h = harness();
+  try {
+    await h.activate();
+    h.canvas.resetDimensionWrites();
+    h.overlay.resetDimensionWrites();
+
+    h.session.setVisible(false);
+    h.session.setVisible(true);
+    h.config(3, 2, "avc1.42E033", 256, 128);
+    await until(() => h.decoders.length === 3);
+    expect(h.canvas.dimensionWrites).toBe(0);
+    expect(h.overlay.dimensionWrites).toBe(0);
+    h.frame(3, 1);
+    await until(() => h.decoders[2].chunks.length === 1);
+    h.decoders[2].output(0, 256, 128);
+    expect(h.canvas.dimensionWrites).toBe(0);
+
+    h.config(4, 2, "avc1.42E033", 512, 256);
+    await until(() => h.decoders.length === 4);
+    expect(h.canvas.dimensionWrites).toBe(0);
+    expect(h.canvas.width).toBe(256);
+    expect(h.canvas.height).toBe(128);
+    expect(h.overlay.width).toBe(512);
+    expect(h.overlay.height).toBe(256);
+    h.frame(4, 1);
+    await until(() => h.decoders[3].chunks.length === 1);
+    h.decoders[3].output(0, 512, 256);
+    expect(h.canvas.width).toBe(512);
+    expect(h.canvas.height).toBe(256);
+    expect(h.canvas.dimensionWrites).toBe(2);
+    expect(h.endings).toEqual([]);
+  } finally {
+    await h.dispose();
   }
 });

@@ -4,6 +4,8 @@ const errorMessages: Record<string, string> = {
   account_rejected:
     "用户操作未完成，请检查用户名是否重复、身份验证以及管理员保护限制",
   telegram_rejected: "Telegram 操作未完成，请检查 Bot 配置、当前账号绑定状态",
+  token_rejected: "令牌参数无效，请检查名称、权限范围或有效期",
+  token_limit: "有效 API 令牌数量已达上限（最多 50 个）",
   device_unavailable: "设备离线或暂不具备桌面采集能力，请检查 Agent 状态",
   agent_unavailable: "Agent 离线或不支持此操作",
   desktop_input_upgrade_required:

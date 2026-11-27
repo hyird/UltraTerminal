@@ -244,8 +244,10 @@ export function TerminalPanel({
 
   return (
     <div
-      className="bg-surface flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden outline-none"
-      hidden={!visible}
+      className={`bg-surface absolute inset-0 flex min-h-0 min-w-0 max-w-full flex-col overflow-hidden outline-none ${
+        visible ? "visible z-10" : "invisible pointer-events-none z-0"
+      }`}
+      aria-hidden={!visible}
     >
       <div className="desktop-toolbar flex shrink-0 flex-wrap items-center gap-1.5 px-3 py-1.5 max-md:px-2">
         <span className="text-sm font-medium">{entry.device.name}</span>

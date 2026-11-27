@@ -21,6 +21,7 @@
 #ifdef _WIN32
 #include "features/desktop/worker.runtime.h"
 #include "platform/windows/desktop_process.transport.h"
+#include "platform/windows/desktop_tool.transport.h"
 #include "platform/windows/login_install.transport.h"
 #include "platform/windows/pipe.transport.h"
 #endif
@@ -39,7 +40,7 @@ int main(int argc, char** argv) {
             arguments.emplace_back(argv[i]);
         }
         const auto options = parseCommandLine(arguments);
-        background = options && (options->command == Command::kService || options->command == Command::kDesktop || options->command == Command::kApplyUpdate);
+        background = options && (options->command == Command::kService || options->command == Command::kDesktop || options->command == Command::kDesktopTool || options->command == Command::kApplyUpdate);
         if (!options) {
             std::wcerr << options.error() << L'\n';
             return 2;
@@ -94,7 +95,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("Windows login provider is only supported on Windows");
 #endif
             break;
-        case Command::kDesktop: {
+        case Command::kDesktop:
+        case Command::kDesktopTool: {
 #ifdef _WIN32
             DesktopParent parent(options->windowsSession, options->parentProcess);
             const auto coreCount = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
@@ -105,7 +107,10 @@ int main(int argc, char** argv) {
             std::promise<std::pair<std::exception_ptr, std::uint32_t>> completed;
             auto resultFuture = completed.get_future();
             loopPool.start();
-            asio::co_spawn(workerLoop.executor(), runDesktopWorker(workerLoop, blockingPool, *pipe, options->windowsSession), [&](std::exception_ptr error, std::uint32_t result) {
+            auto workerTask = options->command == Command::kDesktopTool
+                                  ? runDesktopToolWorker(workerLoop, *pipe)
+                                  : runDesktopWorker(workerLoop, blockingPool, *pipe, options->windowsSession);
+            asio::co_spawn(workerLoop.executor(), std::move(workerTask), [&](std::exception_ptr error, std::uint32_t result) {
                 pipe->cancel();
                 completed.set_value({std::move(error), result});
                 loopPool.request_stop();

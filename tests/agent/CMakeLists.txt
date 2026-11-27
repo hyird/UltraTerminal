@@ -15,6 +15,11 @@ add_executable(agent-terminal-tests terminal.cpp)
 target_link_libraries(agent-terminal-tests PRIVATE ultraterimal-agent-core)
 add_test(NAME agent.terminal COMMAND agent-terminal-tests)
 
+add_executable(agent-exec-tests exec.cpp)
+target_link_libraries(agent-exec-tests PRIVATE ultraterimal-agent-core)
+add_test(NAME agent.exec COMMAND agent-exec-tests)
+set_tests_properties(agent.exec PROPERTIES LABELS unit TIMEOUT 15)
+
 add_test(NAME agent.probe COMMAND ultraterimal-agent --probe)
 set_tests_properties(agent.probe PROPERTIES PASS_REGULAR_EXPRESSION "gateway_connected.*false" TIMEOUT 15)
 
@@ -192,6 +197,12 @@ if(WIN32)
     add_executable(agent-recovery-tests recovery.cpp)
     target_link_libraries(agent-recovery-tests PRIVATE ultraterimal-agent-core)
     add_test(NAME agent.recovery COMMAND agent-recovery-tests)
+
+    find_package(ZLIB REQUIRED)
+    add_executable(agent-png-snapshot-tests png_snapshot.cpp)
+    target_link_libraries(agent-png-snapshot-tests PRIVATE ultraterimal-agent-core ZLIB::ZLIB)
+    add_test(NAME agent.png_snapshot COMMAND agent-png-snapshot-tests)
+    set_tests_properties(agent.png_snapshot PROPERTIES LABELS unit TIMEOUT 10)
 
     set_tests_properties(agent.command_line agent.video_color agent.frame_flow agent.login_serialization agent.login_credential agent.login_provider agent.connection_config agent.cursor agent.recovery PROPERTIES LABELS unit)
 else()

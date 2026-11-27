@@ -22,6 +22,7 @@ import {
 } from "./identity.service";
 import type { SecurityInfo, TelegramInfo } from "./identity.types";
 import { ProofFields } from "./proof";
+import { ApiTokensSection } from "./tokens";
 type Action =
   "begin" | "confirm" | "disable" | "recovery" | "password" | "bind" | "unbind";
 const titles: Record<Action, string> = {
@@ -163,6 +164,7 @@ export function SecurityPage() {
               {telegram?.telegramId ? "解绑" : "绑定 Telegram"}
             </Button>
           </SecurityRow>
+          <ApiTokensSection />
         </div>
       )}
       {binding && (

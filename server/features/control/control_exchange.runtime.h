@@ -167,6 +167,18 @@ ruvia::task<void> exchangeControl(Context& context, Connection& socket, const De
             }
             continue;
         }
+        if (incoming->has_exec_command_result()) {
+            if (!connection.execCommandReply(incoming->exec_command_result())) {
+                break;
+            }
+            continue;
+        }
+        if (incoming->has_desktop_action_result()) {
+            if (!connection.desktopActionReply(incoming->desktop_action_result())) {
+                break;
+            }
+            continue;
+        }
         if (incoming->has_windows_restart_result()) {
             const auto result = incoming->windows_restart_result();
             if (!connection.windowsRestartReply(result)) {

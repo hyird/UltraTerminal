@@ -5,6 +5,7 @@
 
 #include <google/protobuf/io/coded_stream.h>
 
+#include "ultraterimal/protocol/automation.protocol.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
 #include "ultraterimal/protocol/desktop_session.protocol.h"
 #include "ultraterimal/protocol/file.protocol.h"
@@ -66,15 +67,7 @@ std::expected<void, MessageError> validateInputEvent(const wire::InputEvent& inp
         break;
     case wire::InputEvent::KEY: {
         const auto code = input.code();
-        // Windows virtual-key values, with left/right modifiers. 0x10D is
-        // the extended keypad Enter; packet/process and unassigned keys are excluded.
-        const bool key = code == 3 || code == 8 || code == 9 || code == 12 || code == 13 ||
-                         (code >= 0x13 && code <= 0x2f) || (code >= 0x30 && code <= 0x39) ||
-                         (code >= 0x41 && code <= 0x5d) || code == 0x5f || (code >= 0x60 && code <= 0x87) ||
-                         (code >= 0x90 && code <= 0x96) || (code >= 0xa0 && code <= 0xb7) ||
-                         (code >= 0xba && code <= 0xc0) || (code >= 0xdb && code <= 0xdf) ||
-                         code == 0xe1 || code == 0xe2 || code == 0xe6 || (code >= 0xe9 && code <= 0xfe) || code == 0x10d;
-        valid = key && noPosition && !input.wheel_delta();
+        valid = validVirtualKeyCode(code) && noPosition && !input.wheel_delta();
         break;
     }
     case wire::InputEvent::WHEEL:
@@ -146,6 +139,11 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kFileStatRequest:
     case wire::Envelope::kFileStatResult:
     case wire::Envelope::kFileTransferStart:
+    case wire::Envelope::kExecCommandRequest:
+    case wire::Envelope::kExecCommandResult:
+    case wire::Envelope::kDesktopSnapshotStart:
+    case wire::Envelope::kDesktopActionRequest:
+    case wire::Envelope::kDesktopActionResult:
         if (!m.session_id().empty() || !m.channel_id().empty()) {
             return invalid();
         }
@@ -456,6 +454,31 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         }
         break;
     }
+    case wire::Envelope::kExecCommandRequest:
+        if (!validExecCommandRequest(m.exec_command_request()) || !m.session_id().empty() || !m.channel_id().empty() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kExecCommandResult:
+        if (!validExecCommandResult(m.exec_command_result()) || !m.session_id().empty() || !m.channel_id().empty() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kDesktopSnapshotStart:
+        if (!validDesktopSnapshotStart(m.desktop_snapshot_start()) || !m.session_id().empty() || !m.channel_id().empty() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kDesktopActionRequest:
+        if (!validDesktopActionRequest(m.desktop_action_request()) || !m.session_id().empty() || !m.channel_id().empty() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kDesktopActionResult:
+        if (!validDesktopActionResult(m.desktop_action_result()) || !m.session_id().empty() || !m.channel_id().empty() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
     default:
         break;
     }

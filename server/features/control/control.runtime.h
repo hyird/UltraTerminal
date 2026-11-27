@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ultraterimal/protocol/automation.protocol.h"
 #include "ultraterimal/protocol/file.protocol.h"
 #include "ultraterimal/protocol/message.protocol.h"
 
@@ -36,6 +37,11 @@ class ControlConnection {
     ruvia::task<std::optional<wire::FileStatResult>> fileStat(wire::FileStatRequest request);
     bool fileStatReply(const wire::FileStatResult& result);
     bool enqueueFileTransfer(wire::FileTransferStart request);
+    ruvia::task<std::optional<wire::ExecCommandResult>> execCommand(wire::ExecCommandRequest request);
+    bool execCommandReply(const wire::ExecCommandResult& result);
+    ruvia::task<std::optional<wire::DesktopActionResult>> desktopAction(wire::DesktopActionRequest request);
+    bool desktopActionReply(const wire::DesktopActionResult& result);
+    bool enqueueDesktopSnapshot(wire::DesktopSnapshotStart request);
 
   private:
     ruvia::worker_ref worker_;
@@ -45,6 +51,10 @@ class ControlConnection {
     std::uint64_t fileListRequest_ = 0;
     std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::FileStatResult>> fileStatPending_;
     std::uint64_t fileStatRequest_ = 0;
+    std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::ExecCommandResult>> execPending_;
+    std::uint64_t execRequest_ = 0;
+    std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::DesktopActionResult>> desktopActionPending_;
+    std::uint64_t desktopActionRequest_ = 0;
     std::deque<std::string> sentRestartOperations_;
     std::pair<ruvia::channel_sender<std::string>, ruvia::channel_receiver<std::string>> queue_;
     std::uint64_t sequence_ = 1; // WELCOME uses sequence 1 before the writer starts sending.

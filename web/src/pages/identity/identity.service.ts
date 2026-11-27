@@ -8,6 +8,9 @@ import type {
   TelegramInfo,
   Approval,
   SecurityProof,
+  ApiToken,
+  CreatedApiToken,
+  TokenScope,
 } from "./identity.types";
 function user(value: unknown): User {
   const object = record(value);
@@ -212,4 +215,89 @@ export async function cancelApproval(id: string): Promise<void> {
 
 export async function loadApprovals(): Promise<Approval[]> {
   return approvalList(await identityApi.approvals());
+}
+
+const VALID_SCOPES: ReadonlySet<string> = new Set([
+  "devices:read",
+  "files:read",
+  "files:write",
+  "terminal:exec",
+  "desktop:read",
+  "desktop:input",
+]);
+
+function nullableText(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return text(value);
+}
+
+function parseApiTokenItem(value: unknown): ApiToken {
+  const item = record(value);
+  if (!Array.isArray(item.scopes) || !Array.isArray(item.device_ids))
+    throw new Error("令牌权限格式错误");
+  const scopes = item.scopes.map(text).filter((scope): scope is TokenScope => {
+    if (!VALID_SCOPES.has(scope)) throw new Error("存在未知令牌权限");
+    return true;
+  });
+  return {
+    id: text(item.id),
+    name: text(item.name),
+    prefix: text(item.prefix),
+    scopes,
+    deviceIds: item.device_ids.map(text),
+    expiresAt: nullableText(item.expires_at),
+    lastUsedAt: nullableText(item.last_used_at),
+    createdAt: text(item.created_at),
+  };
+}
+
+export function parseApiTokenList(value: unknown): ApiToken[] {
+  if (!Array.isArray(value)) throw new Error("令牌列表格式错误");
+  return value.map(parseApiTokenItem);
+}
+
+export async function listTokens(): Promise<ApiToken[]> {
+  return parseApiTokenList(await identityApi.tokens());
+}
+
+export async function createToken(input: {
+  name: string;
+  scopes: TokenScope[];
+  deviceIds: string[];
+  expiresInDays: number | null;
+}): Promise<CreatedApiToken> {
+  const item = record(
+    await identityApi.createToken({
+      name: input.name,
+      scopes: input.scopes,
+      device_ids: input.deviceIds,
+      expires_in_days: input.expiresInDays,
+    }),
+  );
+  return {
+    ...parseApiTokenItem({ ...item, last_used_at: null }),
+    token: text(item.token),
+  };
+}
+
+export async function revokeToken(id: string): Promise<void> {
+  await identityApi.revokeToken(id);
+}
+
+export function buildMcpClientConfig(origin: string, rawToken: string): string {
+  const endpoint = `${origin.replace(/\/+$/, "")}/api/mcp`;
+  return JSON.stringify(
+    {
+      mcpServers: {
+        ultraterimal: {
+          url: endpoint,
+          headers: {
+            Authorization: `Bearer ${rawToken}`,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  );
 }

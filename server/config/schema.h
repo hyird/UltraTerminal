@@ -214,5 +214,20 @@ CREATE TABLE IF NOT EXISTS gateway_leases (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin)SQL"}),
     ruvia::db_migration({.id_ = "002_devices_platform", .sql_ = R"SQL(
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS platform VARCHAR(32) NOT NULL DEFAULT 'windows-x64')SQL"}),
+    ruvia::db_migration({.id_ = "003_api_tokens", .sql_ = R"SQL(
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id VARCHAR(128) PRIMARY KEY,
+    user_id VARCHAR(128) NOT NULL REFERENCES users(id),
+    name VARCHAR(128) NOT NULL,
+    token_prefix VARCHAR(16) NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    scopes VARCHAR(512) NOT NULL,
+    device_ids TEXT NOT NULL DEFAULT '',
+    expires_at DATETIME(6) NULL,
+    last_used_at DATETIME(6) NULL,
+    revoked_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    INDEX api_tokens_user(user_id, created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_nopad_bin)SQL"}),
 };
 } // namespace ultraterimal::server

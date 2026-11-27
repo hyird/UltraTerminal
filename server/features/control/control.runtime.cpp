@@ -148,6 +148,85 @@ bool ControlConnection::enqueueFileTransfer(wire::FileTransferStart request) {
     envelope.mutable_file_transfer_start()->Swap(&request);
     return enqueue(std::move(envelope));
 }
+ruvia::task<std::optional<wire::ExecCommandResult>> ControlConnection::execCommand(wire::ExecCommandRequest request) {
+    if (!ready || !capabilities.exec_command() || execPending_.size() >= 8 || execRequest_ == std::numeric_limits<std::uint64_t>::max()) {
+        co_return std::nullopt;
+    }
+    const auto id = ++execRequest_;
+    auto [completion, receiver] = ruvia::make_one_shot<wire::ExecCommandResult>(worker_);
+    execPending_.emplace(id, std::move(completion));
+    struct Pending {
+        std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::ExecCommandResult>>& map;
+        std::uint64_t id;
+        ~Pending() { map.erase(id); }
+    } pending{execPending_, id};
+    request.set_request_id(id);
+    const std::uint32_t waitMs = (request.timeout_ms() ? request.timeout_ms() : protocol::kDefaultExecTimeoutMs) + 5000;
+    wire::Envelope envelope;
+    envelope.mutable_exec_command_request()->Swap(&request);
+    if (!enqueue(std::move(envelope))) {
+        co_return std::nullopt;
+    }
+    auto result = co_await receiver.wait({.timeout_ = std::chrono::milliseconds(waitMs)});
+    if (!result.has_value()) {
+        co_return std::nullopt;
+    }
+    co_return std::move(result).take_value();
+}
+bool ControlConnection::execCommandReply(const wire::ExecCommandResult& result) {
+    if (!result.request_id() || result.request_id() > execRequest_) {
+        return false;
+    }
+    if (const auto it = execPending_.find(result.request_id()); it != execPending_.end()) {
+        auto completion = std::move(it->second);
+        execPending_.erase(it);
+        (void)completion.complete(result);
+    }
+    return true;
+}
+ruvia::task<std::optional<wire::DesktopActionResult>> ControlConnection::desktopAction(wire::DesktopActionRequest request) {
+    if (!ready || !capabilities.desktop_automation() || desktopActionPending_.size() >= 4 || desktopActionRequest_ == std::numeric_limits<std::uint64_t>::max()) {
+        co_return std::nullopt;
+    }
+    const auto id = ++desktopActionRequest_;
+    auto [completion, receiver] = ruvia::make_one_shot<wire::DesktopActionResult>(worker_);
+    desktopActionPending_.emplace(id, std::move(completion));
+    struct Pending {
+        std::unordered_map<std::uint64_t, ruvia::one_shot_completion<wire::DesktopActionResult>>& map;
+        std::uint64_t id;
+        ~Pending() { map.erase(id); }
+    } pending{desktopActionPending_, id};
+    request.set_request_id(id);
+    wire::Envelope envelope;
+    envelope.mutable_desktop_action_request()->Swap(&request);
+    if (!enqueue(std::move(envelope))) {
+        co_return std::nullopt;
+    }
+    auto result = co_await receiver.wait({.timeout_ = std::chrono::seconds(15)});
+    if (!result.has_value()) {
+        co_return std::nullopt;
+    }
+    co_return std::move(result).take_value();
+}
+bool ControlConnection::desktopActionReply(const wire::DesktopActionResult& result) {
+    if (!result.request_id() || result.request_id() > desktopActionRequest_) {
+        return false;
+    }
+    if (const auto it = desktopActionPending_.find(result.request_id()); it != desktopActionPending_.end()) {
+        auto completion = std::move(it->second);
+        desktopActionPending_.erase(it);
+        (void)completion.complete(result);
+    }
+    return true;
+}
+bool ControlConnection::enqueueDesktopSnapshot(wire::DesktopSnapshotStart request) {
+    if (!ready || !capabilities.desktop_automation()) {
+        return false;
+    }
+    wire::Envelope envelope;
+    envelope.mutable_desktop_snapshot_start()->Swap(&request);
+    return enqueue(std::move(envelope));
+}
 bool ControlConnection::enqueue(wire::Envelope message) {
     if (!ready || sequence_ == std::numeric_limits<std::uint64_t>::max()) {
         return false;
@@ -199,5 +278,22 @@ void ControlConnection::close() {
         (void)completion.complete(std::move(result));
     }
     fileStatPending_.clear();
+    for (auto& [id, completion] : execPending_) {
+        wire::ExecCommandResult result;
+        result.set_request_id(id);
+        result.set_success(false);
+        result.set_error(wire::EXEC_ERROR_CANCELLED);
+        result.set_exit_code(-1);
+        (void)completion.complete(std::move(result));
+    }
+    execPending_.clear();
+    for (auto& [id, completion] : desktopActionPending_) {
+        wire::DesktopActionResult result;
+        result.set_request_id(id);
+        result.set_success(false);
+        result.set_error(wire::DESKTOP_TOOL_ERROR_FAILED);
+        (void)completion.complete(std::move(result));
+    }
+    desktopActionPending_.clear();
 }
 } // namespace ultraterimal::server

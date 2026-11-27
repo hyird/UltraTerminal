@@ -23,7 +23,8 @@ enum class Command { kHelp,
                      kConnect,
                      kEnroll,
                      kApplyUpdate,
-                     kDesktop };
+                     kDesktop,
+                     kDesktopTool };
 struct CommandLine {
     Command command = Command::kHelp;
     std::filesystem::path configPath;

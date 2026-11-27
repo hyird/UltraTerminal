@@ -72,6 +72,8 @@ if(WIN32)
         features/desktop/video_color.protocol.cpp
         features/desktop/video_color_avx2.protocol.cpp
         features/desktop/desktop.transport.cpp
+        features/desktop/png.protocol.cpp
+        features/desktop/tool.runtime.cpp
         features/desktop/worker.runtime.cpp
         features/desktop/bridge.runtime.cpp
         features/desktop/relay.runtime.cpp
@@ -95,6 +97,8 @@ if(WIN32)
         platform/windows/desktop_process.transport.cpp
         platform/windows/desktop_launch.transport.cpp
         platform/windows/desktop.transport.cpp
+        platform/windows/desktop_tool.transport.cpp
+        platform/windows/exec.transport.cpp
         platform/windows/input.transport.cpp
         platform/windows/media_events.transport.cpp
         platform/windows/media_encoder.transport.cpp
@@ -137,6 +141,7 @@ else()
         ${agent_common_sources}
         platform/linux/credential.transport.cpp
         platform/linux/capability.transport.cpp
+        platform/linux/exec.transport.cpp
         platform/linux/file.transport.cpp
         platform/linux/system_restart.transport.cpp
         platform/linux/update.transport.cpp

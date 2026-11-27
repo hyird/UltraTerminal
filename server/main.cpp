@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
         // Homogeneous multi-core Ruvia workers; mutable state is strictly partitioned per worker.
         app.listen({.address_ = config.address, .http_ = config.port})
             .workers({.worker_count_ = workers, .process_signal_handlers_ = ruvia::process_signal_handler_policy::install})
-            .server({.idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::minutes(30), .write_timeout_ = std::chrono::seconds(60), .max_connections_per_worker_ = 256, .max_buffered_body_bytes_ = 65536, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
+            .server({.idle_timeout_ = std::chrono::seconds(45), .request_header_timeout_ = std::chrono::seconds(10), .request_body_timeout_ = std::chrono::minutes(30), .write_timeout_ = std::chrono::seconds(60), .max_connections_per_worker_ = 256, .max_buffered_body_bytes_ = 262144, .max_websocket_message_bytes_ = ultraterimal::protocol::kMaximumMessageBytes})
             .db({.config_ = toRuviaDbConfig(config.database, 2)})
             .http_client(std::move(telegramClient))
             .blocking_pool({.thread_count_ = blockingThreads, .queue_capacity_ = std::max<std::size_t>(32u, blockingThreads * 16u)})

@@ -29,4 +29,22 @@ class UserAuthentication final {
         co_await next();
     }
 };
+class ApiTokenAuthentication final {
+  public:
+    ruvia::task<void> invoke(ruvia::context& context, ruvia::next& next) {
+        const auto header = context.request().header("Authorization").value_or("");
+        constexpr std::string_view kBearer = "Bearer ";
+        std::optional<AuthenticatedToken> auth;
+        if (header.starts_with(kBearer)) {
+            auth = co_await context.worker_state<ServerRuntime>().tokens.authenticate(context.db(), std::string(header.substr(kBearer.size())));
+        }
+        if (!auth) {
+            co_await context.request().discard_body();
+            context.respond(context.error({.status_ = ruvia::http_status::unauthorized, .code_ = "unauthorized", .message_ = "Valid API token required"}));
+            co_return;
+        }
+        const auto binding = context.bind_request_state(*auth);
+        co_await next();
+    }
+};
 } // namespace ultraterimal::server

@@ -34,10 +34,14 @@ class DesktopIdentity {
 // production callers dispatch construction through their bounded blocking pool.
 // On shutdown close IPC, await exit, and terminate if the owner's grace expires.
 // Destruction kills the contained process tree as a last-resort cleanup.
+enum class DesktopWorkerRole { kDesktop,
+                               kTool };
+
 class DesktopProcess {
   public:
     DesktopProcess(asio::any_io_executor executor, const DesktopIdentity& user,
-                   const std::filesystem::path& executable, const std::wstring& pipeName);
+                   const std::filesystem::path& executable, const std::wstring& pipeName,
+                   DesktopWorkerRole workerRole = DesktopWorkerRole::kDesktop);
     ~DesktopProcess();
     DesktopProcess(const DesktopProcess&) = delete;
     DesktopProcess& operator=(const DesktopProcess&) = delete;

@@ -48,6 +48,41 @@ ruvia::task<void> replyRestartLate(ultraterimal::server::ControlConnection& conn
         throw std::runtime_error("Unknown restart operation was accepted");
     }
 }
+ruvia::task<void> replyExec(ultraterimal::server::ControlConnection& connection) {
+    const auto raw = co_await connection.receive({});
+    if (!raw.has_value()) {
+        throw std::runtime_error("Missing exec command request");
+    }
+    const auto env = ultraterimal::protocol::decodeMessage(*raw);
+    if (!env || !env->has_exec_command_request()) {
+        throw std::runtime_error("Wrong exec command request");
+    }
+    ultraterimal::wire::ExecCommandResult res;
+    res.set_request_id(env->exec_command_request().request_id());
+    res.set_success(true);
+    res.set_stdout_data("hi");
+    if (!connection.execCommandReply(res)) {
+        throw std::runtime_error("Valid exec command reply rejected");
+    }
+}
+ruvia::task<void> replyDesktopAction(ultraterimal::server::ControlConnection& connection) {
+    const auto raw = co_await connection.receive({});
+    if (!raw.has_value()) {
+        throw std::runtime_error("Missing desktop action request");
+    }
+    const auto env = ultraterimal::protocol::decodeMessage(*raw);
+    if (!env || !env->has_desktop_action_request()) {
+        throw std::runtime_error("Wrong desktop action request");
+    }
+    ultraterimal::wire::DesktopActionResult res;
+    res.set_request_id(env->desktop_action_request().request_id());
+    res.set_success(true);
+    res.set_display_width(1920);
+    res.set_display_height(1080);
+    if (!connection.desktopActionReply(res)) {
+        throw std::runtime_error("Valid desktop action reply rejected");
+    }
+}
 void require(bool value) {
     if (!value) {
         throw std::runtime_error("Control queue invariant failed");
@@ -161,6 +196,69 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
                     require(settings && settings->success());
                     repliesJoined = true;
                     co_await replies.join();
+                    connection.capabilities.set_exec_command(true);
+                    connection.capabilities.set_desktop_automation(true);
+                    wire::ExecCommandRequest execReq;
+                    execReq.set_command("echo hi");
+                    {
+                        ruvia::task_scope execScope(worker);
+                        bool execJoined = false;
+                        std::exception_ptr execFailure;
+                        try {
+                            execScope.spawn(replyExec(connection));
+                            const auto execRes = co_await connection.execCommand(execReq);
+                            require(execRes && execRes->success() && execRes->stdout_data() == "hi");
+                            execJoined = true;
+                            co_await execScope.join();
+                        } catch (...) {
+                            execFailure = std::current_exception();
+                        }
+                        if (!execJoined) {
+                            execScope.request_stop();
+                            try {
+                                co_await execScope.join();
+                            } catch (...) {
+                                if (!execFailure) {
+                                    execFailure = std::current_exception();
+                                }
+                            }
+                        }
+                        if (execFailure) {
+                            std::rethrow_exception(execFailure);
+                        }
+                    }
+                    wire::DesktopActionRequest actionReq;
+                    actionReq.set_action(wire::DesktopActionRequest::ACTION_CLICK);
+                    actionReq.set_normalized(true);
+                    actionReq.set_x(100);
+                    actionReq.set_y(200);
+                    {
+                        ruvia::task_scope actionScope(worker);
+                        bool actionJoined = false;
+                        std::exception_ptr actionFailure;
+                        try {
+                            actionScope.spawn(replyDesktopAction(connection));
+                            const auto actionRes = co_await connection.desktopAction(actionReq);
+                            require(actionRes && actionRes->success() && actionRes->display_width() == 1920);
+                            actionJoined = true;
+                            co_await actionScope.join();
+                        } catch (...) {
+                            actionFailure = std::current_exception();
+                        }
+                        if (!actionJoined) {
+                            actionScope.request_stop();
+                            try {
+                                co_await actionScope.join();
+                            } catch (...) {
+                                if (!actionFailure) {
+                                    actionFailure = std::current_exception();
+                                }
+                            }
+                        }
+                        if (actionFailure) {
+                            std::rethrow_exception(actionFailure);
+                        }
+                    }
                     {
                         const auto disconnectReplyWorker = worker;
                         ruvia::task_scope disconnectReply(disconnectReplyWorker);

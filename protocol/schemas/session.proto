@@ -4,7 +4,7 @@ option optimize_for = LITE_RUNTIME;
 
 // First record of an authenticated TLS/QUIC connection, before Envelope traffic.
 message NativeConnect {
-  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; AGENT_UPDATE = 4; FILE_TRANSFER = 5; TERMINAL_CHANNEL = 6; }
+  enum Purpose { UNSPECIFIED = 0; CONTROL = 1; DESKTOP_CHANNEL = 2; ENROLLMENT = 3; AGENT_UPDATE = 4; FILE_TRANSFER = 5; TERMINAL_CHANNEL = 6; DESKTOP_SNAPSHOT = 7; }
   uint32 protocol_version = 1;
   Purpose purpose = 2;
   bytes credential = 3;
@@ -38,6 +38,8 @@ message Capabilities {
   bool file_transfer = 14;
   string platform = 15;
   bool terminal = 16;
+  bool exec_command = 17;
+  bool desktop_automation = 18;
 }
 // Update packages travel over an independent authenticated native connection.
 message AgentUpdate { string version = 1; string sha256 = 2; uint64 size = 3; }
@@ -262,6 +264,101 @@ message FileTransferFrame {
     FileTransferFinish finish = 4;
   }
 }
+enum ExecErrorCode {
+  EXEC_ERROR_NONE = 0;
+  EXEC_ERROR_INVALID_REQUEST = 1;
+  EXEC_ERROR_TIMEOUT = 2;
+  EXEC_ERROR_SPAWN_FAILED = 3;
+  EXEC_ERROR_CANCELLED = 4;
+}
+message ExecCommandRequest {
+  uint64 request_id = 1;
+  string command = 2;
+  string cwd = 3;
+  uint32 timeout_ms = 4;
+  uint32 max_output_bytes = 5;
+}
+message ExecCommandResult {
+  uint64 request_id = 1;
+  bool success = 2;
+  ExecErrorCode error = 3;
+  sint32 exit_code = 4;
+  bytes stdout_data = 5;
+  bytes stderr_data = 6;
+  bool truncated = 7;
+  bool timed_out = 8;
+}
+enum DesktopToolErrorCode {
+  DESKTOP_TOOL_ERROR_NONE = 0;
+  DESKTOP_TOOL_ERROR_UNSUPPORTED = 1;
+  DESKTOP_TOOL_ERROR_UNAVAILABLE = 2;
+  DESKTOP_TOOL_ERROR_BUSY = 3;
+  DESKTOP_TOOL_ERROR_INVALID_REQUEST = 4;
+  DESKTOP_TOOL_ERROR_TIMEOUT = 5;
+  DESKTOP_TOOL_ERROR_FAILED = 6;
+}
+message DesktopSnapshotStart {
+  string snapshot_id = 1;
+  uint32 display_index = 2;
+  uint32 max_width = 3;
+  uint32 max_height = 4;
+}
+message DesktopSnapshotResult {
+  string snapshot_id = 1;
+  bool success = 2;
+  DesktopToolErrorCode error = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  uint32 display_width = 6;
+  uint32 display_height = 7;
+  sint32 cursor_x = 8;
+  sint32 cursor_y = 9;
+  bool cursor_visible = 10;
+  bytes png_data = 11;
+}
+message DesktopActionRequest {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_MOVE = 1;
+    ACTION_CLICK = 2;
+    ACTION_DOUBLE_CLICK = 3;
+    ACTION_MOUSE_DOWN = 4;
+    ACTION_MOUSE_UP = 5;
+    ACTION_DRAG = 6;
+    ACTION_SCROLL = 7;
+    ACTION_KEY = 8;
+    ACTION_HOTKEY = 9;
+    ACTION_TYPE_TEXT = 10;
+  }
+  uint64 request_id = 1;
+  uint32 display_index = 2;
+  Action action = 3;
+  sint32 x = 4;
+  sint32 y = 5;
+  sint32 to_x = 6;
+  sint32 to_y = 7;
+  uint32 button = 8;
+  sint32 wheel_delta = 9;
+  bool wheel_horizontal = 10;
+  repeated uint32 keys = 11;
+  string text = 12;
+  bool normalized = 13;
+}
+message DesktopActionResult {
+  uint64 request_id = 1;
+  bool success = 2;
+  DesktopToolErrorCode error = 3;
+  uint32 display_width = 4;
+  uint32 display_height = 5;
+}
+message DesktopToolMessage {
+  oneof body {
+    DesktopSnapshotStart snapshot_request = 1;
+    DesktopSnapshotResult snapshot_result = 2;
+    DesktopActionRequest action_request = 3;
+    DesktopActionResult action_result = 4;
+  }
+}
 message VideoFrame {
   bytes data = 1;
   bool key_frame = 2;
@@ -469,5 +566,10 @@ message Envelope {
     FileStatRequest file_stat_request = 50;
     FileStatResult file_stat_result = 51;
     FileTransferStart file_transfer_start = 52;
+    ExecCommandRequest exec_command_request = 53;
+    ExecCommandResult exec_command_result = 54;
+    DesktopSnapshotStart desktop_snapshot_start = 55;
+    DesktopActionRequest desktop_action_request = 56;
+    DesktopActionResult desktop_action_result = 57;
   }
 }

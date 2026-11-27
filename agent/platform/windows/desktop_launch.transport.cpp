@@ -236,7 +236,8 @@ std::uint32_t DesktopIdentity::sendSecureAttention() const {
     return ERROR_SUCCESS;
 }
 DesktopProcess::DesktopProcess(asio::any_io_executor executor, const DesktopIdentity& user,
-                               const std::filesystem::path& executable, const std::wstring& pipeName) : state_(std::make_shared<State>(executor)) {
+                               const std::filesystem::path& executable, const std::wstring& pipeName,
+                               DesktopWorkerRole workerRole) : state_(std::make_shared<State>(executor)) {
     const auto path = executable.native();
     constexpr std::wstring_view prefix = L"\\\\.\\pipe\\Ultraterimal-";
     if (!executable.is_absolute() || path.size() > 30000 || path.find_first_of(L"\"\r\n") != std::wstring::npos || path.find(L'\0') != std::wstring::npos ||
@@ -263,7 +264,7 @@ DesktopProcess::DesktopProcess(asio::any_io_executor executor, const DesktopIden
         }
     } environment;
     check(CreateEnvironmentBlock(&environment.value, user.state_->token.get(), FALSE), "Create desktop user environment");
-    const auto role = L" --desktop --session ";
+    const auto role = workerRole == DesktopWorkerRole::kTool ? L" --desktop-tool --session " : L" --desktop --session ";
     auto command = L"\"" + path + L"\"" + role + std::to_wstring(user.session()) + L" --pipe " + pipeName + L" --parent " + std::to_wstring(GetCurrentProcessId());
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);

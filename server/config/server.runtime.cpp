@@ -12,6 +12,8 @@ DeviceOnlineState makeOnlineState(const ControlConnection& conn) {
         conn.capabilities.capture_available(),
         conn.capabilities.terminal() || (conn.capabilities.ssh() && conn.capabilities.conpty()),
         conn.capabilities.windows_login_settings(),
+        conn.capabilities.exec_command(),
+        conn.capabilities.desktop_automation(),
     };
 }
 } // namespace
@@ -297,6 +299,104 @@ ruvia::task<bool> dispatchDeviceFileTransfer(const ruvia::worker_ref& caller, Se
             return false;
         }
         return found->second->enqueueFileTransfer(std::move(request));
+    });
+    co_return result.value_or(false);
+}
+
+ruvia::task<std::optional<wire::ExecCommandResult>> requestDeviceExecCommand(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::ExecCommandRequest request) {
+    const auto target = resolveWebWorker(deviceId);
+    if (!target.valid() || target.is_current()) {
+        const auto found = local.controlConnections.find(deviceId);
+        if (found == local.controlConnections.end() || !found->second->ready || !found->second->capabilities.exec_command()) {
+            co_return std::nullopt;
+        }
+        co_return co_await found->second->execCommand(std::move(request));
+    }
+    auto [completion, receiver] = ruvia::make_one_shot<WorkerRpcOutcome<std::optional<wire::ExecCommandResult>>>(caller);
+    const auto posted = target.post([guard = WorkerRpcGuard<std::optional<wire::ExecCommandResult>>(std::move(completion)), deviceId, request = std::move(request)](ruvia::web_worker_context& ctx) mutable -> ruvia::task<void> {
+        WorkerRpcOutcome<std::optional<wire::ExecCommandResult>> out;
+        try {
+            auto& rt = ctx.worker_state<ServerRuntime>();
+            const auto found = rt.controlConnections.find(deviceId);
+            if (found != rt.controlConnections.end() && found->second->ready && found->second->capabilities.exec_command()) {
+                out.value.emplace(co_await found->second->execCommand(std::move(request)));
+            } else {
+                out.value.emplace(std::nullopt);
+            }
+        } catch (...) {
+            out.failure = std::current_exception();
+        }
+        guard.answer(std::move(out));
+        co_return;
+    });
+    if (!posted.accepted()) {
+        co_return std::nullopt;
+    }
+    auto waited = co_await receiver.wait();
+    if (!waited.has_value()) {
+        co_return std::nullopt;
+    }
+    auto outcome = std::move(waited).take_value();
+    if (outcome.failure) {
+        std::rethrow_exception(outcome.failure);
+    }
+    if (outcome.aborted || !outcome.value) {
+        co_return std::nullopt;
+    }
+    co_return std::move(*outcome.value);
+}
+
+ruvia::task<std::optional<wire::DesktopActionResult>> requestDeviceDesktopAction(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::DesktopActionRequest request) {
+    const auto target = resolveWebWorker(deviceId);
+    if (!target.valid() || target.is_current()) {
+        const auto found = local.controlConnections.find(deviceId);
+        if (found == local.controlConnections.end() || !found->second->ready || !found->second->capabilities.desktop_automation()) {
+            co_return std::nullopt;
+        }
+        co_return co_await found->second->desktopAction(std::move(request));
+    }
+    auto [completion, receiver] = ruvia::make_one_shot<WorkerRpcOutcome<std::optional<wire::DesktopActionResult>>>(caller);
+    const auto posted = target.post([guard = WorkerRpcGuard<std::optional<wire::DesktopActionResult>>(std::move(completion)), deviceId, request = std::move(request)](ruvia::web_worker_context& ctx) mutable -> ruvia::task<void> {
+        WorkerRpcOutcome<std::optional<wire::DesktopActionResult>> out;
+        try {
+            auto& rt = ctx.worker_state<ServerRuntime>();
+            const auto found = rt.controlConnections.find(deviceId);
+            if (found != rt.controlConnections.end() && found->second->ready && found->second->capabilities.desktop_automation()) {
+                out.value.emplace(co_await found->second->desktopAction(std::move(request)));
+            } else {
+                out.value.emplace(std::nullopt);
+            }
+        } catch (...) {
+            out.failure = std::current_exception();
+        }
+        guard.answer(std::move(out));
+        co_return;
+    });
+    if (!posted.accepted()) {
+        co_return std::nullopt;
+    }
+    auto waited = co_await receiver.wait();
+    if (!waited.has_value()) {
+        co_return std::nullopt;
+    }
+    auto outcome = std::move(waited).take_value();
+    if (outcome.failure) {
+        std::rethrow_exception(outcome.failure);
+    }
+    if (outcome.aborted || !outcome.value) {
+        co_return std::nullopt;
+    }
+    co_return std::move(*outcome.value);
+}
+
+ruvia::task<bool> dispatchDeviceDesktopSnapshot(const ruvia::worker_ref& caller, ServerRuntime& local, const std::string& deviceId, wire::DesktopSnapshotStart request) {
+    const auto target = resolveWebWorker(deviceId);
+    auto result = co_await callOnWebWorker<bool>(caller, local, target, [deviceId, request = std::move(request)](ServerRuntime& rt) mutable {
+        const auto found = rt.controlConnections.find(deviceId);
+        if (found == rt.controlConnections.end() || !found->second->ready || !found->second->capabilities.desktop_automation()) {
+            return false;
+        }
+        return found->second->enqueueDesktopSnapshot(std::move(request));
     });
     co_return result.value_or(false);
 }

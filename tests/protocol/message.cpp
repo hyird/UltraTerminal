@@ -1,6 +1,7 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "ultraterimal/protocol/automation.protocol.h"
 #include "ultraterimal/protocol/message.protocol.h"
 
 void require(bool condition, const char* message) {
@@ -430,6 +431,63 @@ int main() {
         require(protocol::encodeMessage(termExit).has_value(), "Valid terminal exit rejected");
         termExit.clear_channel_id();
         require(!protocol::encodeMessage(termExit), "Terminal exit without channel accepted");
+
+        wire::Envelope execReq;
+        execReq.set_protocol_version(protocol::kVersion);
+        execReq.set_sequence(6);
+        execReq.mutable_exec_command_request()->set_request_id(1);
+        execReq.mutable_exec_command_request()->set_command("echo ok");
+        execReq.mutable_exec_command_request()->set_timeout_ms(5000);
+        require(protocol::encodeMessage(execReq).has_value(), "Valid ExecCommandRequest rejected");
+        execReq.mutable_exec_command_request()->set_timeout_ms(50);
+        require(!protocol::encodeMessage(execReq), "Sub-minimum ExecCommandRequest timeout accepted");
+        execReq.mutable_exec_command_request()->set_timeout_ms(5000);
+        execReq.set_session_id("sess");
+        require(!protocol::encodeMessage(execReq), "ExecCommandRequest with session_id accepted");
+
+        wire::Envelope execRes;
+        execRes.set_protocol_version(protocol::kVersion);
+        execRes.set_sequence(7);
+        execRes.mutable_exec_command_result()->set_request_id(1);
+        execRes.mutable_exec_command_result()->set_success(true);
+        execRes.mutable_exec_command_result()->set_stdout_data("ok\n");
+        require(protocol::encodeMessage(execRes).has_value(), "Valid ExecCommandResult rejected");
+        execRes.mutable_exec_command_result()->set_stdout_data(std::string(protocol::kMaximumExecOutputBytes + 1, 'x'));
+        require(!protocol::encodeMessage(execRes), "Oversized ExecCommandResult accepted");
+
+        wire::Envelope snapStart;
+        snapStart.set_protocol_version(protocol::kVersion);
+        snapStart.set_sequence(8);
+        snapStart.mutable_desktop_snapshot_start()->set_snapshot_id(std::string(64, 'a'));
+        snapStart.mutable_desktop_snapshot_start()->set_max_width(1280);
+        snapStart.mutable_desktop_snapshot_start()->set_max_height(720);
+        require(protocol::encodeMessage(snapStart).has_value(), "Valid DesktopSnapshotStart rejected");
+        snapStart.mutable_desktop_snapshot_start()->set_snapshot_id("bad");
+        require(!protocol::encodeMessage(snapStart), "Malformed DesktopSnapshotStart id accepted");
+
+        wire::DesktopSnapshotResult snapRes;
+        snapRes.set_snapshot_id(std::string(64, 'b'));
+        snapRes.set_success(true);
+        snapRes.set_width(800);
+        snapRes.set_height(600);
+        snapRes.set_display_width(1920);
+        snapRes.set_display_height(1080);
+        snapRes.set_png_data("png");
+        require(protocol::decodeDesktopSnapshotResult(snapRes.SerializeAsString()).has_value(), "Valid DesktopSnapshotResult rejected");
+        snapRes.clear_png_data();
+        require(!protocol::decodeDesktopSnapshotResult(snapRes.SerializeAsString()), "Successful DesktopSnapshotResult without png_data accepted");
+
+        wire::Envelope actionReq;
+        actionReq.set_protocol_version(protocol::kVersion);
+        actionReq.set_sequence(9);
+        actionReq.mutable_desktop_action_request()->set_request_id(1);
+        actionReq.mutable_desktop_action_request()->set_action(wire::DesktopActionRequest::ACTION_CLICK);
+        actionReq.mutable_desktop_action_request()->set_normalized(true);
+        actionReq.mutable_desktop_action_request()->set_x(500);
+        actionReq.mutable_desktop_action_request()->set_y(500);
+        require(protocol::encodeMessage(actionReq).has_value(), "Valid DesktopActionRequest rejected");
+        actionReq.mutable_desktop_action_request()->set_x(1001);
+        require(!protocol::encodeMessage(actionReq), "Out-of-range normalized DesktopActionRequest coordinate accepted");
 
         std::cout << "Protocol bounds, compatibility and channel type checks passed\n";
         return 0;

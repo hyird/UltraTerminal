@@ -49,6 +49,7 @@ class PlatformTerminal {
 #ifdef _WIN32
 inline wire::FileListResult listPlatformFiles(const wire::FileListRequest& request) { return listWindowsFiles(request); }
 inline wire::FileStatResult statPlatformFile(const wire::FileStatRequest& request) { return statWindowsFile(request); }
+wire::ExecCommandResult runPlatformExec(const wire::ExecCommandRequest& request);
 inline wire::WindowsRestartResult handleSystemRestart(std::string_view deviceId, const wire::WindowsRestartRequest& request,
                                                       SystemRestartPlatform& platform, std::uint64_t nowUnixSeconds) {
     return handleWindowsRestart(deviceId, request, platform, nowUnixSeconds);
@@ -73,6 +74,7 @@ std::string loadCredential(const std::filesystem::path& path);
 
 wire::FileListResult listPlatformFiles(const wire::FileListRequest& request);
 wire::FileStatResult statPlatformFile(const wire::FileStatRequest& request);
+wire::ExecCommandResult runPlatformExec(const wire::ExecCommandRequest& request);
 
 class FileDownloadStream {
   public:

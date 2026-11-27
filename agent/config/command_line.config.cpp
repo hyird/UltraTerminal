@@ -26,13 +26,13 @@ std::expected<CommandLine, std::wstring> parseCommandLine(std::span<const std::w
     if (arguments.empty()) {
         return CommandLine{};
     }
-    if (arguments.size() == 7 && arguments[0] == L"--desktop" && arguments[1] == L"--session" && arguments[3] == L"--pipe" && arguments[5] == L"--parent") {
+    if (arguments.size() == 7 && (arguments[0] == L"--desktop" || arguments[0] == L"--desktop-tool") && arguments[1] == L"--session" && arguments[3] == L"--pipe" && arguments[5] == L"--parent") {
         const auto session = identifier(arguments[2]), parent = identifier(arguments[6]);
         if (!session || !parent || arguments[4].empty() || arguments[4].size() > 128) {
             return std::unexpected(L"Invalid desktop bootstrap identifiers.");
         }
         CommandLine options;
-        options.command = Command::kDesktop;
+        options.command = arguments[0] == L"--desktop-tool" ? Command::kDesktopTool : Command::kDesktop;
         options.pipeName = arguments[4];
         options.windowsSession = session;
         options.parentProcess = parent;

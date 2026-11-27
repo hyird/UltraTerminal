@@ -27,3 +27,23 @@ export interface SecurityProof {
   password: string;
   code?: string;
 }
+export type TokenScope =
+  | "devices:read"
+  | "files:read"
+  | "files:write"
+  | "terminal:exec"
+  | "desktop:read"
+  | "desktop:input";
+export interface ApiToken {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: TokenScope[];
+  deviceIds: string[];
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+export interface CreatedApiToken extends ApiToken {
+  token: string;
+}
