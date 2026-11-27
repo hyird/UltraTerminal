@@ -1,3 +1,4 @@
+// clang-format off
 #define NOMINMAX
 #define WIN32_NO_STATUS
 #include <windows.h>
@@ -8,6 +9,7 @@
 #include <d3d11_2.h>
 #include <dxgi1_5.h>
 #include <wrl/client.h>
+// clang-format on
 
 #include <algorithm>
 #include <array>

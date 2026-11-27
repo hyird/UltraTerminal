@@ -7,11 +7,12 @@
 #include <system_error>
 #include <vector>
 
+// clang-format off
 #include <windows.h>
-
 #include <devguid.h>
 #include <setupapi.h>
 #include <wincrypt.h>
+// clang-format on
 
 #include "idd/idd_shared.protocol.h"
 
