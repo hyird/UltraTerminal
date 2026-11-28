@@ -108,6 +108,7 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
     std::array<std::uint64_t, 2> sequences{1, 1};
     std::array<std::uint32_t, 2> serverOptimizationContracts{0, 0};
     std::array<bool, 2> serverContinuous{false, false};
+    bool serverAudio = false;
     std::string sessionId;
     asio::steady_timer deadline;
     bool started = false;
@@ -138,6 +139,9 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
     }
     bool serverContinuousFrames() const {
         return serverOptimizationContract() == 2 && serverContinuous[0] && serverContinuous[1];
+    }
+    bool serverDesktopAudio() const {
+        return ready.load(std::memory_order_acquire) && serverAudio;
     }
     void cancelSlot(std::size_t slot) {
         if (sockets[slot]) {
@@ -196,6 +200,9 @@ struct DesktopTransport::State : std::enable_shared_from_this<State> {
             }
             serverOptimizationContracts[slot] = message->channel_ready().desktop_optimization_contract();
             serverContinuous[slot] = message->channel_ready().continuous_frames();
+            if (slot == 0) {
+                serverAudio = message->channel_ready().desktop_audio();
+            }
         } catch (...) {
             cancel();
             throw;
@@ -336,5 +343,6 @@ asio::awaitable<void> DesktopTransport::watchVideo() {
 }
 std::uint32_t DesktopTransport::serverOptimizationContract() const { return state_->serverOptimizationContract(); }
 bool DesktopTransport::serverContinuousFrames() const { return state_->serverContinuousFrames(); }
+bool DesktopTransport::serverDesktopAudio() const { return state_->serverDesktopAudio(); }
 void DesktopTransport::cancel() { state_->cancel(); }
 } // namespace ultraterimal::agent

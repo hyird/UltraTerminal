@@ -185,6 +185,9 @@ int main() {
         auto oldFeedback = feedback(2);
         auto oldProbe = probe(2);
         require(!stream.incoming(oldInput) && !stream.incoming(oldFeedback) && !stream.incoming(oldProbe), "Retired worker commands leaked");
+        wire::Envelope audioControl;
+        audioControl.mutable_audio_control()->set_enabled(true);
+        require(stream.incoming(audioControl), "Audio control was blocked during worker handoff");
         config = configuration(1);
         require(stream.outgoing(config) && config.generation() == 3, "New worker reused old generation");
         first = probe(1);

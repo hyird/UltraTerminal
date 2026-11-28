@@ -27,6 +27,10 @@
       "name": "dav1d",
       "platform": "windows"
     },
+    {
+      "name": "opus",
+      "platform": "windows"
+    },
     "protobuf"
   ],
   "features": {

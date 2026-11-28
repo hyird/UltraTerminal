@@ -283,6 +283,79 @@ void verifyContinuousFrames() {
     repeat.mutable_video_frame()->set_timestamp_microseconds(16667);
     require(rejected(legacy.accept(repeat), DesktopMessageError::kFrameState));
 }
+void verifyAudio() {
+    DesktopChannelValidator viewer({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, false});
+    DesktopChannelValidator writer({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kBrowser, true});
+    DesktopChannelValidator agent({"session", "input", wire::DESKTOP_INPUT, ChannelSource::kAgent, false});
+    DesktopChannelValidator video({"session", "video", wire::DESKTOP_VIDEO, ChannelSource::kAgent, true});
+
+    auto control = envelope(2, "input");
+    control.mutable_audio_control()->set_enabled(true);
+    require(viewer.accept(control).has_value());
+    control.set_sequence(3);
+    control.mutable_audio_control()->set_enabled(false);
+    require(writer.accept(control).has_value());
+    require(rejected(agent.accept(control), DesktopMessageError::kDirection));
+    auto badControl = envelope(4, "input");
+    badControl.set_generation(1);
+    badControl.mutable_audio_control()->set_enabled(true);
+    require(rejected(writer.accept(badControl), DesktopMessageError::kMalformed));
+
+    auto config = envelope(2, "input");
+    config.mutable_audio_config()->set_available(true);
+    config.mutable_audio_config()->set_codec("opus");
+    config.mutable_audio_config()->set_sample_rate(48000);
+    config.mutable_audio_config()->set_channels(2);
+    config.mutable_audio_config()->set_frame_duration_microseconds(20000);
+    require(agent.accept(config).has_value());
+    config.set_sequence(3);
+    require(rejected(viewer.accept(config), DesktopMessageError::kDirection));
+    config.set_channel_id("video");
+    require(rejected(video.accept(config), DesktopMessageError::kDirection));
+
+    auto unavailable = envelope(3, "input");
+    unavailable.mutable_audio_config()->set_available(false);
+    require(agent.accept(unavailable).has_value());
+    unavailable.set_sequence(4);
+    unavailable.mutable_audio_config()->set_codec("opus");
+    require(rejected(agent.accept(unavailable), DesktopMessageError::kMalformed));
+
+    auto badConfig = envelope(4, "input");
+    badConfig.mutable_audio_config()->set_available(true);
+    badConfig.mutable_audio_config()->set_codec("aac");
+    badConfig.mutable_audio_config()->set_sample_rate(48000);
+    badConfig.mutable_audio_config()->set_channels(2);
+    badConfig.mutable_audio_config()->set_frame_duration_microseconds(20000);
+    require(rejected(agent.accept(badConfig), DesktopMessageError::kMalformed));
+
+    auto audioFrame = envelope(4, "input");
+    audioFrame.mutable_audio_frame()->set_data("opus-pkt");
+    audioFrame.mutable_audio_frame()->set_timestamp_microseconds(20000);
+    require(agent.accept(audioFrame).has_value());
+    audioFrame.set_sequence(5);
+    require(rejected(viewer.accept(audioFrame), DesktopMessageError::kDirection));
+    audioFrame.mutable_audio_frame()->set_data(std::string(4097, 'a'));
+    require(rejected(agent.accept(audioFrame), DesktopMessageError::kMalformed));
+    audioFrame.mutable_audio_frame()->clear_data();
+    require(rejected(agent.accept(audioFrame), DesktopMessageError::kMalformed));
+
+    auto readyInput = envelope(1, "input");
+    readyInput.mutable_channel_ready()->set_purpose(wire::DESKTOP_INPUT);
+    readyInput.mutable_channel_ready()->set_desktop_audio(true);
+    require(encodeMessage(readyInput).has_value());
+    auto readyVideo = envelope(1, "video");
+    readyVideo.mutable_channel_ready()->set_purpose(wire::DESKTOP_VIDEO);
+    readyVideo.mutable_channel_ready()->set_desktop_audio(true);
+    require(!encodeMessage(readyVideo).has_value());
+
+    wire::Envelope badStart;
+    badStart.set_protocol_version(kVersion);
+    badStart.set_session_id("session");
+    badStart.set_sequence(1);
+    badStart.mutable_desktop_start()->set_windows_session_id(1);
+    badStart.mutable_desktop_start()->set_audio_enabled(true);
+    require(!encodeMessage(badStart).has_value());
+}
 } // namespace
 int main() {
     try {
@@ -291,6 +364,7 @@ int main() {
         verifyProbe();
         verifyFrames();
         verifyContinuousFrames();
+        verifyAudio();
         std::cout << "Desktop channel binding, direction, read-only access, replay and frame continuity passed\n";
         return 0;
     } catch (const std::exception& error) {

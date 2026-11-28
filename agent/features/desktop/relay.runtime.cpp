@@ -31,6 +31,7 @@ struct DesktopRelay::State {
     std::exception_ptr failure;
     wire::Envelope terminal;
     bool stopped = false;
+    bool audioEnabled = false;
     State(ruvia::event_loop owner, DesktopTransport& remote)
         : loop(owner), transport(remote), control(owner.worker(), 32, 2 * 1024 * 1024), video(owner.worker(), 2, 8 * 1024 * 1024) {}
     void detach() {
@@ -110,6 +111,12 @@ struct DesktopRelay::State {
                 }
                 // Capture this worker before suspending on its bounded queue.
                 // Replacement closes that queue, never replays it into a new one.
+                if (message.has_audio_control()) {
+                    if (!transport.serverDesktopAudio()) {
+                        throw std::runtime_error("Desktop audio is not supported by server");
+                    }
+                    audioEnabled = message.audio_control().enabled();
+                }
                 auto target = worker;
                 if (!target || target->cancelled() || !continuity.incoming(message)) {
                     continue;
@@ -188,6 +195,22 @@ asio::awaitable<void> DesktopWorkerChannel::sendCursor(wire::Envelope message) {
         throw std::runtime_error("Desktop control relay stopped or exhausted its namespace");
     }
 }
+asio::awaitable<void> DesktopWorkerChannel::sendAudio(wire::Envelope message) {
+    auto& relay = state_->relay;
+    if (state_->cancelled || !relay.continuity.outgoing(message)) {
+        throw std::runtime_error("Desktop audio relay stopped or exhausted its namespace");
+    }
+    if (message.has_audio_frame()) {
+        if (relay.control.pendingCount() >= 16) {
+            co_return;
+        }
+        (void)relay.control.trySend(std::move(message));
+        co_return;
+    }
+    if (!(co_await ruvia::as_awaitable(relay.control.send(std::move(message))))) {
+        throw std::runtime_error("Desktop control relay stopped or exhausted its namespace");
+    }
+}
 asio::awaitable<DesktopSendQueue::Entry> DesktopWorkerChannel::receiveInput() {
     auto message = co_await ruvia::as_awaitable(state_->input.receive());
     if (!message) {
@@ -198,4 +221,6 @@ asio::awaitable<DesktopSendQueue::Entry> DesktopWorkerChannel::receiveInput() {
 void DesktopWorkerChannel::completeInput(DesktopSendQueue::Entry& entry) { state_->input.complete(entry); }
 std::uint32_t DesktopWorkerChannel::serverOptimizationContract() const { return state_->relay.transport.serverOptimizationContract(); }
 bool DesktopWorkerChannel::serverContinuousFrames() const { return state_->relay.transport.serverContinuousFrames(); }
+bool DesktopWorkerChannel::serverDesktopAudio() const { return state_->relay.transport.serverDesktopAudio(); }
+bool DesktopWorkerChannel::audioEnabled() const { return state_->relay.audioEnabled; }
 } // namespace ultraterimal::agent

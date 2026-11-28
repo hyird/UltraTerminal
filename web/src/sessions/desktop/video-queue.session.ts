@@ -1,5 +1,6 @@
 export const maximumPendingVideoFrames = 128;
 export const maximumVideoQueueMessages = maximumPendingVideoFrames + 2;
+export const maximumControlQueueMessages = 64;
 export const maximumDesktopMessageBytes = 16 * 1024 * 1024;
 export const maximumDesktopReceiveBytes = 32 * 1024 * 1024;
 // Keep AVC dependencies buffered on the wire, with a small decoder pipeline.
@@ -126,7 +127,10 @@ export class DesktopVideoReceiveBudget {
       !Number.isSafeInteger(bytes) ||
       bytes < 0 ||
       bytes > maximumDesktopMessageBytes ||
-      this.queuedMessages + 1 > (this.video ? maximumVideoQueueMessages : 8) ||
+      this.queuedMessages + 1 >
+        (this.video
+          ? maximumVideoQueueMessages
+          : maximumControlQueueMessages) ||
       this.queuedBytes + this.pendingBytes + bytes > maximumDesktopReceiveBytes
     )
       return null;

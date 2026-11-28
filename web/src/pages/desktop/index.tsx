@@ -26,6 +26,7 @@ import {
   type DesktopPreferences,
 } from "./preferences.service";
 import { DesktopSession } from "../../sessions/desktop/desktop.session";
+import type { DesktopAudioState } from "../../sessions/desktop/audio.session";
 import { desktopShortcuts } from "../../sessions/desktop/shortcuts.protocol";
 import type { DesktopPerformance } from "../../sessions/desktop/desktop.types";
 import {
@@ -128,7 +129,11 @@ function DesktopPanel({
   );
   const { scale } = preferences;
   const initialPreferences = useRef(preferences);
+  const latestMuted = useRef(preferences.muted);
+  latestMuted.current = preferences.muted;
   const resolutionRestored = useRef(false);
+  const [audioState, setAudioState] =
+    useState<DesktopAudioState>("unsupported");
   function updatePreferences(change: Partial<DesktopPreferences>) {
     const next = { ...preferences, ...change };
     setPreferences(next);
@@ -234,6 +239,7 @@ function DesktopPanel({
   }
   useEffect(() => {
     let live = true;
+    setAudioState("unsupported");
     if (!canvas.current || !cursor.current) return;
     try {
       session.current = new DesktopSession(
@@ -267,6 +273,10 @@ function DesktopPanel({
         setModes,
         setBitrate,
         setSample,
+        latestMuted.current,
+        (nextAudio) => {
+          if (live) setAudioState(nextAudio);
+        },
       );
       session.current.setScaleMode(initialPreferences.current.scale);
     } catch (error) {
@@ -496,6 +506,36 @@ function DesktopPanel({
           </span>
         </div>
         <div className="flex-1" />
+        {audioState !== "unsupported" && (
+          <Button
+            variant="tertiary"
+            isDisabled={ended || audioState === "unavailable"}
+            onPress={() => {
+              if (audioState === "blocked") {
+                session.current?.unlockAudio();
+                return;
+              }
+              const nextMuted = audioState !== "muted";
+              updatePreferences({ muted: nextMuted });
+              session.current?.setAudioMuted(nextMuted);
+              if (!nextMuted) session.current?.unlockAudio();
+            }}
+          >
+            <Icon
+              name={audioState === "playing" ? "volume" : "volume-off"}
+              className="size-4"
+            />
+            <span>
+              {audioState === "blocked"
+                ? "点击开启声音"
+                : audioState === "unavailable"
+                  ? "无音频设备"
+                  : audioState === "muted"
+                    ? "已静音"
+                    : "声音"}
+            </span>
+          </Button>
+        )}
         <Popover isOpen={filesOpen && !ended} onOpenChange={setFilesOpen}>
           <Button variant="tertiary" isDisabled={ended}>
             文件

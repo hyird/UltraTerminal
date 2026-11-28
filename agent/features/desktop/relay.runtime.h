@@ -33,10 +33,13 @@ class DesktopWorkerChannel {
     ~DesktopWorkerChannel();
     asio::awaitable<void> sendVideo(wire::Envelope message, std::uint32_t allowedOptimizationContract);
     asio::awaitable<void> sendCursor(wire::Envelope message);
+    asio::awaitable<void> sendAudio(wire::Envelope message);
     asio::awaitable<DesktopSendQueue::Entry> receiveInput();
     void completeInput(DesktopSendQueue::Entry& entry);
     std::uint32_t serverOptimizationContract() const;
     bool serverContinuousFrames() const;
+    bool serverDesktopAudio() const;
+    bool audioEnabled() const;
     void cancel();
     bool cancelled() const;
 

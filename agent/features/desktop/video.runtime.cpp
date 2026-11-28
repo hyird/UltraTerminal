@@ -128,10 +128,11 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         diagnostics.rejectedPrivateJobs = rejectedPrivateJobs;
         diagnostics.rejectedPrivateVideoFrames = rejectedPrivateVideoFrames;
     }
-    State(ruvia::event_loop owner, ruvia::blocking_pool& blocking, std::uint32_t index, std::uint32_t serverContract, bool continuous) : loop(std::move(owner)), pool(blocking), pace(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
+    State(ruvia::event_loop owner, ruvia::blocking_pool& blocking, std::uint32_t index, std::uint32_t serverContract, bool continuous, bool desktopAudio) : loop(std::move(owner)), pool(blocking), pace(loop.executor()), display(index), serverOptimizationContract(serverContract == 2 ? 2 : 0), serverContinuousFrames(continuous && serverContract == 2), pendingOptimizationContract(serverOptimizationContract) {
         if (display >= 64) {
             throw std::invalid_argument("Desktop display index exceeds limit");
         }
+        worker->serverDesktopAudio = desktopAudio;
     }
     ~State() {
         pendingPrefetch.reset();
@@ -434,7 +435,7 @@ struct DesktopVideoRuntime::State : std::enable_shared_from_this<State> {
         co_return applied;
     }
 };
-DesktopVideoRuntime::DesktopVideoRuntime(ruvia::event_loop loop, ruvia::blocking_pool& pool, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract, bool serverContinuousFrames) : state_(std::make_shared<State>(std::move(loop), pool, displayIndex, serverOptimizationContract, serverContinuousFrames)) {}
+DesktopVideoRuntime::DesktopVideoRuntime(ruvia::event_loop loop, ruvia::blocking_pool& pool, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract, bool serverContinuousFrames, bool serverDesktopAudio) : state_(std::make_shared<State>(std::move(loop), pool, displayIndex, serverOptimizationContract, serverContinuousFrames, serverDesktopAudio)) {}
 DesktopVideoRuntime::~DesktopVideoRuntime() { stop(); }
 asio::awaitable<std::optional<DesktopVideoUpdate>> DesktopVideoRuntime::next(bool refresh) { return State::nextOwned(state_, refresh); }
 asio::awaitable<bool> DesktopVideoRuntime::resize(std::uint32_t width, std::uint32_t height) { return State::resizeOwned(state_, width, height); }

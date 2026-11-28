@@ -228,6 +228,7 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kDesktopStart:
         if (!m.desktop_start().windows_session_id() || m.desktop_start().windows_session_id() == 0xffffffff || m.desktop_start().display_index() >= 64 ||
             (m.desktop_start().continuous_frames() && m.desktop_start().desktop_optimization_contract() != 2) ||
+            (m.desktop_start().audio_enabled() && !m.desktop_start().desktop_audio()) ||
             (m.desktop_start().write_control() ? m.desktop_start().desktop_input_contract() != 2 : m.desktop_start().desktop_input_contract() != 0)) {
             return invalid();
         }
@@ -263,6 +264,9 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
     case wire::Envelope::kChannelReady:
         if (!identifier(m.channel_id()) || m.sequence() != 1 || m.generation() || m.frame_id() || m.base_frame_id() ||
             (m.channel_ready().continuous_frames() && m.channel_ready().desktop_optimization_contract() != 2)) {
+            return invalid();
+        }
+        if (m.channel_ready().desktop_audio() && m.channel_ready().purpose() != wire::DESKTOP_INPUT) {
             return invalid();
         }
         if (m.channel_ready().purpose() == wire::SSH_STREAM) {
@@ -476,6 +480,32 @@ std::expected<void, MessageError> validateMessage(const wire::Envelope& m) {
         break;
     case wire::Envelope::kDesktopActionResult:
         if (!validDesktopActionResult(m.desktop_action_result()) || !m.session_id().empty() || !m.channel_id().empty() || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kAudioControl:
+        if (!identifier(m.channel_id()) || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        break;
+    case wire::Envelope::kAudioConfig: {
+        const auto& config = m.audio_config();
+        if (!identifier(m.channel_id()) || m.generation() || m.frame_id() || m.base_frame_id()) {
+            return invalid();
+        }
+        if (config.available()) {
+            if (config.codec() != "opus" || config.sample_rate() != 48000 || config.channels() < 1 || config.channels() > 2 ||
+                config.frame_duration_microseconds() < 2500 || config.frame_duration_microseconds() > 60000) {
+                return invalid();
+            }
+        } else if (!config.codec().empty() || config.sample_rate() || config.channels() || config.frame_duration_microseconds()) {
+            return invalid();
+        }
+        break;
+    }
+    case wire::Envelope::kAudioFrame:
+        if (!identifier(m.channel_id()) || m.generation() || m.frame_id() || m.base_frame_id() ||
+            m.audio_frame().data().empty() || m.audio_frame().data().size() > 4096) {
             return invalid();
         }
         break;

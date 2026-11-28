@@ -200,7 +200,7 @@ PreparedVideoStep DesktopVideoWorker::encodeDeferred(DeferredCpuEncode deferred,
         configuration.set_height(height);
         configuration.set_desktop_optimization_contract(2);
         configuration.set_continuous_frames(continuousFrames);
-        *configuration.mutable_session_capabilities() = protocol::desktopSessionCapabilities();
+        *configuration.mutable_session_capabilities() = protocol::desktopSessionCapabilities(serverDesktopAudio);
         configuration.set_session_version(sessionAgreement.version);
         configuration.set_session_features(sessionAgreement.features);
         for (const auto& mode : cachedDisplayModes) {
@@ -523,7 +523,7 @@ PreparedVideoStep DesktopVideoWorker::prepare(std::uint32_t display, bool refres
             configuration.set_height(height);
             configuration.set_desktop_optimization_contract(2);
             configuration.set_continuous_frames(continuousFrames);
-            *configuration.mutable_session_capabilities() = protocol::desktopSessionCapabilities();
+            *configuration.mutable_session_capabilities() = protocol::desktopSessionCapabilities(serverDesktopAudio);
             configuration.set_session_version(sessionAgreement.version);
             configuration.set_session_features(sessionAgreement.features);
             for (const auto& mode : capture->displayModes()) {

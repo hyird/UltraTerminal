@@ -168,6 +168,7 @@ ruvia::task<void> exerciseWriters(ruvia::worker_ref worker) {
                 require(writers[slot].messages.size() == 1 && writers[slot].messages[0].has_channel_ready());
                 require(writers[slot].messages[0].channel_ready().desktop_optimization_contract() == 2);
                 require(writers[slot].messages[0].channel_ready().purpose() == (slot >= 2 ? wire::DESKTOP_VIDEO : wire::DESKTOP_INPUT));
+                require(writers[slot].messages[0].channel_ready().desktop_audio() == (slot < 2));
             }
             auto caps = refresh(2);
             caps.mutable_desktop_video_capabilities()->set_desktop_optimization_contract(2);
@@ -890,6 +891,44 @@ ruvia::task<void> exercise(ruvia::worker_ref worker) {
         input.mutable_input_event()->set_code(65);
         require(!(co_await session.forward(endpoints[0], input)));
         require(!session.ready());
+    }
+    {
+        server::DesktopSession session(worker, budget);
+        auto endpoints = co_await pair(session, false);
+        auto audioControl = refresh(2);
+        audioControl.clear_request_refresh();
+        audioControl.mutable_audio_control()->set_enabled(true);
+        require(co_await session.forward(endpoints[0], audioControl));
+        auto deliveredControl = co_await endpoints[1]->receive({});
+        require(deliveredControl && deliveredControl->bytes() == *protocol::encodeMessage(audioControl));
+        deliveredControl.reset();
+
+        auto audioConfig = refresh(2);
+        audioConfig.clear_request_refresh();
+        audioConfig.mutable_audio_config()->set_available(true);
+        audioConfig.mutable_audio_config()->set_codec("opus");
+        audioConfig.mutable_audio_config()->set_sample_rate(48000);
+        audioConfig.mutable_audio_config()->set_channels(2);
+        audioConfig.mutable_audio_config()->set_frame_duration_microseconds(20000);
+        require(co_await session.forward(endpoints[1], audioConfig));
+        auto deliveredConfig = co_await endpoints[0]->receive({});
+        require(deliveredConfig && deliveredConfig->bytes() == *protocol::encodeMessage(audioConfig));
+        deliveredConfig.reset();
+
+        auto audioFrame = refresh(3);
+        audioFrame.clear_request_refresh();
+        audioFrame.mutable_audio_frame()->set_data("opus-frame");
+        audioFrame.mutable_audio_frame()->set_timestamp_microseconds(20000);
+        require(co_await session.forward(endpoints[1], audioFrame));
+        auto deliveredFrame = co_await endpoints[0]->receive({});
+        require(deliveredFrame && deliveredFrame->bytes() == *protocol::encodeMessage(audioFrame));
+        deliveredFrame.reset();
+
+        auto badAudioControl = refresh(4);
+        badAudioControl.clear_request_refresh();
+        badAudioControl.mutable_audio_control()->set_enabled(false);
+        require(!(co_await session.forward(endpoints[1], badAudioControl)));
+        require(!session.ready() && session.closeReason() == server::DesktopCloseReason::kInvalidDirection);
     }
 }
 ruvia::task<void> attachCrossWorkerEndpoints(std::shared_ptr<server::DesktopSession> session, std::array<std::shared_ptr<server::DesktopEndpoint>, 4>* endpoints, std::array<ruvia::worker_ref, 4> ioWorkers) {

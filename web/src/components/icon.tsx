@@ -8,6 +8,8 @@ import {
   Plus,
   ShieldCheck,
   Terminal,
+  Volume,
+  VolumeXmark,
 } from "@gravity-ui/icons";
 const icons = {
   "chevron-down": ChevronDown,
@@ -19,6 +21,8 @@ const icons = {
   plus: Plus,
   "shield-check": ShieldCheck,
   terminal: Terminal,
+  volume: Volume,
+  "volume-off": VolumeXmark,
 };
 export type IconName = keyof typeof icons;
 export function Icon({

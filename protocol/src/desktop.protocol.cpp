@@ -25,9 +25,9 @@ std::expected<void, DesktopMessageError> DesktopChannelValidator::accept(const w
     bool allowed = false;
     if (binding_.purpose == wire::DESKTOP_INPUT) {
         if (binding_.source == ChannelSource::kAgent) {
-            allowed = message.has_cursor_update() || message.has_desktop_resize_result() || message.has_desktop_probe() || message.has_desktop_secure_attention_result() || message.has_desktop_pipeline_report();
+            allowed = message.has_cursor_update() || message.has_desktop_resize_result() || message.has_desktop_probe() || message.has_desktop_secure_attention_result() || message.has_desktop_pipeline_report() || message.has_audio_config() || message.has_audio_frame();
         } else {
-            allowed = message.has_input_event() || message.has_quality_feedback() || message.has_request_refresh() || message.has_desktop_resize() || message.has_desktop_probe() || message.has_desktop_video_capabilities();
+            allowed = message.has_input_event() || message.has_quality_feedback() || message.has_request_refresh() || message.has_desktop_resize() || message.has_desktop_probe() || message.has_desktop_video_capabilities() || message.has_audio_control();
             if ((message.has_input_event() || message.has_desktop_resize()) && !binding_.writeControl) {
                 return std::unexpected(DesktopMessageError::kReadOnly);
             }

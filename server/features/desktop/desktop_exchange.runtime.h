@@ -128,6 +128,9 @@ ruvia::task<void> writeChannel(Connection& socket, ChannelState& state, ruvia::t
                 ready.mutable_channel_ready()->set_purpose(state.authorization->purpose);
                 ready.mutable_channel_ready()->set_desktop_optimization_contract(2);
                 ready.mutable_channel_ready()->set_continuous_frames(true);
+                if (state.authorization->purpose == wire::DESKTOP_INPUT) {
+                    ready.mutable_channel_ready()->set_desktop_audio(true);
+                }
                 auto bytes = protocol::encodeMessage(ready);
                 if (!bytes) {
                     throw std::runtime_error("Invalid channel readiness");

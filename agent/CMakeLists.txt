@@ -18,6 +18,7 @@ set(agent_common_sources
 
 if(WIN32)
     find_package(libde265 CONFIG REQUIRED)
+    find_package(Opus CONFIG REQUIRED)
     set(dav1d_root "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
     find_path(DAV1D_INCLUDE_DIR dav1d/dav1d.h PATHS "${dav1d_root}/include" NO_DEFAULT_PATH REQUIRED)
     find_library(DAV1D_RELEASE dav1d PATHS "${dav1d_root}/lib" NO_DEFAULT_PATH REQUIRED)
@@ -65,6 +66,9 @@ if(WIN32)
 
     add_library(ultraterimal-agent-core-objects OBJECT
         ${agent_common_sources}
+        features/desktop/audio.protocol.cpp
+        features/desktop/audio_codec.transport.cpp
+        features/desktop/audio.runtime.cpp
         features/desktop/software_video.transport.cpp
         features/desktop/video.transport.cpp
         features/desktop/avc.protocol.cpp
@@ -86,6 +90,7 @@ if(WIN32)
         platform/windows/login_broker.transport.cpp
         platform/windows/login_install.transport.cpp
         platform/windows/capability.transport.cpp
+        platform/windows/audio_capture.transport.cpp
         platform/windows/capture.transport.cpp
         platform/windows/capture_pixels.protocol.cpp
         platform/windows/idd_capture.transport.cpp
@@ -127,7 +132,7 @@ if(WIN32)
         target_include_directories(${agent_core_target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_compile_definitions(${agent_core_target} PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
         target_compile_options(${agent_core_target} PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc PRIVATE "$<$<CONFIG:Release>:/Gy;/Gw;/GF;/GL>")
-        target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi setupapi OpenH264::OpenH264 de265 dav1d::dav1d ZLIB::ZLIB
+        target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi setupapi OpenH264::OpenH264 de265 dav1d::dav1d Opus::opus ZLIB::ZLIB
             PUBLIC ultraterimal::protocol ruvia::core OpenSSL::SSL OpenSSL::Crypto)
     endforeach()
     add_subdirectory(platform/windows/idd)

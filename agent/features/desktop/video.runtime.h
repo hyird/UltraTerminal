@@ -15,7 +15,7 @@ namespace ultraterimal::agent {
 // the runtime. stop() interrupts pacing; an in-flight codec operation is joined.
 class DesktopVideoRuntime {
   public:
-    DesktopVideoRuntime(ruvia::event_loop loop, ruvia::blocking_pool& pool, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract = 0, bool serverContinuousFrames = false);
+    DesktopVideoRuntime(ruvia::event_loop loop, ruvia::blocking_pool& pool, std::uint32_t displayIndex, std::uint32_t serverOptimizationContract = 0, bool serverContinuousFrames = false, bool serverDesktopAudio = false);
     ~DesktopVideoRuntime();
     DesktopVideoRuntime(const DesktopVideoRuntime&) = delete;
     DesktopVideoRuntime& operator=(const DesktopVideoRuntime&) = delete;

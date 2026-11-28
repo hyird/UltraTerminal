@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ultraterimal } from "../../web/src/generated/session";
+import type { DesktopAudioState } from "../../web/src/sessions/desktop/audio.session";
 import { DesktopSession } from "../../web/src/sessions/desktop/desktop.session";
 import type { DesktopPerformance } from "../../web/src/sessions/desktop/desktop.types";
 
@@ -16,6 +17,7 @@ function harness(
     deferredCodecDetection?: boolean;
     manualPerformance?: boolean;
     pixelRatio?: number;
+    initialMuted?: boolean;
   } = {},
 ) {
   const globals = new Map<string, PropertyDescriptor | undefined>();
@@ -204,13 +206,58 @@ function harness(
   replace("window", {
     devicePixelRatio: options.pixelRatio ?? 1,
     matchMedia: () => ({ addEventListener() {} }),
+    addEventListener() {},
   });
+  const audioDecoders: { chunks: unknown[]; closed: boolean }[] = [];
+  replace(
+    "AudioDecoder",
+    class {
+      static async isConfigSupported(config: AudioDecoderConfig) {
+        return { supported: true, config };
+      }
+      state = "unconfigured";
+      decodeQueueSize = 0;
+      chunks: unknown[] = [];
+      closed = false;
+      constructor() {
+        audioDecoders.push(this);
+      }
+      configure() {
+        this.state = "configured";
+      }
+      decode(chunk: unknown) {
+        this.chunks.push(chunk);
+      }
+      close() {
+        this.state = "closed";
+        this.closed = true;
+      }
+    },
+  );
+  replace(
+    "EncodedAudioChunk",
+    class {
+      constructor(public readonly init: EncodedAudioChunkInit) {}
+    },
+  );
+  replace(
+    "AudioContext",
+    class {
+      state = "running";
+      currentTime = 0;
+      createGain() {
+        return { gain: { value: 1 }, connect() {} };
+      }
+      async close() {}
+    },
+  );
   replace("requestAnimationFrame", () => 1);
   replace("cancelAnimationFrame", () => {});
   const endings: boolean[] = [];
   const statuses: string[] = [];
   const samples: DesktopPerformance[] = [];
   const bitrates: number[] = [];
+  const audioStates: DesktopAudioState[] = [];
   const session = new DesktopSession(
     {
       id: "session",
@@ -227,6 +274,8 @@ function harness(
     () => {},
     (bitrate) => bitrates.push(bitrate),
     (sample) => samples.push(sample),
+    options.initialMuted ?? false,
+    (state) => audioStates.push(state),
   );
   const control = sockets[0],
     video = sockets[1];
@@ -239,6 +288,7 @@ function harness(
     width = 256,
     height = 128,
     continuousFrames = false,
+    sessionFeatures = 1,
   ) =>
     video.push({
       generation,
@@ -249,6 +299,11 @@ function harness(
         desktopOptimization: true,
         desktopOptimizationContract: contract,
         continuousFrames,
+        sessionCapabilities: {
+          minimumVersion: 1,
+          maximumVersion: 1,
+          features: sessionFeatures,
+        },
       },
     });
   const frame = (generation: number, frameId: number) =>
@@ -309,6 +364,8 @@ function harness(
     activate,
     draws,
     decoders,
+    audioDecoders,
+    audioStates,
     endings,
     statuses,
     releaseCodecDetection() {
@@ -622,5 +679,69 @@ test("DesktopSession preserves painted canvas across tab visibility resume and r
     expect(h.endings).toEqual([]);
   } finally {
     await h.dispose();
+  }
+});
+
+test("DesktopSession gates audio on both server ChannelReady and agent VideoConfig capabilities", async () => {
+  const legacy = harness();
+  try {
+    legacy.control.push({
+      channelReady: { purpose: 2, desktopOptimizationContract: 2 },
+    });
+    legacy.video.push({
+      channelReady: { purpose: 3, desktopOptimizationContract: 2 },
+    });
+    legacy.config(1, 2, "avc1.42E033", 256, 128, false, 3);
+    await until(() => legacy.decoders.length === 1);
+    expect(legacy.control.sent.some((m) => m.audioControl)).toBe(false);
+    expect(legacy.audioStates).toEqual([]);
+  } finally {
+    await legacy.dispose();
+  }
+
+  const capable = harness();
+  try {
+    capable.control.push({
+      channelReady: {
+        purpose: 2,
+        desktopOptimizationContract: 2,
+        desktopAudio: true,
+      },
+    });
+    capable.video.push({
+      channelReady: { purpose: 3, desktopOptimizationContract: 2 },
+    });
+    capable.config(1, 2, "avc1.42E033", 256, 128, false, 3);
+    await until(() =>
+      capable.control.sent.some((m) => m.audioControl?.enabled === true),
+    );
+    expect(capable.audioStates.at(-1)).toBe("playing");
+
+    capable.control.push({
+      audioConfig: {
+        available: true,
+        codec: "opus",
+        sampleRate: 48000,
+        channels: 2,
+        frameDurationMicroseconds: 20000,
+      },
+    });
+    await until(() => capable.audioDecoders.length === 1);
+    capable.control.push({
+      audioFrame: {
+        data: new Uint8Array([9, 8, 7]),
+        timestampMicroseconds: 20000,
+      },
+    });
+    await until(() => capable.audioDecoders[0].chunks.length === 1);
+
+    capable.session.setAudioMuted(true);
+    expect(
+      capable.control.sent.filter((m) => m.audioControl).at(-1)?.audioControl
+        ?.enabled,
+    ).toBe(false);
+    expect(capable.audioStates.at(-1)).toBe("muted");
+  } finally {
+    await capable.dispose();
   }
 });

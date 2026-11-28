@@ -5,6 +5,8 @@
 #include <asio/redirect_error.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/use_awaitable.hpp>
+#include <asio_bridge.h>
+#include <channel.h>
 #include <chrono>
 #include <deque>
 #include <exception>
@@ -12,8 +14,10 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <task.h>
 #include <utility>
 
+#include "audio.runtime.h"
 #include "input_freshness.runtime.h"
 #include "optimization.runtime.h"
 #include "pipeline.runtime.h"
@@ -29,15 +33,24 @@
 
 namespace ultraterimal::agent {
 namespace {
+ruvia::task<ruvia::wait_result<bool>> awaitSignal(ruvia::channel_receiver<bool>& receiver) {
+    co_return co_await receiver.receive();
+}
+
 class DesktopWorker {
   public:
     DesktopWorker(ruvia::event_loop loop, ruvia::blocking_pool& pool, NamedPipeTransport& pipe, std::uint32_t windowsSession, const wire::Envelope& start)
         : pipe_(pipe),
           probeTimer_(loop.executor()),
-          video_(std::move(loop), pool, start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract(), start.desktop_start().continuous_frames()),
+          video_(loop, pool, start.desktop_start().display_index(), start.desktop_start().desktop_optimization_contract(), start.desktop_start().continuous_frames(), start.desktop_start().desktop_audio()),
+          audio_(loop),
+          pipeWriteFree_(ruvia::make_channel<bool>(loop.worker(), {.capacity_ = 1})),
+          audioReady_(ruvia::make_channel<bool>(loop.worker(), {.capacity_ = 1})),
           incoming_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kService}),
           outgoing_({start.session_id(), windowsSession, start.desktop_start().write_control(), protocol::DesktopPipeSource::kDesktop}),
           session_(start.session_id()), writeControl_(start.desktop_start().write_control()),
+          serverDesktopAudio_(start.desktop_start().desktop_audio()),
+          initialAudioEnabled_(start.desktop_start().audio_enabled()),
           optimization_(start.desktop_start().desktop_optimization_contract()),
           serverContinuousFrames_(start.desktop_start().continuous_frames()) {
         // Both IPC video validators begin with allow0. Start carries Server
@@ -54,6 +67,9 @@ class DesktopWorker {
         stopped_ = true;
         probeTimer_.cancel();
         video_.stop();
+        audio_.stop();
+        pipeWriteFree_.first.close();
+        audioReady_.first.close();
         pipe_.cancel();
         if (input_) {
             try {
@@ -65,6 +81,23 @@ class DesktopWorker {
         }
     }
     asio::awaitable<void> send(wire::Envelope message, std::optional<wire::DesktopFlowSample> flow = std::nullopt) {
+        while (pipeWriting_) {
+            if (stopped_ || !(co_await ruvia::as_awaitable(awaitSignal(pipeWriteFree_.second))).has_value()) {
+                co_return;
+            }
+        }
+        if (stopped_) {
+            co_return;
+        }
+        pipeWriting_ = true;
+        struct WriteGuard {
+            bool& writing;
+            ruvia::channel_sender<bool>& free;
+            ~WriteGuard() {
+                writing = false;
+                (void)free.send(true);
+            }
+        } writeGuard{pipeWriting_, pipeWriteFree_.first};
         if (sequence_ == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Desktop IPC sequence exhausted");
         }
@@ -207,6 +240,10 @@ class DesktopWorker {
                     co_await send(std::move(ready));
                     lastAck_ = std::chrono::steady_clock::now();
                     ready_ = true;
+                    if (serverDesktopAudio_ && initialAudioEnabled_) {
+                        audio_.setEnabled(true);
+                    }
+                    (void)audioReady_.first.send(true);
                 }
                 if (update->configuration) {
                     // Preserve the capability declaration, including the first
@@ -366,8 +403,47 @@ class DesktopWorker {
                         throw std::runtime_error("Desktop resize request queue exceeded");
                     }
                     resize_ = message->desktop_resize();
+                } else if (message->has_audio_control()) {
+                    if (!serverDesktopAudio_) {
+                        throw std::runtime_error("Desktop audio is not negotiated");
+                    }
+                    if (ready_) {
+                        audio_.setEnabled(message->audio_control().enabled());
+                    } else {
+                        initialAudioEnabled_ = message->audio_control().enabled();
+                    }
                 } else {
                     throw std::runtime_error("Desktop command is not supported by this execution stage");
+                }
+            }
+        } catch (...) {
+            rememberFailure(stage);
+            stop();
+            throw;
+        }
+    }
+    asio::awaitable<void> audioWrite() {
+        const char* stage = "control_ipc_write";
+        try {
+            if (!(co_await ruvia::as_awaitable(awaitSignal(audioReady_.second))).has_value() || stopped_) {
+                co_return;
+            }
+            while (!stopped_) {
+                auto update = co_await audio_.next();
+                if (!update || stopped_) {
+                    break;
+                }
+                if (update->config) {
+                    wire::Envelope config;
+                    config.set_channel_id("input");
+                    *config.mutable_audio_config() = std::move(*update->config);
+                    co_await send(std::move(config));
+                }
+                if (update->frame) {
+                    wire::Envelope frame;
+                    frame.set_channel_id("input");
+                    *frame.mutable_audio_frame() = std::move(*update->frame);
+                    co_await send(std::move(frame));
                 }
             }
         } catch (...) {
@@ -400,7 +476,7 @@ class DesktopWorker {
     asio::awaitable<std::uint32_t> run() {
         using namespace asio::experimental::awaitable_operators;
         try {
-            co_await (write() && read() && watch());
+            co_await (write() && audioWrite() && read() && watch());
         } catch (...) {
             if (failure_ || !requestedClose_) {
                 // Parallel coroutine cancellation can mask the original error
@@ -450,12 +526,17 @@ class DesktopWorker {
     std::optional<wire::Envelope> secureAttention_;
     asio::steady_timer probeTimer_;
     DesktopVideoRuntime video_;
+    DesktopAudioRuntime audio_;
+    std::pair<ruvia::channel_sender<bool>, ruvia::channel_receiver<bool>> pipeWriteFree_;
+    std::pair<ruvia::channel_sender<bool>, ruvia::channel_receiver<bool>> audioReady_;
     protocol::DesktopPipeValidator incoming_, outgoing_;
     std::string session_;
     std::unique_ptr<DesktopInput> input_;
     std::exception_ptr releaseFailure_, failure_;
     const char* failureStage_ = "worker";
     bool writeControl_;
+    const bool serverDesktopAudio_;
+    bool initialAudioEnabled_ = false;
     DesktopOptimizationGate optimization_;
     const bool serverContinuousFrames_;
     bool pipelineEnabled_ = false;
@@ -473,7 +554,7 @@ class DesktopWorker {
     std::deque<OutstandingProbe> outstandingProbes_;
     std::deque<std::uint32_t> confirmedProbes_;
     std::chrono::steady_clock::time_point lastAck_{}, nextProbe_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false;
+    bool stopped_ = false, ready_ = false, refresh_ = false, requestedClose_ = false, pipeWriting_ = false;
 };
 } // namespace
 asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::event_loop loop, ruvia::blocking_pool& pool, NamedPipeTransport& pipe, std::uint32_t windowsSession) {

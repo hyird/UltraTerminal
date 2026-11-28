@@ -34,32 +34,36 @@ function storageFixture() {
 }
 
 const key = "ultraterimal.desktop.v1:user:device";
-const defaults = { scale: "fit", resolution: "auto" };
+const defaults = { scale: "fit", resolution: "auto", muted: false };
 
-test("desktop preferences persist scale and resolution for each user and device", () => {
+test("desktop preferences persist scale, resolution and muted state for each user and device", () => {
   const storage = storageFixture();
   try {
-    for (const scale of ["native", "fit"]) {
-      storage.entries.set(
-        key,
-        JSON.stringify({
+    for (const scale of ["native", "fit"] as const) {
+      for (const muted of [false, true]) {
+        storage.entries.set(
+          key,
+          JSON.stringify({
+            scale,
+            unsupported: true,
+            resolution: { width: 1920, height: 1080 },
+            muted,
+          }),
+        );
+        const preferences = loadDesktopPreferences("user", "device");
+        expect(preferences).toEqual({
           scale,
-          unsupported: true,
           resolution: { width: 1920, height: 1080 },
-        }),
-      );
-      const preferences = loadDesktopPreferences("user", "device");
-      expect(preferences).toEqual({
-        scale,
-        resolution: { width: 1920, height: 1080 },
-      });
-      expect(JSON.parse(storage.entries.get(key) ?? "null")).toEqual(
-        preferences,
-      );
-      saveDesktopPreferences("user", "device", preferences);
-      expect(JSON.parse(storage.entries.get(key) ?? "null")).toEqual(
-        preferences,
-      );
+          muted,
+        });
+        expect(JSON.parse(storage.entries.get(key) ?? "null")).toEqual(
+          preferences,
+        );
+        saveDesktopPreferences("user", "device", preferences);
+        expect(JSON.parse(storage.entries.get(key) ?? "null")).toEqual(
+          preferences,
+        );
+      }
     }
     expect(loadDesktopPreferences("other-user", "device")).toEqual(defaults);
     expect(loadDesktopPreferences("user", "other-device")).toEqual(defaults);
@@ -68,7 +72,7 @@ test("desktop preferences persist scale and resolution for each user and device"
   }
 });
 
-test("desktop preferences tolerate invalid or unavailable storage and still validate resolution", () => {
+test("desktop preferences tolerate invalid or unavailable storage and still validate fields", () => {
   const storage = storageFixture();
   try {
     expect(loadDesktopPreferences("user", "device")).toEqual(defaults);
@@ -79,6 +83,7 @@ test("desktop preferences tolerate invalid or unavailable storage and still vali
       JSON.stringify({
         scale: "invalid",
         resolution: { width: 1919, height: 1080 },
+        muted: "yes",
       }),
       JSON.stringify({
         resolution: { width: 8192, height: 2160 },
@@ -93,6 +98,7 @@ test("desktop preferences tolerate invalid or unavailable storage and still vali
       saveDesktopPreferences("user", "device", {
         scale: "native",
         resolution: null,
+        muted: true,
       }),
     ).not.toThrow();
   } finally {

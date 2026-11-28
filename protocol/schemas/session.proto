@@ -40,6 +40,7 @@ message Capabilities {
   bool terminal = 16;
   bool exec_command = 17;
   bool desktop_automation = 18;
+  bool desktop_audio = 19;
 }
 // Update packages travel over an independent authenticated native connection.
 message AgentUpdate { string version = 1; string sha256 = 2; uint64 size = 3; }
@@ -140,9 +141,9 @@ message Heartbeat { uint64 monotonic_milliseconds = 1; }
 message ChannelGrant { string channel_id = 1; ChannelPurpose purpose = 2; bytes ticket = 3; }
 message SessionOpen { SessionKind kind = 1; string user_id = 2; reserved 3, 4; reserved "operating_system_user"; bool write_control = 5; repeated ChannelGrant channels = 6; uint32 desktop_input_contract = 7; }
 message ChannelOpen { ChannelPurpose purpose = 1; bytes ticket = 2; }
-message ChannelReady { ChannelPurpose purpose = 1; uint32 desktop_optimization_contract = 2; bool continuous_frames = 3; }
+message ChannelReady { ChannelPurpose purpose = 1; uint32 desktop_optimization_contract = 2; bool continuous_frames = 3; bool desktop_audio = 4; }
 // Local service/desktop IPC only. No device credential or remote channel ticket.
-message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; uint32 desktop_optimization_contract = 5; bool continuous_frames = 6; }
+message DesktopStart { uint32 windows_session_id = 1; uint32 display_index = 2; bool write_control = 3; uint32 desktop_input_contract = 4; uint32 desktop_optimization_contract = 5; bool continuous_frames = 6; bool desktop_audio = 7; bool audio_enabled = 8; }
 message DesktopReady {}
 message ChannelData { bytes data = 1; }
 message SessionClose { string reason = 1; }
@@ -501,6 +502,20 @@ message DesktopProbe {
 message TerminalData { bytes data = 1; }
 message TerminalResize { uint32 columns = 1; uint32 rows = 2; }
 message TerminalExit { uint32 exit_code = 1; }
+message AudioControl {
+  bool enabled = 1;
+}
+message AudioConfig {
+  string codec = 1;
+  uint32 sample_rate = 2;
+  uint32 channels = 3;
+  uint32 frame_duration_microseconds = 4;
+  bool available = 5;
+}
+message AudioFrame {
+  bytes data = 1;
+  uint64 timestamp_microseconds = 2;
+}
 // Local SYSTEM service <-> LogonUI pipe only; never an Envelope body.
 message WindowsLoginHello {
   enum Scenario { UNSPECIFIED = 0; LOGON = 1; UNLOCK = 2; }
@@ -571,5 +586,8 @@ message Envelope {
     DesktopSnapshotStart desktop_snapshot_start = 55;
     DesktopActionRequest desktop_action_request = 56;
     DesktopActionResult desktop_action_result = 57;
+    AudioControl audio_control = 58;
+    AudioConfig audio_config = 59;
+    AudioFrame audio_frame = 60;
   }
 }

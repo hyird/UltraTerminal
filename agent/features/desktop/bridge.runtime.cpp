@@ -86,6 +86,8 @@ class Bridge {
         start.mutable_desktop_start()->set_desktop_input_contract(desktopInputContract);
         start.mutable_desktop_start()->set_desktop_optimization_contract(remote_.serverOptimizationContract());
         start.mutable_desktop_start()->set_continuous_frames(remote_.serverContinuousFrames());
+        start.mutable_desktop_start()->set_desktop_audio(remote_.serverDesktopAudio());
+        start.mutable_desktop_start()->set_audio_enabled(remote_.serverDesktopAudio() && remote_.audioEnabled());
         wire::Envelope first;
         try {
             co_await sendLocal(std::move(start));
@@ -152,6 +154,8 @@ class Bridge {
                 }
                 if (message.channel_id() == "video") {
                     co_await remote_.sendVideo(std::move(message), optimization_.activeContract());
+                } else if (message.has_audio_config() || message.has_audio_frame()) {
+                    co_await remote_.sendAudio(std::move(message));
                 } else {
                     co_await remote_.sendCursor(std::move(message));
                 }

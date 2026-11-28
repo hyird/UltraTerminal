@@ -1,6 +1,7 @@
 export interface DesktopPreferences {
   scale: "fit" | "native";
   resolution: { width: number; height: number } | "auto" | null;
+  muted: boolean;
 }
 
 function storageKey(userId: string, deviceId: string) {
@@ -14,6 +15,7 @@ export function loadDesktopPreferences(
   const defaults: DesktopPreferences = {
     scale: "fit",
     resolution: "auto",
+    muted: false,
   };
   try {
     const value: unknown = JSON.parse(
@@ -21,6 +23,9 @@ export function loadDesktopPreferences(
     );
     if (!value || typeof value !== "object") return defaults;
     if ("scale" in value && value.scale === "native") defaults.scale = "native";
+    if ("muted" in value && typeof value.muted === "boolean") {
+      defaults.muted = value.muted;
+    }
     if ("resolution" in value && value.resolution === "auto") {
       defaults.resolution = "auto";
     } else if (
@@ -60,7 +65,11 @@ export function saveDesktopPreferences(
   try {
     localStorage.setItem(
       storageKey(userId, deviceId),
-      JSON.stringify({ scale: value.scale, resolution: value.resolution }),
+      JSON.stringify({
+        scale: value.scale,
+        resolution: value.resolution,
+        muted: value.muted,
+      }),
     );
   } catch {
     // Keep the current session usable when browser storage is unavailable.

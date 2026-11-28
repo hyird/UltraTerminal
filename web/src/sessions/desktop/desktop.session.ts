@@ -9,6 +9,7 @@ import { desktopShortcuts } from "./shortcuts.protocol";
 import { DesktopOutbound } from "./outbound.session";
 import { DesktopVideoContract, desktopDuration } from "./desktop.protocol";
 import { desktopCodecFamily, detectDesktopCodecs } from "./codecs.session";
+import { DesktopAudioPlayer, type DesktopAudioState } from "./audio.session";
 import {
   DesktopVideoDecodeLease,
   DesktopVideoDecodeTimeoutError,
@@ -116,6 +117,11 @@ export class DesktopSession {
   private videoBytes = 0;
   private bitrateSince = 0;
   private bitrateTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly audio: DesktopAudioPlayer;
+  private audioMuted: boolean;
+  private serverDesktopAudio = false;
+  private agentDesktopAudio = false;
+  private lastSentAudioEnabled: boolean | null = null;
 
   constructor(
     private ticket: DesktopTicket,
@@ -128,7 +134,11 @@ export class DesktopSession {
     ) => void = () => {},
     private bitrate: (bitsPerSecond: number) => void = () => {},
     private performanceSample: (sample: DesktopPerformance) => void = () => {},
+    initialMuted = false,
+    audioState: (state: DesktopAudioState) => void = () => {},
   ) {
+    this.audioMuted = initialMuted;
+    this.audio = new DesktopAudioPlayer(initialMuted, audioState);
     const context = canvas.getContext("2d", {
       alpha: false,
       // Keep whole-frame presentation in the compositor's normal paint cycle.
@@ -333,6 +343,30 @@ export class DesktopSession {
       ? !!this.input?.secureAttention()
       : !!this.input?.shortcut(shortcut.keys);
   }
+  setAudioMuted(muted: boolean): void {
+    if (this.stopped) return;
+    this.audioMuted = muted;
+    this.audio.setMuted(muted);
+    this.syncAudioControl();
+  }
+  unlockAudio(): void {
+    if (this.stopped) return;
+    void this.audio.unlock();
+  }
+  private syncAudioControl(): void {
+    if (this.stopped || !this.serverDesktopAudio || !this.agentDesktopAudio)
+      return;
+    this.audio.setSupported();
+    if (!this.audio.isSupported) return;
+    const channel = this.channels.find(
+      (entry) => entry.purpose === 2 && entry.ready,
+    );
+    if (!channel) return;
+    const enabled = !this.audioMuted;
+    if (this.lastSentAudioEnabled === enabled) return;
+    this.lastSentAudioEnabled = enabled;
+    this.send(channel, { audioControl: { enabled } });
+  }
   setVisible(visible: boolean): void {
     if (this.stopped || this.visible === visible) return;
     this.visible = visible;
@@ -471,6 +505,8 @@ export class DesktopSession {
       if (this.channels.every((entry) => entry.ready) && !this.generation)
         this.status("通道已配对，等待远端采集与视频首帧…");
       if (channel.purpose === 2) {
+        this.serverDesktopAudio = !!message.channelReady.desktopAudio;
+        this.syncAudioControl();
         this.reportCapabilities();
         // The video socket may display a frame before this input socket pairs.
         // Never advertise writable input while its ordered channel is absent.
@@ -565,6 +601,37 @@ export class DesktopSession {
         );
         return;
       }
+      if (message.body === "audioConfig" && message.audioConfig) {
+        if (generationId || frameId || baseFrameId)
+          throw new Error("Invalid audio config");
+        const audioConfig = wire.AudioConfig.create(message.audioConfig);
+        if (
+          audioConfig.available &&
+          (audioConfig.codec !== "opus" ||
+            audioConfig.sampleRate !== 48000 ||
+            audioConfig.channels < 1 ||
+            audioConfig.channels > 2)
+        )
+          throw new Error("Unsupported audio config");
+        await this.audio.configure({
+          available: audioConfig.available,
+          codec: audioConfig.codec,
+          sampleRate: audioConfig.sampleRate,
+          channels: audioConfig.channels,
+        });
+        return;
+      }
+      if (message.body === "audioFrame" && message.audioFrame) {
+        if (generationId || frameId || baseFrameId)
+          throw new Error("Invalid audio frame");
+        const audioFrame = wire.AudioFrame.create(message.audioFrame);
+        if (!audioFrame.data.length) throw new Error("Empty audio frame");
+        this.audio.decodeFrame(
+          new Uint8Array(audioFrame.data),
+          integer(audioFrame.timestampMicroseconds),
+        );
+        return;
+      }
       if (message.body !== "cursorUpdate" || !message.cursorUpdate)
         throw new Error("Invalid cursor channel");
       const cursor = wire.CursorUpdate.create(message.cursorUpdate);
@@ -596,6 +663,9 @@ export class DesktopSession {
       const video = wire.VideoConfig.create(message.videoConfig);
       this.capabilitiesAccepted =
         video.desktopOptimization || video.desktopOptimizationContract === 2;
+      const sessionFeatures = integer(video.sessionCapabilities?.features ?? 0);
+      this.agentDesktopAudio = (sessionFeatures & 2) !== 0;
+      this.syncAudioControl();
       const modes = video.displayModes.map((mode) =>
         wire.DisplayMode.create(mode),
       );
@@ -1181,6 +1251,7 @@ export class DesktopSession {
     if (this.stopped || this.stopping) return;
     this.stopping = true;
     this.stopped = true;
+    this.audio.stop();
     this.cancelDecoderProbe?.();
     this.videoGenerations.clear();
 

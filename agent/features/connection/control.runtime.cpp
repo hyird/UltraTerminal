@@ -63,6 +63,7 @@ wire::Envelope makeHello(const ConnectionConfig& config, bool desktop = false) {
     reported->set_capture_available(desktopAvailable);
     reported->set_desktop_automation(desktopAvailable);
     reported->set_h264_software(desktopAvailable);
+    reported->set_desktop_audio(desktopAvailable);
     reported->set_desktop_input_contract(2);
 #else
     (void)desktop;
@@ -423,22 +424,29 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     auto req = std::move(*message->mutable_desktop_snapshot_start());
                     if (!desktopExecutable.empty() && activeDesktopTools < 2) {
                         ++activeDesktopTools;
-                        auto self = shared_from_this();
                         auto toolLoop = loopPool ? loopPool->next_loop() : loop;
-                        asio::co_spawn(
-                            loop.executor(),
-                            [self, toolLoop, req = std::move(req)]() mutable -> asio::awaitable<void> {
-                                struct ToolGuard {
-                                    std::shared_ptr<State> state;
-                                    ~ToolGuard() {
-                                        if (state->activeDesktopTools > 0) {
-                                            --state->activeDesktopTools;
+                        try {
+                            asio::co_spawn(
+                                toolLoop.executor(),
+                                runDesktopSnapshot(toolLoop, config, desktopExecutable, std::move(req)),
+                                [self = shared_from_this(), ownerLoop = loop](std::exception_ptr) mutable {
+                                    auto finish = [self = std::move(self)] {
+                                        if (self->activeDesktopTools > 0) {
+                                            --self->activeDesktopTools;
                                         }
+                                    };
+                                    if (ownerLoop.worker().is_current()) {
+                                        finish();
+                                    } else {
+                                        (void)ownerLoop.defer_cleanup(std::move(finish));
                                     }
-                                } guard{self};
-                                co_await runDesktopSnapshot(toolLoop, self->config, self->desktopExecutable, std::move(req));
-                            },
-                            asio::detached);
+                                });
+                        } catch (...) {
+                            if (activeDesktopTools > 0) {
+                                --activeDesktopTools;
+                            }
+                            throw;
+                        }
                     }
 #endif
                 } else if (message->has_desktop_action_request()) {
@@ -453,31 +461,45 @@ struct ControlRuntime::State : std::enable_shared_from_this<State> {
                     } else {
                         ++activeDesktopTools;
                         const auto generation = connectionGeneration;
-                        auto self = shared_from_this();
+                        const auto requestId = req.request_id();
                         auto toolLoop = loopPool ? loopPool->next_loop() : loop;
-                        asio::co_spawn(
-                            loop.executor(),
-                            [self, generation, toolLoop, req = std::move(req)]() mutable -> asio::awaitable<void> {
-                                struct ToolGuard {
-                                    std::shared_ptr<State> state;
-                                    ~ToolGuard() {
-                                        if (state->activeDesktopTools > 0) {
-                                            --state->activeDesktopTools;
+                        try {
+                            asio::co_spawn(
+                                toolLoop.executor(),
+                                runDesktopAction(toolLoop, desktopExecutable, std::move(req)),
+                                [self = shared_from_this(), ownerLoop = loop, generation, requestId](std::exception_ptr failure, wire::DesktopActionResult result) mutable {
+                                    auto deliver = [self = std::move(self), generation, requestId, failure = std::move(failure), result = std::move(result)]() mutable {
+                                        if (self->activeDesktopTools > 0) {
+                                            --self->activeDesktopTools;
                                         }
+                                        if (!self->ended && self->connectionGeneration == generation) {
+                                            try {
+                                                if (failure) {
+                                                    result.Clear();
+                                                    result.set_request_id(requestId ? requestId : 1);
+                                                    result.set_success(false);
+                                                    result.set_error(wire::DESKTOP_TOOL_ERROR_UNAVAILABLE);
+                                                }
+                                                wire::Envelope response;
+                                                *response.mutable_desktop_action_result() = std::move(result);
+                                                self->enqueue(std::move(response));
+                                            } catch (...) {
+                                                self->disconnect();
+                                            }
+                                        }
+                                    };
+                                    if (ownerLoop.worker().is_current()) {
+                                        deliver();
+                                    } else {
+                                        (void)ownerLoop.defer_cleanup(std::move(deliver));
                                     }
-                                } guard{self};
-                                wire::DesktopActionResult result = co_await runDesktopAction(toolLoop, self->desktopExecutable, std::move(req));
-                                if (!self->ended && self->connectionGeneration == generation) {
-                                    try {
-                                        wire::Envelope response;
-                                        *response.mutable_desktop_action_result() = std::move(result);
-                                        self->enqueue(std::move(response));
-                                    } catch (...) {
-                                        self->disconnect();
-                                    }
-                                }
-                            },
-                            asio::detached);
+                                });
+                        } catch (...) {
+                            if (activeDesktopTools > 0) {
+                                --activeDesktopTools;
+                            }
+                            throw;
+                        }
                     }
 #else
                     wire::Envelope response;

@@ -79,7 +79,7 @@ struct DesktopVideoWorker {
     std::uint32_t width = 0, height = 0, coalescedCaptures = 0, consecutiveRepeatedFrames = 0;
     std::int32_t configuredLeft = 0, configuredTop = 0;
     bool configurationPending = true, pixelsPending = false;
-    bool optimizationV2 = false, continuousFrames = false;
+    bool optimizationV2 = false, continuousFrames = false, serverDesktopAudio = false;
     std::vector<wire::VideoCodec> requestedCodecs{wire::AVC};
     protocol::DesktopSessionAgreement sessionAgreement;
 

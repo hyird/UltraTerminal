@@ -31,6 +31,7 @@ class DesktopTransport {
     // Actual readiness from BOTH native channels, not an assumed local schema.
     std::uint32_t serverOptimizationContract() const;
     bool serverContinuousFrames() const;
+    bool serverDesktopAudio() const;
     void cancel();
 
   private:
