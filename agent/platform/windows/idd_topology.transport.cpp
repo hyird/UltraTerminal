@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -15,6 +17,94 @@
 
 namespace ultraterimal::agent {
 namespace {
+
+struct SavedTopology {
+    std::mutex mutex;
+    bool valid = false;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+};
+
+SavedTopology& savedTopology() {
+    static SavedTopology instance;
+    return instance;
+}
+
+constexpr UINT32 kLeaseMagic = 0x5554544Cu; // "UTTL"
+constexpr std::size_t kMaxLeaseSlots = 8;
+
+struct SharedLeaseTable {
+    std::uint32_t magic;
+    std::array<std::uint32_t, kMaxLeaseSlots> pids;
+};
+
+bool isProcessAlive(DWORD pid) noexcept {
+    if (pid == 0) {
+        return false;
+    }
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+    if (!process) {
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    }
+    const DWORD wait = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    return wait == WAIT_TIMEOUT;
+}
+
+HANDLE createNamedMutexWithFallback(const wchar_t* globalName, const wchar_t* localName) noexcept {
+    HANDLE handle = CreateMutexW(nullptr, FALSE, globalName);
+    if (!handle && GetLastError() == ERROR_ACCESS_DENIED) {
+        handle = CreateMutexW(nullptr, FALSE, localName);
+    }
+    return handle;
+}
+
+HANDLE createNamedMappingWithFallback(const wchar_t* globalName, const wchar_t* localName, DWORD size, bool& created) noexcept {
+    created = false;
+    HANDLE handle = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, globalName);
+    if (!handle && GetLastError() == ERROR_ACCESS_DENIED) {
+        handle = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, localName);
+    }
+    if (handle && GetLastError() != ERROR_ALREADY_EXISTS) {
+        created = true;
+    }
+    return handle;
+}
+
+bool sameLuid(const LUID& a, const LUID& b) noexcept {
+    return a.LowPart == b.LowPart && a.HighPart == b.HighPart;
+}
+
+void snapshotCurrentActiveTopologyIfNeeded() noexcept {
+    auto& saved = savedTopology();
+    std::lock_guard lock(saved.mutex);
+    if (saved.valid) {
+        return;
+    }
+    UINT32 pathCount = 0;
+    UINT32 modeCount = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS || pathCount == 0) {
+        return;
+    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr) != ERROR_SUCCESS) {
+        return;
+    }
+    paths.resize(pathCount);
+    modes.resize(modeCount);
+    saved.paths = std::move(paths);
+    saved.modes = std::move(modes);
+    saved.valid = true;
+}
+
+void clearSavedTopology() noexcept {
+    auto& saved = savedTopology();
+    std::lock_guard lock(saved.mutex);
+    saved.valid = false;
+    saved.paths.clear();
+    saved.modes.clear();
+}
 
 using Microsoft::WRL::ComPtr;
 
@@ -171,6 +261,8 @@ bool ensureIddPrimaryIfSoftwareDisplay() noexcept {
         std::size_t activePathCount = 0;
         const DISPLAYCONFIG_PATH_INFO* iddCandidate = nullptr;
         bool iddAlreadyActive = false;
+        UINT32 iddActiveWidth = 0;
+        UINT32 iddActiveHeight = 0;
         UINT32 preferredWidth = 1920;
         UINT32 preferredHeight = 1080;
 
@@ -183,6 +275,16 @@ bool ensureIddPrimaryIfSoftwareDisplay() noexcept {
                 }
                 if (isActive) {
                     iddAlreadyActive = true;
+                    if (path.sourceInfo.modeInfoIdx != DISPLAYCONFIG_PATH_MODE_IDX_INVALID &&
+                        path.sourceInfo.modeInfoIdx < modes.size() &&
+                        modes[path.sourceInfo.modeInfoIdx].infoType == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+                        const auto& src = modes[path.sourceInfo.modeInfoIdx].sourceMode;
+                        if (src.width >= idd::kMinCustomWidth && src.width <= idd::kMaxWidth &&
+                            src.height >= idd::kMinCustomHeight && src.height <= idd::kMaxHeight) {
+                            iddActiveWidth = src.width;
+                            iddActiveHeight = src.height;
+                        }
+                    }
                 }
             }
             if (isActive) {
@@ -212,32 +314,282 @@ bool ensureIddPrimaryIfSoftwareDisplay() noexcept {
             return true;
         }
 
-        DISPLAYCONFIG_PATH_INFO newPath = *iddCandidate;
-        newPath.flags = DISPLAYCONFIG_PATH_ACTIVE;
+        const bool hadNonIddActive = activePathCount > (iddAlreadyActive ? 1u : 0u);
+        if (hadNonIddActive) {
+            snapshotCurrentActiveTopologyIfNeeded();
+        }
+
+        const UINT32 targetWidth = iddActiveWidth ? iddActiveWidth : preferredWidth;
+        const UINT32 targetHeight = iddActiveHeight ? iddActiveHeight : preferredHeight;
+
+        DISPLAYCONFIG_PATH_INFO newPath{};
+        newPath.sourceInfo.adapterId = iddCandidate->sourceInfo.adapterId;
+        newPath.sourceInfo.id = iddCandidate->sourceInfo.id;
         newPath.sourceInfo.modeInfoIdx = 0;
+        newPath.targetInfo.adapterId = iddCandidate->targetInfo.adapterId;
+        newPath.targetInfo.id = iddCandidate->targetInfo.id;
         newPath.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+        newPath.targetInfo.outputTechnology = iddCandidate->targetInfo.outputTechnology;
         newPath.targetInfo.rotation = DISPLAYCONFIG_ROTATION_IDENTITY;
-        newPath.targetInfo.scaling = DISPLAYCONFIG_SCALING_IDENTITY;
+        newPath.targetInfo.scaling = DISPLAYCONFIG_SCALING_PREFERRED;
         newPath.targetInfo.refreshRate.Numerator = 60;
         newPath.targetInfo.refreshRate.Denominator = 1;
         newPath.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+        newPath.flags = DISPLAYCONFIG_PATH_ACTIVE;
 
         DISPLAYCONFIG_MODE_INFO newSourceMode{};
         newSourceMode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
         newSourceMode.id = newPath.sourceInfo.id;
         newSourceMode.adapterId = newPath.sourceInfo.adapterId;
-        newSourceMode.sourceMode.width = preferredWidth;
-        newSourceMode.sourceMode.height = preferredHeight;
+        newSourceMode.sourceMode.width = targetWidth;
+        newSourceMode.sourceMode.height = targetHeight;
         newSourceMode.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
         newSourceMode.sourceMode.position.x = 0;
         newSourceMode.sourceMode.position.y = 0;
 
-        const LONG status = SetDisplayConfig(
+        // Intentionally omit SDC_SAVE_TO_DATABASE so temporary IDD hijacking is
+        // not persisted as the permanent OS display topology.
+        LONG status = SetDisplayConfig(
             1, &newPath, 1, &newSourceMode,
-            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
-        return status == ERROR_SUCCESS;
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+        if (status != ERROR_SUCCESS) {
+            newPath.targetInfo.scaling = DISPLAYCONFIG_SCALING{};
+            newPath.targetInfo.refreshRate.Numerator = 0;
+            newPath.targetInfo.refreshRate.Denominator = 0;
+            newPath.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_UNSPECIFIED;
+            status = SetDisplayConfig(
+                1, &newPath, 1, &newSourceMode,
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES);
+        }
+        if (status == ERROR_SUCCESS) {
+            Sleep(120);
+            return true;
+        }
+        return false;
     } catch (...) {
         return false;
+    }
+}
+
+bool restoreDisplayTopologyAfterIdd() noexcept {
+    try {
+        UINT32 pathCount = 0;
+        UINT32 modeCount = 0;
+        if (GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &pathCount, &modeCount) != ERROR_SUCCESS || pathCount == 0) {
+            return false;
+        }
+        std::vector<DISPLAYCONFIG_PATH_INFO> allPaths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> allModes(modeCount);
+        if (QueryDisplayConfig(QDC_ALL_PATHS, &pathCount, allPaths.data(), &modeCount, allModes.data(), nullptr) != ERROR_SUCCESS) {
+            return false;
+        }
+        allPaths.resize(pathCount);
+        allModes.resize(modeCount);
+
+        bool iddActive = false;
+        bool hasHardwareActive = false;
+        for (const auto& path : allPaths) {
+            if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) == 0) {
+                continue;
+            }
+            if (pathIsUltraterimalIdd(path)) {
+                iddActive = true;
+                continue;
+            }
+            const auto gdiName = queryDisplaySourceGdiName(path.sourceInfo.adapterId, path.sourceInfo.id);
+            if (adapterIsHardwareGpu(path.sourceInfo.adapterId, gdiName)) {
+                hasHardwareActive = true;
+            }
+        }
+        if (!iddActive || hasHardwareActive) {
+            clearSavedTopology();
+            return false;
+        }
+
+        {
+            auto& saved = savedTopology();
+            std::lock_guard lock(saved.mutex);
+            if (saved.valid && !saved.paths.empty()) {
+                bool savedHasNonIdd = false;
+                for (const auto& path : saved.paths) {
+                    if (!pathIsUltraterimalIdd(path)) {
+                        savedHasNonIdd = true;
+                        break;
+                    }
+                }
+                if (savedHasNonIdd) {
+                    auto restorePaths = saved.paths;
+                    auto restoreModes = saved.modes;
+                    const LONG status = SetDisplayConfig(
+                        static_cast<UINT32>(restorePaths.size()),
+                        restorePaths.data(),
+                        static_cast<UINT32>(restoreModes.size()),
+                        restoreModes.data(),
+                        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+                    if (status == ERROR_SUCCESS) {
+                        saved.valid = false;
+                        saved.paths.clear();
+                        saved.modes.clear();
+                        Sleep(120);
+                        return true;
+                    }
+                }
+                saved.valid = false;
+                saved.paths.clear();
+                saved.modes.clear();
+            }
+        }
+
+        std::vector<DISPLAYCONFIG_PATH_INFO> hardwareCandidates;
+        std::vector<DISPLAYCONFIG_PATH_INFO> fallbackCandidates;
+        const auto addUnique = [](std::vector<DISPLAYCONFIG_PATH_INFO>& dest, const DISPLAYCONFIG_PATH_INFO& candidate) {
+            for (const auto& existing : dest) {
+                if (sameLuid(existing.sourceInfo.adapterId, candidate.sourceInfo.adapterId) &&
+                    existing.sourceInfo.id == candidate.sourceInfo.id) {
+                    return;
+                }
+                if (sameLuid(existing.targetInfo.adapterId, candidate.targetInfo.adapterId) &&
+                    existing.targetInfo.id == candidate.targetInfo.id) {
+                    return;
+                }
+            }
+            DISPLAYCONFIG_PATH_INFO cleaned = candidate;
+            cleaned.sourceInfo.cloneGroupId = DISPLAYCONFIG_PATH_CLONE_GROUP_INVALID;
+            cleaned.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            cleaned.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+            cleaned.flags = DISPLAYCONFIG_PATH_ACTIVE;
+            dest.push_back(cleaned);
+        };
+
+        for (const auto& path : allPaths) {
+            if (!path.targetInfo.targetAvailable || pathIsUltraterimalIdd(path)) {
+                continue;
+            }
+            const auto gdiName = queryDisplaySourceGdiName(path.sourceInfo.adapterId, path.sourceInfo.id);
+            if (adapterIsHardwareGpu(path.sourceInfo.adapterId, gdiName)) {
+                addUnique(hardwareCandidates, path);
+            } else {
+                addUnique(fallbackCandidates, path);
+            }
+        }
+
+        auto& chosen = !hardwareCandidates.empty() ? hardwareCandidates : fallbackCandidates;
+        if (chosen.empty()) {
+            return false;
+        }
+
+        LONG status = SetDisplayConfig(
+            static_cast<UINT32>(chosen.size()),
+            chosen.data(),
+            0,
+            nullptr,
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+        if (status != ERROR_SUCCESS && chosen.size() > 1) {
+            status = SetDisplayConfig(
+                1,
+                chosen.data(),
+                0,
+                nullptr,
+                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+        }
+        if (status == ERROR_SUCCESS) {
+            Sleep(120);
+            return true;
+        }
+        return false;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct DesktopDisplayTopologyLease::State {
+    HANDLE lock = nullptr;
+    HANDLE mapping = nullptr;
+    DWORD pid = 0;
+    bool acquired = false;
+};
+
+DesktopDisplayTopologyLease::DesktopDisplayTopologyLease() noexcept : state_(std::make_unique<State>()) {
+    state_->pid = GetCurrentProcessId();
+    state_->lock = createNamedMutexWithFallback(
+        L"Global\\UltraterimalDesktopTopologyLock",
+        L"Local\\UltraterimalDesktopTopologyLock");
+    bool created = false;
+    state_->mapping = createNamedMappingWithFallback(
+        L"Global\\UltraterimalDesktopTopologyState",
+        L"Local\\UltraterimalDesktopTopologyState",
+        static_cast<DWORD>(sizeof(SharedLeaseTable)),
+        created);
+    if (!state_->lock || !state_->mapping) {
+        return;
+    }
+    const DWORD wait = WaitForSingleObject(state_->lock, 2000);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        return;
+    }
+    auto* table = static_cast<SharedLeaseTable*>(MapViewOfFile(state_->mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedLeaseTable)));
+    if (table) {
+        if (created || table->magic != kLeaseMagic) {
+            table->magic = kLeaseMagic;
+            table->pids.fill(0);
+        }
+        bool present = false;
+        for (auto& slot : table->pids) {
+            if (slot == state_->pid) {
+                present = true;
+            } else if (slot != 0 && !isProcessAlive(slot)) {
+                slot = 0;
+            }
+        }
+        if (!present) {
+            for (auto& slot : table->pids) {
+                if (slot == 0) {
+                    slot = state_->pid;
+                    present = true;
+                    break;
+                }
+            }
+        }
+        state_->acquired = present;
+        UnmapViewOfFile(table);
+    }
+    ReleaseMutex(state_->lock);
+}
+
+DesktopDisplayTopologyLease::~DesktopDisplayTopologyLease() {
+    if (!state_) {
+        return;
+    }
+    if (state_->acquired && state_->lock && state_->mapping) {
+        const DWORD wait = WaitForSingleObject(state_->lock, 2000);
+        const bool locked = (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED);
+        bool shouldRestore = false;
+        if (auto* table = static_cast<SharedLeaseTable*>(MapViewOfFile(state_->mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedLeaseTable)))) {
+            if (table->magic == kLeaseMagic) {
+                std::size_t liveCount = 0;
+                for (auto& slot : table->pids) {
+                    if (slot == state_->pid || (slot != 0 && !isProcessAlive(slot))) {
+                        slot = 0;
+                    } else if (slot != 0) {
+                        ++liveCount;
+                    }
+                }
+                shouldRestore = (liveCount == 0);
+            }
+            UnmapViewOfFile(table);
+        }
+        if (shouldRestore) {
+            (void)restoreDisplayTopologyAfterIdd();
+        }
+        if (locked) {
+            ReleaseMutex(state_->lock);
+        }
+    }
+    if (state_->mapping) {
+        CloseHandle(state_->mapping);
+    }
+    if (state_->lock) {
+        CloseHandle(state_->lock);
     }
 }
 

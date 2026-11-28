@@ -25,7 +25,9 @@ class IddSharedCapture {
     bool isActiveInSystemMemory() const noexcept;
 
     // Waits briefly for the IDD driver to start publishing after a topology switch.
-    bool waitForDriverReady(std::chrono::milliseconds timeout) noexcept;
+    bool waitForDriverReady(std::chrono::milliseconds timeout,
+                            std::uint32_t expectedWidth = 0,
+                            std::uint32_t expectedHeight = 0) noexcept;
 
     // Requests the IDD driver to dynamically register a custom even resolution
     // (640x480..3840x2160) via IddCxMonitorUpdateModes so Windows accepts it.

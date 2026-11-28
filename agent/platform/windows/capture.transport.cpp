@@ -441,43 +441,55 @@ struct DesktopCapture::State {
         lastReadbackData = frame.bgra.data();
     }
 };
-DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_unique<State>()) {
+DesktopCapture::DesktopCapture(std::uint32_t displayIndex, bool preferIddTopology) : state_(std::make_unique<State>()) {
     state_->desktopGeneration = requireInputDesktop();
     // Idle display power saving can leave DuplicateOutput waiting indefinitely
     // for its first frame. The request lives exactly as long as this capture.
     state_->activity.emplace();
-    if (displayIndex == 0) {
+    if (displayIndex == 0 && preferIddTopology) {
         (void)ensureIddPrimaryIfSoftwareDisplay();
     }
     ComPtr<IDXGIFactory1> factory;
     require(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
     ComPtr<IDXGIOutput1> selected;
     ComPtr<IDXGIAdapter1> selectedAdapter;
-    std::uint32_t attachedIndex = 0;
-    for (UINT i = 0; !selected; ++i) {
-        ComPtr<IDXGIAdapter1> adapter;
-        const auto adapterStatus = factory->EnumAdapters1(i, &adapter);
-        if (adapterStatus == DXGI_ERROR_NOT_FOUND) {
-            break;
+    const auto findAttachedOutput = [&]() {
+        selected.Reset();
+        selectedAdapter.Reset();
+        std::uint32_t attachedIndex = 0;
+        for (UINT i = 0; !selected; ++i) {
+            ComPtr<IDXGIAdapter1> adapter;
+            const auto adapterStatus = factory->EnumAdapters1(i, &adapter);
+            if (adapterStatus == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+            require(adapterStatus, "EnumAdapters1");
+            for (UINT j = 0;; ++j) {
+                ComPtr<IDXGIOutput> output;
+                const auto status = adapter->EnumOutputs(j, &output);
+                if (status == DXGI_ERROR_NOT_FOUND) {
+                    break;
+                }
+                require(status, "EnumOutputs");
+                DXGI_OUTPUT_DESC description{};
+                require(output->GetDesc(&description), "GetDesc output");
+                if (!description.AttachedToDesktop) {
+                    continue;
+                }
+                if (attachedIndex++ == displayIndex) {
+                    require(output.As(&selected), "IDXGIOutput1");
+                    selectedAdapter = adapter;
+                    break;
+                }
+            }
         }
-        require(adapterStatus, "EnumAdapters1");
-        for (UINT j = 0;; ++j) {
-            ComPtr<IDXGIOutput> output;
-            const auto status = adapter->EnumOutputs(j, &output);
-            if (status == DXGI_ERROR_NOT_FOUND) {
-                break;
-            }
-            require(status, "EnumOutputs");
-            DXGI_OUTPUT_DESC description{};
-            require(output->GetDesc(&description), "GetDesc output");
-            if (!description.AttachedToDesktop) {
-                continue;
-            }
-            if (attachedIndex++ == displayIndex) {
-                require(output.As(&selected), "IDXGIOutput1");
-                selectedAdapter = adapter;
-                break;
-            }
+    };
+    findAttachedOutput();
+    if (!selected && displayIndex == 0 && !preferIddTopology) {
+        if (ensureIddPrimaryIfSoftwareDisplay()) {
+            factory.Reset();
+            require(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
+            findAttachedOutput();
         }
     }
     if (!selected) {
@@ -488,8 +500,10 @@ DesktopCapture::DesktopCapture(std::uint32_t displayIndex) : state_(std::make_un
     state_->bounds = outputDescription.DesktopCoordinates;
     state_->displayName = outputDescription.DeviceName;
     if (isDisplayUltraterimalIdd(state_->displayName)) {
+        const auto expectedW = static_cast<std::uint32_t>(std::max<LONG>(0, state_->bounds.right - state_->bounds.left));
+        const auto expectedH = static_cast<std::uint32_t>(std::max<LONG>(0, state_->bounds.bottom - state_->bounds.top));
         auto idd = std::make_unique<IddSharedCapture>();
-        if (idd->waitForDriverReady(std::chrono::milliseconds(500)) && idd->isActiveInSystemMemory()) {
+        if (idd->waitForDriverReady(std::chrono::milliseconds(500), expectedW, expectedH) && idd->isActiveInSystemMemory()) {
             state_->iddCapture = std::move(idd);
             state_->description.DesktopImageInSystemMemory = TRUE;
             state_->description.Rotation = outputDescription.Rotation != DXGI_MODE_ROTATION_UNSPECIFIED ? outputDescription.Rotation : DXGI_MODE_ROTATION_IDENTITY;
@@ -675,6 +689,11 @@ std::optional<CapturedFrame> DesktopCapture::nextFrame(std::chrono::milliseconds
                 }
             }
             return std::nullopt;
+        }
+        const auto expectedW = static_cast<std::uint32_t>(std::max<LONG>(0, state_->bounds.right - state_->bounds.left));
+        const auto expectedH = static_cast<std::uint32_t>(std::max<LONG>(0, state_->bounds.bottom - state_->bounds.top));
+        if (frame.width != expectedW || frame.height != expectedH) {
+            throw CaptureReset();
         }
         state_->cursorSuppression.applyFallbackCursor(frame, state_->bounds.left, state_->bounds.top);
         state_->pixelsCaptured = true;

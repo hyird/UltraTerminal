@@ -24,6 +24,7 @@
 #include "platform/windows/desktop.transport.h"
 #include "platform/windows/desktop_failure.error.h"
 #include "platform/windows/desktop_process.transport.h"
+#include "platform/windows/idd_topology.transport.h"
 #include "platform/windows/input.transport.h"
 #include "platform/windows/pipe.transport.h"
 #include "ultraterimal/protocol/desktop_failure.protocol.h"
@@ -215,7 +216,11 @@ class DesktopWorker {
                     try {
                         input_ = std::make_unique<DesktopInput>(update->desktopLeft, update->desktopTop,
                                                                 update->configuration->width(), update->configuration->height());
+                        inputBindRetries_ = 0;
                     } catch (const DesktopChanged&) {
+                        if (++inputBindRetries_ >= 8) {
+                            throw DesktopFailure(wire::DesktopFault::INPUT_FAILED, "Input display is outside the virtual desktop");
+                        }
                         video_.invalidate();
                         refresh_ = true;
                         continue;
@@ -551,6 +556,7 @@ class DesktopWorker {
     std::uint64_t inputGeneration_ = 0;
     std::uint32_t probeNonce_ = 0;
     std::uint32_t lastAcceptedResponseNonce_ = 0;
+    unsigned inputBindRetries_ = 0;
     std::deque<OutstandingProbe> outstandingProbes_;
     std::deque<std::uint32_t> confirmedProbes_;
     std::chrono::steady_clock::time_point lastAck_{}, nextProbe_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -569,6 +575,7 @@ asio::awaitable<std::uint32_t> runDesktopWorker(ruvia::event_loop loop, ruvia::b
         if (!start || !start->has_desktop_start()) {
             throw DesktopFailure(wire::DesktopFault::PROTOCOL_REJECTED, "Desktop IPC requires a startup message");
         }
+        DesktopDisplayTopologyLease topologyLease;
         DesktopWorker worker(std::move(loop), pool, pipe, windowsSession, *start);
         running = true;
         co_return co_await worker.run();

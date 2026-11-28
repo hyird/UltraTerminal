@@ -53,9 +53,6 @@ wire::DesktopToolErrorCode mapCaptureError(wire::DesktopFault::Code code) noexce
 
 DisplayBounds resolveAttachedDisplayBounds(std::uint32_t displayIndex) {
     (void)requireInputDesktop();
-    if (displayIndex == 0) {
-        (void)ensureIddPrimaryIfSoftwareDisplay();
-    }
     ComPtr<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
         throw DesktopChanged("Cannot enumerate displays");
@@ -180,7 +177,7 @@ wire::DesktopSnapshotResult executeDesktopSnapshot(const wire::DesktopSnapshotSt
         std::vector<std::uint8_t> reusable;
         for (int recreation = 0; recreation < 2 && !captured; ++recreation) {
             try {
-                DesktopCapture capture(request.display_index());
+                DesktopCapture capture(request.display_index(), false);
                 const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
                 while (std::chrono::steady_clock::now() < deadline) {
                     auto frame = capture.nextFrame(std::chrono::milliseconds(250), &reusable);

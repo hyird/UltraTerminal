@@ -65,7 +65,7 @@ class DesktopCapture {
     struct DisplayMode {
         std::uint32_t width, height;
     };
-    explicit DesktopCapture(std::uint32_t displayIndex = 0);
+    explicit DesktopCapture(std::uint32_t displayIndex = 0, bool preferIddTopology = true);
     ~DesktopCapture();
     DesktopCapture(const DesktopCapture&) = delete;
     DesktopCapture& operator=(const DesktopCapture&) = delete;

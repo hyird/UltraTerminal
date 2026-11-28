@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string_view>
 
 namespace ultraterimal::agent {
@@ -22,5 +23,25 @@ bool isDisplayUltraterimalIdd(std::wstring_view displayDeviceName) noexcept;
 // display only). Leaves machines with real hardware GPU monitors untouched.
 // Returns true if Ultraterimal Virtual Display is now the sole active primary.
 bool ensureIddPrimaryIfSoftwareDisplay() noexcept;
+
+// Restores the non-IDD active display topology (or re-enables available non-IDD
+// monitors from QDC_ALL_PATHS when no saved snapshot exists) so VNC or physical
+// displays do not stay black after all remote desktop sessions disconnect.
+bool restoreDisplayTopologyAfterIdd() noexcept;
+
+// Cross-process RAII lease held by active desktop worker processes. When the
+// last active desktop worker exits, restores the pre-IDD display topology.
+class DesktopDisplayTopologyLease {
+  public:
+    DesktopDisplayTopologyLease() noexcept;
+    ~DesktopDisplayTopologyLease();
+
+    DesktopDisplayTopologyLease(const DesktopDisplayTopologyLease&) = delete;
+    DesktopDisplayTopologyLease& operator=(const DesktopDisplayTopologyLease&) = delete;
+
+  private:
+    struct State;
+    std::unique_ptr<State> state_;
+};
 
 } // namespace ultraterimal::agent

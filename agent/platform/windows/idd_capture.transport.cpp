@@ -120,12 +120,26 @@ bool IddSharedCapture::isActiveInSystemMemory() const noexcept {
     return true;
 }
 
-bool IddSharedCapture::waitForDriverReady(std::chrono::milliseconds timeout) noexcept {
+bool IddSharedCapture::waitForDriverReady(std::chrono::milliseconds timeout,
+                                          std::uint32_t expectedWidth,
+                                          std::uint32_t expectedHeight) noexcept {
     if (!state_ || !state_->region) {
         return false;
     }
     auto hasFrame = [&]() noexcept {
-        return isActiveInSystemMemory() && state_->region->header.frameSeq.load(std::memory_order_acquire) > 0;
+        if (!isActiveInSystemMemory()) {
+            return false;
+        }
+        const auto& header = state_->region->header;
+        if (header.frameSeq.load(std::memory_order_acquire) == 0) {
+            return false;
+        }
+        if (expectedWidth > 0 && expectedHeight > 0) {
+            const std::uint32_t slot = header.activeSlot.load(std::memory_order_acquire) & 1u;
+            const idd::SlotMetadata meta = header.slots[slot];
+            return meta.width == expectedWidth && meta.height == expectedHeight;
+        }
+        return true;
     };
     if (hasFrame()) {
         return true;

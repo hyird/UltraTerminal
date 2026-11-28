@@ -124,14 +124,6 @@ INPUT buttonInput(std::uint32_t code, bool pressed) {
     }
     return input;
 }
-void submit(INPUT input) {
-    if (input.type == INPUT_MOUSE) {
-        input.mi.dwExtraInfo = kDesktopInputMarker;
-    }
-    if (SendInput(1, &input, sizeof(input)) != 1) {
-        throw std::runtime_error("Windows rejected desktop input");
-    }
-}
 LONG normalized(std::int64_t position, std::int64_t origin, int extent) {
     // Target the pixel center to avoid rounding into a neighboring physical pixel.
     return static_cast<LONG>(std::clamp(((position - origin) * 65536 + 32768) / extent, std::int64_t{0}, std::int64_t{65535}));
@@ -152,6 +144,9 @@ struct DesktopInput::State {
     bool stale = false;
 
     State(std::int32_t x, std::int32_t y, std::uint32_t w, std::uint32_t h, Ownership ownership) : left(x), top(y), width(w), height(h) {
+        if (!width || !height || width > 16384 || height > 16384) {
+            throw std::invalid_argument("Input display dimensions are invalid");
+        }
         if (ownership == Ownership::kExclusive) {
             exclusiveLease.emplace();
             preemptObserver.emplace();
@@ -162,16 +157,47 @@ struct DesktopInput::State {
         DpiScope dpi;
         desktop = VirtualDesktop{};
         lastDesktopCheck = std::chrono::steady_clock::now();
-        if (!width || !height || width > 16384 || height > 16384 || desktop.width <= 0 || desktop.height <= 0 ||
+        if (desktop.width <= 0 || desktop.height <= 0 ||
             left < desktop.left || top < desktop.top || static_cast<std::int64_t>(left) + width > static_cast<std::int64_t>(desktop.left) + desktop.width ||
             static_cast<std::int64_t>(top) + height > static_cast<std::int64_t>(desktop.top) + desktop.height) {
-            throw std::invalid_argument("Input display is outside the virtual desktop");
+            throw DesktopChanged("Input display is outside the virtual desktop");
         }
     }
     void requireThread() const {
         if (GetCurrentThreadId() != thread) {
             throw std::logic_error("Desktop input belongs to its creating thread");
         }
+    }
+    bool submitOrMarkStale(INPUT input) {
+        if (input.type == INPUT_MOUSE) {
+            input.mi.dwExtraInfo = kDesktopInputMarker;
+        }
+        if (SendInput(1, &input, sizeof(input)) == 1) {
+            return true;
+        }
+        bool switched = false;
+        try {
+            if (requireInputDesktop() != desktopGeneration) {
+                switched = true;
+            }
+        } catch (const DesktopChanged&) {
+            switched = true;
+        }
+        if (!switched) {
+            DpiScope dpi;
+            if (!(desktop == VirtualDesktop{})) {
+                switched = true;
+            }
+        }
+        if (switched) {
+            stale = true;
+            try {
+                release();
+            } catch (...) {
+            }
+            return false;
+        }
+        throw std::runtime_error("Windows rejected desktop input");
     }
     void release() {
         requireThread();
@@ -263,7 +289,7 @@ struct DesktopInput::State {
             input.mi.dx = normalized(static_cast<std::int64_t>(left) + event.x(), desktop.left, desktop.width);
             input.mi.dy = normalized(static_cast<std::int64_t>(top) + event.y(), desktop.top, desktop.height);
             input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-            submit(input);
+            (void)submitOrMarkStale(input);
             break;
         case wire::InputEvent::KEY: {
             auto& held = keys[event.code()];
@@ -273,8 +299,9 @@ struct DesktopInput::State {
             if (event.pressed() && !held && (GetAsyncKeyState(static_cast<int>(event.code() & 0xff)) & 0x8000)) {
                 throw std::runtime_error("Key is already held outside this input session");
             }
-            submit(keyInput(event.code(), event.pressed()));
-            held = event.pressed();
+            if (submitOrMarkStale(keyInput(event.code(), event.pressed()))) {
+                held = event.pressed();
+            }
             break;
         }
         case wire::InputEvent::BUTTON: {
@@ -288,14 +315,15 @@ struct DesktopInput::State {
             if (held == event.pressed()) {
                 return;
             }
-            submit(buttonInput(event.code(), event.pressed()));
-            held = event.pressed();
+            if (submitOrMarkStale(buttonInput(event.code(), event.pressed()))) {
+                held = event.pressed();
+            }
             break;
         }
         case wire::InputEvent::WHEEL:
             input.mi.dwFlags = event.code() ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
             input.mi.mouseData = static_cast<DWORD>(event.wheel_delta());
-            submit(input);
+            (void)submitOrMarkStale(input);
             break;
         default:
             throw std::invalid_argument("Unsupported desktop input event");
