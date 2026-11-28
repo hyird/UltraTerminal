@@ -132,7 +132,7 @@ if(WIN32)
         target_include_directories(${agent_core_target} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_compile_definitions(${agent_core_target} PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
         target_compile_options(${agent_core_target} PUBLIC /bigobj /W4 /WX /permissive- /utf-8 /EHsc PRIVATE "$<$<CONFIG:Release>:/Gy;/Gw;/GF;/GL>")
-        target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi setupapi OpenH264::OpenH264 de265 dav1d::dav1d Opus::opus ZLIB::ZLIB
+        target_link_libraries(${agent_core_target} PRIVATE ultraterimal-login-serialization advapi32 wtsapi32 userenv dxgi d3d11 gdi32 crypt32 bcrypt ole32 mfuuid strmiids msi setupapi cfgmgr32 OpenH264::OpenH264 de265 dav1d::dav1d Opus::opus ZLIB::ZLIB
             PUBLIC ultraterimal::protocol ruvia::core OpenSSL::SSL OpenSSL::Crypto)
     endforeach()
     add_subdirectory(platform/windows/idd)

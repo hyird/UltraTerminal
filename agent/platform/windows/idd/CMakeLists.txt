@@ -61,29 +61,35 @@ target_link_libraries(ultraterimal-idd-driver PRIVATE
 target_link_options(ultraterimal-idd-driver PRIVATE "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
 
 set(_idd_stage_dir "${CMAKE_CURRENT_BINARY_DIR}/package")
-find_program(_inf2cat_exe inf2cat.exe PATHS
+find_program(_inf2cat_exe NAMES Inf2Cat.exe inf2cat.exe PATHS
     "${_wdk_root}/bin/${_wdk_um_ver}/x86"
     "${_wdk_root}/bin/x86"
-    NO_DEFAULT_PATH)
+    NO_DEFAULT_PATH
+    REQUIRED)
+
+file(GLOB _sdk_x64_bin_dirs "C:/Program Files (x86)/Windows Kits/10/bin/10.0.*/x64")
+if(_sdk_x64_bin_dirs)
+    list(SORT _sdk_x64_bin_dirs ORDER DESCENDING)
+endif()
 find_program(_signtool_exe signtool.exe PATHS
+    "${_wdk_root}/bin/${_wdk_um_ver}/x64"
     "C:/Program Files (x86)/Windows Kits/10/bin/${_wdk_um_ver}/x64"
-    "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64"
-    "C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64")
+    ${_sdk_x64_bin_dirs}
+    REQUIRED)
+find_program(_powershell_exe NAMES pwsh powershell REQUIRED)
+
+set(_idd_sign_args)
+if(ULTRATERIMAL_IDD_SIGN_SHA1)
+    set(_idd_sign_args -SignSha1 "${ULTRATERIMAL_IDD_SIGN_SHA1}")
+endif()
 
 add_custom_command(TARGET ultraterimal-idd-driver POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_idd_stage_dir}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ultraterimal-idd-driver>" "${_idd_stage_dir}/ultraterimal_idd.dll"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ultraterimal_idd.inf" "${_idd_stage_dir}/ultraterimal_idd.inf"
-    COMMENT "Staging Ultraterimal IDD driver package")
-
-if(_inf2cat_exe)
-    add_custom_command(TARGET ultraterimal-idd-driver POST_BUILD
-        COMMAND "${_inf2cat_exe}" /driver:"${_idd_stage_dir}" /os:10_VB_X64
-        COMMENT "Generating ultraterimal_idd.cat")
-endif()
-
-if(ULTRATERIMAL_IDD_SIGN_SHA1 AND _signtool_exe)
-    add_custom_command(TARGET ultraterimal-idd-driver POST_BUILD
-        COMMAND "${_signtool_exe}" sign /fd SHA256 /sha1 "${ULTRATERIMAL_IDD_SIGN_SHA1}" "${_idd_stage_dir}/ultraterimal_idd.dll" "${_idd_stage_dir}/ultraterimal_idd.cat"
-        COMMENT "Signing Ultraterimal IDD driver package")
-endif()
+    COMMAND "${_powershell_exe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/stage_idd_package.ps1"
+        -DllPath "$<TARGET_FILE:ultraterimal-idd-driver>"
+        -InfPath "${CMAKE_CURRENT_SOURCE_DIR}/ultraterimal_idd.inf"
+        -StageDir "${_idd_stage_dir}"
+        -Inf2CatExe "${_inf2cat_exe}"
+        -SignToolExe "${_signtool_exe}"
+        ${_idd_sign_args}
+    COMMENT "Staging and signing Ultraterimal IDD driver package")

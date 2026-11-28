@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "platform/windows/idd/idd_shared.protocol.h"
+#include "platform/windows/idd_install.transport.h"
 #include "platform/windows/idd_topology.transport.h"
 
 using namespace ultraterimal::agent;
@@ -68,5 +69,29 @@ int main() {
     assert(!idd::isValidCustomMode(1921, 1080));
     assert(!idd::isValidCustomMode(1920, 1081));
     assert(!idd::isValidCustomMode(4096, 2160));
+
+    // 4. INF DriverVer parsing tests
+    {
+        constexpr std::string_view kInf =
+            "[Version]\r\n"
+            "Signature=\"$Windows NT$\"\r\n"
+            "DriverVer=11/28/2026,1.0.68.0\r\n";
+        const auto ver = parseInfDriverVersion(kInf);
+        assert(ver.has_value() && *ver == L"1.0.68.0");
+    }
+    {
+        constexpr std::string_view kBomAndComments =
+            "\xEF\xBB\xBF; header comment\n"
+            "[Other]\n"
+            "DriverVer = 01/01/2020, 9.9.9.9\n"
+            "[ version ]\n"
+            "  driverver = 11/28/2026 , 1.2.34.56 ; inline comment\n";
+        const auto ver = parseInfDriverVersion(kBomAndComments);
+        assert(ver.has_value() && *ver == L"1.2.34.56");
+    }
+    assert(!parseInfDriverVersion("[Version]\nDriverVer=11/28/2026\n").has_value());
+    assert(!parseInfDriverVersion("[Version]\nDriverVer=11/28/2026,1..0\n").has_value());
+    assert(!parseInfDriverVersion("[Version]\nDriverVer=11/28/2026,invalid\n").has_value());
+    assert(!parseInfDriverVersion("[Strings]\nDriverVer=11/28/2026,1.0.0.0\n").has_value());
     return 0;
 }

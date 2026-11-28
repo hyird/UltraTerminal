@@ -11,7 +11,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayHost,
     [Parameter(Mandatory)][ValidatePattern('^[a-zA-Z0-9.-]+$')][string]$GatewayAddress,
     [ValidateRange(1,65535)][int]$GatewayPort = 7443,
-    [string]$IddDriverDir = ''
+    [string]$IddDriverDir = '',
+    [switch]$SkipIdd
 )
 $ErrorActionPreference = 'Stop'
 $product = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'agent.wxs') -Raw)).Wix.Package
@@ -69,13 +70,35 @@ $sourceNotice = "Ultraterimal Agent $($product.Version) - GPL-3.0-or-later`nProj
 [IO.File]::WriteAllText((Join-Path $payload 'source_info.txt'), $sourceNotice, (New-Object System.Text.UTF8Encoding($false)))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install_agent.ps1') -Destination (Join-Path $payload 'install_agent.ps1') -Force
 $wixDefines = @('-d', "Payload=$payload")
-if ($IddDriverDir -and (Test-Path -LiteralPath (Join-Path $IddDriverDir 'ultraterimal_idd.inf'))) {
-    $iddStage = Join-Path $payload 'idd'
+$iddStage = Join-Path $payload 'idd'
+Remove-Item -LiteralPath $iddStage -Recurse -Force -ErrorAction SilentlyContinue
+if (-not $SkipIdd) {
+    if (-not $IddDriverDir) {
+        $resolvedAgentDir = Split-Path -Parent ([IO.Path]::GetFullPath($AgentExe))
+        foreach ($candidate in @(
+            (Join-Path $resolvedAgentDir 'platform\windows\idd\package'),
+            (Join-Path (Split-Path -Parent $resolvedAgentDir) 'platform\windows\idd\package')
+        )) {
+            if (Test-Path -LiteralPath (Join-Path $candidate 'ultraterimal_idd.inf')) {
+                $IddDriverDir = $candidate
+                break
+            }
+        }
+    }
+    if (-not $IddDriverDir -or -not (Test-Path -LiteralPath (Join-Path $IddDriverDir 'ultraterimal_idd.inf'))) {
+        throw 'IDD driver package directory is missing; build ultraterimal-idd-driver with WDK enabled or pass -IddDriverDir.'
+    }
     New-Item -ItemType Directory -Path $iddStage -Force | Out-Null
     foreach ($name in @('ultraterimal_idd.dll', 'ultraterimal_idd.inf', 'ultraterimal_idd.cat')) {
         $src = Join-Path $IddDriverDir $name
         if (-not (Test-Path -LiteralPath $src)) { throw "Missing IDD driver file: $src" }
         Copy-Item -LiteralPath $src -Destination (Join-Path $iddStage $name) -Force
+    }
+    foreach ($signedName in @('ultraterimal_idd.dll', 'ultraterimal_idd.cat')) {
+        $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $iddStage $signedName)
+        if (-not $sig -or $sig.Status -eq 'NotSigned' -or -not $sig.SignerCertificate) {
+            throw "Refusing to package unsigned IDD driver artifact: $signedName"
+        }
     }
     $wixDefines += @('-d', 'IncludeIdd=1')
     $cerSrc = Join-Path $IddDriverDir 'ultraterimal_idd.cer'

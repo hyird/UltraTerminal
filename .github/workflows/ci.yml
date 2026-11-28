@@ -330,6 +330,33 @@ jobs:
           git -C $env:VCPKG_ROOT fetch --depth 1 origin $env:VCPKG_COMMIT
           git -C $env:VCPKG_ROOT checkout --detach FETCH_HEAD
           & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+      - name: Restore Windows WDK cache
+        id: wdk
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ github.workspace }}/build/tools/wdk/c
+          key: wdk-v1-${{ runner.os }}-${{ runner.arch }}-10.0.26100.6584-c393d03dfb640b5c92f546b32f6770ef68cd3aaf691956e7d66d8e2c28a1b55e
+      - name: Install Windows WDK (UMDF 2.31 + IddCx 1.6)
+        if: steps.wdk.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wdkVersion = '10.0.26100.6584'
+          $expectedSha256 = 'c393d03dfb640b5c92f546b32f6770ef68cd3aaf691956e7d66d8e2c28a1b55e'
+          $wdkRoot = Join-Path $env:GITHUB_WORKSPACE 'build/tools/wdk'
+          $nupkg = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.WDK.x64.$wdkVersion.nupkg"
+          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Windows.WDK.x64/$wdkVersion" -OutFile $nupkg
+          $actualSha256 = (Get-FileHash -LiteralPath $nupkg -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "WDK NuGet SHA256 mismatch: expected $expectedSha256, got $actualSha256"
+          }
+          Remove-Item -LiteralPath $wdkRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $wdkRoot -Force | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkg, $wdkRoot)
+          Remove-Item -LiteralPath $nupkg -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $wdkRoot 'c/Include/wdf/umdf/2.31/wdf.h'))) {
+            throw 'Extracted WDK is missing UMDF 2.31 headers'
+          }
       - name: Restore vcpkg binary cache
         id: vcpkg
         uses: actions/cache/restore@v6.1.0
@@ -348,6 +375,7 @@ jobs:
             '-DVCPKG_TARGET_TRIPLET=x64-windows-static',
             '-DVCPKG_HOST_TRIPLET=x64-windows-static',
             "-DVCPKG_INSTALLED_DIR=$env:GITHUB_WORKSPACE/build/vcpkg_installed",
+            "-DULTRATERIMAL_WDK_ROOT=$env:GITHUB_WORKSPACE/build/tools/wdk/c",
             '-DULTRATERIMAL_BUILD_AGENT=ON', '-DULTRATERIMAL_BUILD_SERVER=OFF',
             '-DBUILD_TESTING=ON', '-DCMAKE_COMPILE_WARNING_AS_ERROR=ON',
             '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON'
@@ -391,6 +419,7 @@ jobs:
           $packageArguments = @{
             AgentExe = 'build/windows-agent/agent/Release/agent.exe'
             LoginDll = 'build/windows-agent/agent/Release/ultraterimal_login.dll'
+            IddDriverDir = 'build/windows-agent/agent/platform/windows/idd/package'
             CaBundle = $ca
             DependencyRoot = 'build/vcpkg_installed/x64-windows-static'
             RuviaRoot = 'build/windows-agent/_deps/ruvia-src'
