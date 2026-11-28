@@ -1,6 +1,8 @@
 #include <chrono>
+#include <future>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include <windows.h>
@@ -119,7 +121,52 @@ int main() {
                 require(keys[index] == (index % 2 == 0), "Rapid Windows key transitions were reordered");
             }
         }
-        std::cout << "Real Windows key injection, owned release, bounds, control lease and 120 rapid transitions passed\n";
+        {
+            keys.clear();
+            rejected([&] { agent::DesktopInput competing(0, 0, width, height); });
+            std::promise<void> preemptReady;
+            std::promise<void> exclusiveTried;
+            std::exception_ptr workerFailure;
+            std::thread worker([&] {
+                try {
+                    agent::DesktopInput preempt(0, 0, width, height, agent::DesktopInput::Ownership::kPreempt);
+                    preemptReady.set_value();
+                    exclusiveTried.get_future().wait();
+                    wire::InputEvent k;
+                    k.set_kind(wire::InputEvent::KEY);
+                    k.set_code(VK_F24);
+                    k.set_pressed(true);
+                    preempt.apply(k);
+                    k.set_pressed(false);
+                    preempt.apply(k);
+                } catch (...) {
+                    workerFailure = std::current_exception();
+                    try {
+                        preemptReady.set_value();
+                    } catch (...) {
+                    }
+                }
+            });
+            preemptReady.get_future().wait();
+            key.set_pressed(true);
+            next.apply(key);
+            key.set_pressed(false);
+            next.apply(key);
+            exclusiveTried.set_value();
+            pump(2);
+            worker.join();
+            if (workerFailure) {
+                std::rethrow_exception(workerFailure);
+            }
+            require(keys == std::vector<bool>({true, false}), "Exclusive input failed to yield during preemption");
+            key.set_pressed(true);
+            next.apply(key);
+            key.set_pressed(false);
+            next.apply(key);
+            pump(4);
+            require(keys == std::vector<bool>({true, false, true, false}), "Exclusive input did not resume after preemption");
+        }
+        std::cout << "Real Windows key injection, owned release, bounds, control lease, preemption and 120 rapid transitions passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

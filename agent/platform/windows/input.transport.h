@@ -7,11 +7,14 @@
 namespace ultraterimal::agent {
 // Diagnostic input marker, never an authentication or authorization signal.
 inline constexpr std::uintptr_t kDesktopInputMarker = 0x5554524d;
-// One instance owns write control in this Windows session. Use and destroy on
-// the creating thread. Coordinates are physical pixels in the selected output.
+// `kExclusive` owns interactive session write control and yields briefly while
+// a short-lived `kPreempt` action runs. Coordinates are physical pixels in the
+// selected output; use and destroy on the creating thread.
 class DesktopInput {
   public:
-    DesktopInput(std::int32_t left, std::int32_t top, std::uint32_t width, std::uint32_t height);
+    enum class Ownership { kExclusive,
+                           kPreempt };
+    DesktopInput(std::int32_t left, std::int32_t top, std::uint32_t width, std::uint32_t height, Ownership ownership = Ownership::kExclusive);
     ~DesktopInput();
     DesktopInput(const DesktopInput&) = delete;
     DesktopInput& operator=(const DesktopInput&) = delete;

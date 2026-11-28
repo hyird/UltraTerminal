@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -13,6 +14,9 @@
 
 namespace ultraterimal::agent {
 namespace {
+constexpr wchar_t kPreemptMutexName[] = L"Local\\UltraterimalDesktopInputPreempt";
+constexpr DWORD kPreemptTimeoutMs = 3000;
+
 class ControlLease {
   public:
     ControlLease() {
@@ -22,6 +26,58 @@ class ControlLease {
         }
     }
     ~ControlLease() { ReleaseMutex(handle_.get()); }
+
+  private:
+    UniqueHandle handle_;
+};
+class PreemptLease {
+  public:
+    PreemptLease() {
+        handle_.reset(CreateMutexW(nullptr, FALSE, kPreemptMutexName));
+        if (!handle_) {
+            throw std::runtime_error("Desktop write control is unavailable");
+        }
+        const DWORD wait = WaitForSingleObject(handle_.get(), kPreemptTimeoutMs);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+            throw std::runtime_error("Desktop write control is unavailable");
+        }
+    }
+    ~PreemptLease() { ReleaseMutex(handle_.get()); }
+
+  private:
+    UniqueHandle handle_;
+};
+class PreemptObserver {
+  public:
+    class Guard {
+      public:
+        Guard(const PreemptObserver* observer, DWORD timeoutMs) noexcept : mutex_(observer ? observer->handle_.get() : nullptr) {
+            if (mutex_) {
+                const DWORD wait = WaitForSingleObject(mutex_, timeoutMs);
+                acquired_ = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+            }
+        }
+        ~Guard() {
+            if (acquired_) {
+                ReleaseMutex(mutex_);
+            }
+        }
+        Guard(const Guard&) = delete;
+        Guard& operator=(const Guard&) = delete;
+        bool acquired() const noexcept { return acquired_; }
+
+      private:
+        HANDLE mutex_;
+        bool acquired_ = false;
+    };
+
+    PreemptObserver() {
+        handle_.reset(CreateMutexW(nullptr, FALSE, kPreemptMutexName));
+        if (!handle_) {
+            throw std::runtime_error("Cannot observe desktop preemption");
+        }
+    }
+    Guard lock(DWORD timeoutMs) const noexcept { return Guard(this, timeoutMs); }
 
   private:
     UniqueHandle handle_;
@@ -82,7 +138,9 @@ LONG normalized(std::int64_t position, std::int64_t origin, int extent) {
 }
 } // namespace
 struct DesktopInput::State {
-    ControlLease lease;
+    std::optional<ControlLease> exclusiveLease;
+    std::optional<PreemptLease> preemptLease;
+    std::optional<PreemptObserver> preemptObserver;
     std::array<bool, 512> keys{};
     std::array<bool, 5> buttons{};
     std::int32_t left, top;
@@ -93,7 +151,13 @@ struct DesktopInput::State {
     std::chrono::steady_clock::time_point lastDesktopCheck{};
     bool stale = false;
 
-    State(std::int32_t x, std::int32_t y, std::uint32_t w, std::uint32_t h) : left(x), top(y), width(w), height(h) {
+    State(std::int32_t x, std::int32_t y, std::uint32_t w, std::uint32_t h, Ownership ownership) : left(x), top(y), width(w), height(h) {
+        if (ownership == Ownership::kExclusive) {
+            exclusiveLease.emplace();
+            preemptObserver.emplace();
+        } else {
+            preemptLease.emplace();
+        }
         desktopGeneration = requireInputDesktop();
         DpiScope dpi;
         desktop = VirtualDesktop{};
@@ -130,6 +194,7 @@ struct DesktopInput::State {
         if (inputs.empty()) {
             return;
         }
+        const PreemptObserver::Guard guard(preemptObserver ? &*preemptObserver : nullptr, kPreemptTimeoutMs);
         const auto count = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
         for (std::size_t i = 0; i < count; ++i) {
             *owned[i] = false;
@@ -145,6 +210,10 @@ struct DesktopInput::State {
         }
         if (event.kind() == wire::InputEvent::RELEASE_ALL) {
             release();
+            return;
+        }
+        const PreemptObserver::Guard guard(preemptObserver ? &*preemptObserver : nullptr, 0);
+        if (preemptObserver && !guard.acquired()) {
             return;
         }
         // Wait for the video owner to publish a new configuration and recreate
@@ -233,8 +302,8 @@ struct DesktopInput::State {
         }
     }
 };
-DesktopInput::DesktopInput(std::int32_t left, std::int32_t top, std::uint32_t width, std::uint32_t height)
-    : state_(std::make_unique<State>(left, top, width, height)) {}
+DesktopInput::DesktopInput(std::int32_t left, std::int32_t top, std::uint32_t width, std::uint32_t height, Ownership ownership)
+    : state_(std::make_unique<State>(left, top, width, height, ownership)) {}
 DesktopInput::~DesktopInput() {
     try {
         state_->release();

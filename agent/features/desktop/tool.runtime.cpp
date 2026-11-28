@@ -100,6 +100,9 @@ asio::awaitable<wire::DesktopToolMessage> invokeDesktopTool(ruvia::event_loop lo
 } // namespace
 
 asio::awaitable<void> runDesktopSnapshot(ruvia::event_loop loop, ConnectionConfig config, std::filesystem::path desktopExecutable, wire::DesktopSnapshotStart request) {
+    if (!loop.worker().is_current()) {
+        throw std::logic_error("Desktop tool must run on its bound event loop");
+    }
     wire::DesktopSnapshotResult result;
     result.set_snapshot_id(request.snapshot_id());
     try {
@@ -140,6 +143,9 @@ asio::awaitable<void> runDesktopSnapshot(ruvia::event_loop loop, ConnectionConfi
 }
 
 asio::awaitable<wire::DesktopActionResult> runDesktopAction(ruvia::event_loop loop, std::filesystem::path desktopExecutable, wire::DesktopActionRequest request) {
+    if (!loop.worker().is_current()) {
+        throw std::logic_error("Desktop tool must run on its bound event loop");
+    }
     wire::DesktopActionResult result;
     result.set_request_id(request.request_id() ? request.request_id() : 1);
     try {

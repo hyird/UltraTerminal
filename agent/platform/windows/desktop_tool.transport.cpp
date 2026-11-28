@@ -255,7 +255,7 @@ wire::DesktopActionResult executeDesktopAction(const wire::DesktopActionRequest&
 
     try {
         const auto bounds = resolveAttachedDisplayBounds(request.display_index());
-        DesktopInput input(bounds.left, bounds.top, bounds.width, bounds.height);
+        DesktopInput input(bounds.left, bounds.top, bounds.width, bounds.height, DesktopInput::Ownership::kPreempt);
         result.set_display_width(bounds.width);
         result.set_display_height(bounds.height);
 
